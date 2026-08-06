@@ -7,7 +7,10 @@
 # the API assembly, which is then baked into the single file exe.
 
 param(
-    [switch]$SkipWeb
+    [switch]$SkipWeb,
+    # Stamped into the exe. The release workflow passes the tag so the version
+    # Explorer reports always matches the release it came from.
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,8 +39,12 @@ if (-not $SkipWeb) {
 }
 
 Step "Publishing the desktop app"
+$versionArgs = if ($Version) {
+    @("-p:Version=$Version", "-p:AssemblyVersion=$Version.0", "-p:FileVersion=$Version.0")
+} else { @() }
+
 dotnet publish (Join-Path $root 'src\SchemaScope.Shell\SchemaScope.Shell.csproj') `
-    -c Release -o (Join-Path $root 'dist')
+    -c Release -o (Join-Path $root 'dist') @versionArgs
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 
 $exe = Join-Path $root 'dist\SchemaScope.exe'

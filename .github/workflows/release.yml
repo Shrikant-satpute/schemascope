@@ -46,7 +46,7 @@ jobs:
 
       - name: Build app
         shell: pwsh
-        run: ./build.ps1
+        run: ./build.ps1 -Version ${{ steps.version.outputs.version }}
 
       - name: Ensure Inno Setup
         shell: pwsh

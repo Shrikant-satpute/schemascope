@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="SchemaScope">
+  <title>SchemaScope</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c2029"/>
+      <stop offset="1" stop-color="#0e1015"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#tile)"/>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="13.5" fill="none" stroke="#2a2f3a"/>
+  <rect x="14" y="17" width="36" height="7" rx="3.5" fill="#4b5563"/>
+  <rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#14b8a6"/>
+  <rect x="14" y="40" width="36" height="7" rx="3.5" fill="#4b5563"/>
+</svg>

@@ -15,6 +15,9 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    # A hung step would otherwise hold the account's only Windows runner for the
+    # 6 hour default, starving every other workflow behind it.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4

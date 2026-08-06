@@ -1,0 +1,11 @@
+# Normalise to LF in the repository; Git restores native endings on checkout.
+* text=auto
+
+# Windows-only tooling that must stay CRLF on disk.
+*.ps1   text eol=crlf
+*.iss   text eol=crlf
+*.sln   text eol=crlf
+*.csproj text eol=crlf
+
+*.ico binary
+*.png binary

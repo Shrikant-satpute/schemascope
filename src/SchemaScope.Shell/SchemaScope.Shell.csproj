@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>SchemaScope</AssemblyName>
+    <RootNamespace>SchemaScope.Shell</RootNamespace>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- Baked into the exe, so Explorer, the taskbar and the desktop shortcut
+         the installer creates all show the real icon rather than a blank one. -->
+    <ApplicationIcon>schemascope.ico</ApplicationIcon>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- The referenced API project is also an exe; only ours is the entry point. -->
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <!-- The WebView2 package also ships a WPF control we do not use. Its
+         WindowsBase reference triggers a harmless unification warning. -->
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <!-- Keep the publish folder to just the exe: no stray .pdb or .xml docs. -->
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Also embedded, so the window can load every size rather than the single
+         frame ExtractAssociatedIcon would hand back. -->
+    <EmbeddedResource Include="schemascope.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SchemaScope.Api\SchemaScope.Api.csproj" />
+  </ItemGroup>
+
+</Project>

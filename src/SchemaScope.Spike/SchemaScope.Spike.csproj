@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>schemascope-spike</AssemblyName>
+    <RootNamespace>SchemaScope.Spike</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SchemaScope.Core\SchemaScope.Core.csproj" />
+    <ProjectReference Include="..\SchemaScope.SqlServer\SchemaScope.SqlServer.csproj" />
+  </ItemGroup>
+
+</Project>

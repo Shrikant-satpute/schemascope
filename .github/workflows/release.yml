@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, without the leading v (e.g. 1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Work out the version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            '${{ inputs.version }}'
+          } else {
+            '${{ github.ref_name }}'.TrimStart('v')
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Building $version"
+
+      - name: Test
+        run: dotnet test -c Release
+
+      - name: Build app
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          # Present on the hosted images today, but a release that dies at the
+          # packaging step is worse than one extra install.
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            /DAppVersion=${{ steps.version.outputs.version }} `
+            installer\SchemaScope.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Publish checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            'installer\Output\SchemaScope-Setup.exe',
+            'dist\SchemaScope.exe'
+          )
+          Get-FileHash $files -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Out-File -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SchemaScope ${{ steps.version.outputs.version }}
+          tag_name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            installer/Output/SchemaScope-Setup.exe
+            dist/SchemaScope.exe
+            SHA256SUMS.txt
+          body: |
+            ## Install
+
+            Download **SchemaScope-Setup.exe** and run it. It installs for your
+            account only, needs no administrator rights, and offers a desktop
+            shortcut.
+
+            Prefer nothing installed? **SchemaScope.exe** is the portable
+            single-file build - download and double-click, no installer.
+
+            ### Windows will warn you on first run
+
+            These binaries are not code-signed yet, so SmartScreen shows
+            *"Windows protected your PC"*. Click **More info** then **Run
+            anyway**.
+
+            You do not have to take that on trust: this release was built in
+            public by GitHub Actions from the tagged commit, and `SHA256SUMS.txt`
+            below lists the hashes. Verify with:
+
+            ```powershell
+            Get-FileHash .\SchemaScope-Setup.exe -Algorithm SHA256
+            ```
+
+            ### Requirements
+
+            Windows 10 or 11. Nothing else - the .NET runtime is bundled and
+            WebView2 already ships with Windows.

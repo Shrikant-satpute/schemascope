@@ -1,0 +1,11 @@
+bin/
+obj/
+dist/
+publish/
+installer/Output/
+SHA256SUMS.txt
+node_modules/
+src/SchemaScope.Api/wwwroot/
+*.user
+.vs/
+.DS_Store

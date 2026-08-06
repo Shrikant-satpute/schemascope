@@ -1,0 +1,214 @@
+@import 'tailwindcss';
+
+/*
+  Status colours are validated with the data-viz palette validator in both
+  modes (lightness band, chroma floor, CVD separation, normal-vision floor,
+  contrast). Every status also carries a symbol and a word, so colour never
+  carries meaning on its own.
+
+    same    teal    dark #1baf7a  light #0b9070
+    diff    amber   dark #c98500  light #b57500
+    missing red     dark #d03b3b  light #c22f2f
+    extra   violet  dark #9085e9  light #4a3aa7
+*/
+
+@theme {
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+/*
+  Light is the default. Dark is opt-in from the toggle in the header, which sets
+  data-theme on <html> and is remembered for next time.
+
+  The --db-* numbers drive the database identity tints. dbColour.ts picks a hue
+  per database and builds every wash from these, so one set of numbers per theme
+  covers the whole palette. The tints are alpha, so whatever is underneath - a
+  hovered row, the selected row - still reads through them.
+*/
+
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --page: #f4f5f8;
+  --surface: #ffffff;
+  --surface-2: #fafbfc;
+  --raised: #f0f2f6;
+  --line: #dfe3ea;
+  --line-soft: #eaedf2;
+
+  --text: #14171f;
+  --text-2: #5a6377;
+  --text-3: #838b9c;
+
+  --accent: #2a78d6;
+  --accent-soft: rgba(42, 120, 214, 0.12);
+
+  --st-same: #0b9070;
+  --st-fmt: #6b7285;
+  --st-diff: #b57500;
+  --st-miss: #c22f2f;
+  --st-extra: #4a3aa7;
+  --st-na: #838b9c;
+
+  --add: #0b9070;
+  --del: #c22f2f;
+
+  --db-sat: 70%;
+  --db-light: 45%;
+  --db-tint: 0.1;
+  --db-tint-strong: 0.17;
+  --db-edge: 0.38;
+  --db-ink-sat: 62%;
+  --db-ink-light: 34%;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --page: #0d0f14;
+  --surface: #12141b;
+  --surface-2: #171a23;
+  --raised: #1d212c;
+  --line: #262b38;
+  --line-soft: #1e2230;
+
+  --text: #e6e8ef;
+  --text-2: #9aa1b4;
+  --text-3: #6b7285;
+
+  --accent: #3987e5;
+  --accent-soft: rgba(57, 135, 229, 0.14);
+
+  --st-same: #1baf7a;
+  --st-fmt: #7d8598;
+  --st-diff: #c98500;
+  --st-miss: #d03b3b;
+  --st-extra: #9085e9;
+  --st-na: #6b7285;
+
+  --add: #1baf7a;
+  --del: #d03b3b;
+
+  --db-sat: 78%;
+  --db-light: 62%;
+  --db-tint: 0.13;
+  --db-tint-strong: 0.22;
+  --db-edge: 0.42;
+  --db-ink-sat: 70%;
+  --db-ink-light: 72%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 5px;
+  border: 2px solid var(--page);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Monaco needs an explicit surface or it flashes white on load. */
+.monaco-editor,
+.monaco-editor-background,
+.monaco-editor .margin {
+  background-color: var(--surface) !important;
+}
+
+/*
+  Select a word in either pane of the diff and every other place it appears is
+  marked, in both panes. Amber with an outline: it has to stay visible on top of
+  the green and red diff line backgrounds, which already own those two hues.
+*/
+:root {
+  --match-fill: rgba(240, 160, 50, 0.28);
+  --match-edge: rgba(190, 115, 10, 0.75);
+}
+
+:root[data-theme='dark'] {
+  --match-fill: rgba(240, 170, 60, 0.26);
+  --match-edge: rgba(250, 190, 90, 0.8);
+}
+
+.monaco-editor .ss-match {
+  background-color: var(--match-fill);
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px var(--match-edge);
+}
+
+.ss-match-dot {
+  background-color: var(--match-fill);
+  box-shadow: inset 0 0 0 1px var(--match-edge);
+}
+
+@keyframes ss-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ss-spin {
+  animation: ss-spin 0.9s linear infinite;
+}
+
+@keyframes ss-fade {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.ss-fade {
+  animation: ss-fade 0.16s ease-out;
+}

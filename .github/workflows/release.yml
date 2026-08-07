@@ -19,6 +19,13 @@ jobs:
     # 6 hour default, starving every other workflow behind it.
     timeout-minutes: 45
 
+    # Lifted to the job so the signing steps can test it in an `if`. Secrets are
+    # not readable from a step-level `if` directly. While the SignPath OSS
+    # application is pending the secret is absent, every signing step skips, and
+    # the release still goes out unsigned exactly as it does today.
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -51,6 +58,33 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Version ${{ steps.version.outputs.version }}
 
+      # The app exe is signed *before* Inno packages it. Signing only the
+      # installer would leave the binary that actually gets installed unsigned,
+      # so SmartScreen would move its warning from install time to first launch
+      # instead of removing it.
+      - name: Upload app exe for signing
+        id: upload-app
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: schemascope-exe-unsigned
+          path: dist/SchemaScope.exe
+          if-no-files-found: error
+
+      - name: Sign app exe
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: schemascope
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.upload-app.outputs.artifact-id }}
+          wait-for-completion: true
+          # Lands the signed exe back over the unsigned one, so the installer
+          # step below picks it up with no path changes.
+          output-artifact-directory: dist
+
       - name: Ensure Inno Setup
         shell: pwsh
         run: |
@@ -68,6 +102,29 @@ jobs:
             installer\SchemaScope.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
+      - name: Upload installer for signing
+        id: upload-installer
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: schemascope-setup-unsigned
+          path: installer/Output/SchemaScope-Setup.exe
+          if-no-files-found: error
+
+      - name: Sign installer
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: schemascope
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: installer/Output
+
+      # Must stay after both signing steps: signing rewrites the files, so
+      # hashes taken any earlier would not match what people download.
       - name: Publish checksums
         shell: pwsh
         run: |

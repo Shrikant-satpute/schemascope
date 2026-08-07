@@ -1,0 +1,31 @@
+{
+    "version": "1.0.0",
+    "description": "Compare SQL Server database schemas across many targets at once.",
+    "homepage": "https://schemascope.shadowmark.in",
+    "license": "Apache-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Shrikant-satpute/schemascope/releases/download/v1.0.0/SchemaScope.exe",
+            "hash": "00bf887a8009c8134351f05b38fb0cf56e2a845ef87682d8618971f15af2bf64"
+        }
+    },
+    "shortcuts": [
+        [
+            "SchemaScope.exe",
+            "SchemaScope"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/Shrikant-satpute/schemascope"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Shrikant-satpute/schemascope/releases/download/v$version/SchemaScope.exe"
+            }
+        },
+        "hash": {
+            "url": "https://github.com/Shrikant-satpute/schemascope/releases/download/v$version/SHA256SUMS.txt"
+        }
+    }
+}

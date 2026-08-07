@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: Shadowmark.SchemaScope
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: Shadowmark
+PublisherUrl: https://shadowmark.in
+PublisherSupportUrl: https://github.com/Shrikant-satpute/schemascope/issues
+PackageName: SchemaScope
+PackageUrl: https://schemascope.shadowmark.in
+License: Apache-2.0
+LicenseUrl: https://github.com/Shrikant-satpute/schemascope/blob/main/LICENSE
+Copyright: Copyright (c) Shadowmark
+ShortDescription: Compare SQL Server database schemas across many targets at once.
+Description: |-
+  SchemaScope is a Windows desktop application for comparing SQL Server
+  database schemas. It compares one source database against many target
+  databases in a single pass and shows the differences per object, with the
+  generating SQL side by side.
+
+  It ships as a self-contained executable: no .NET runtime install and no
+  server component. It reads database catalogs and never writes to them,
+  sends no telemetry, and keeps database credentials on the local machine.
+
+  Supports SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed
+  Instance and AWS RDS.
+Moniker: schemascope
+Tags:
+  - compare
+  - database
+  - dba
+  - diff
+  - mssql
+  - schema
+  - sql
+  - sql-server
+ReleaseNotesUrl: https://github.com/Shrikant-satpute/schemascope/releases/tag/v1.0.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: Shadowmark.SchemaScope
+PackageVersion: 1.0.0
+InstallerType: inno
+# Matches PrivilegesRequired=lowest in installer/SchemaScope.iss. Declaring
+# machine scope here would make winget ask for elevation the installer does
+# not want and cannot use.
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+# Inno derives this from AppId in SchemaScope.iss, suffixed with _is1. It is
+# how winget finds an existing install to upgrade or uninstall, so it must
+# track AppId if that ever changes.
+ProductCode: '{8E4C1D2A-6F3B-4A17-9C5E-2B7D0A9F4E31}_is1'
+ReleaseDate: 2026-08-06
+Installers:
+  # Deliberately the per-tag URL, not releases/latest/download. winget pins a
+  # hash per version, and the latest permalink changes what it serves.
+  - Architecture: x64
+    InstallerUrl: https://github.com/Shrikant-satpute/schemascope/releases/download/v1.0.0/SchemaScope-Setup.exe
+    InstallerSha256: D9CFF5F12A8680706A72C125316E04E09AAEFC75C093F36A00512A94BBA11603
+ManifestType: installer
+ManifestVersion: 1.6.0

@@ -31,7 +31,11 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Restore
-        run: dotnet restore
+        # Must match the configuration the build below uses. SchemaScope.Shell
+        # only sets RuntimeIdentifier=win-x64 in Release, so a bare restore
+        # evaluates as Debug, writes an assets file with no win-x64 target, and
+        # the Release build then fails with NETSDK1047.
+        run: dotnet restore -p:Configuration=Release
 
       - name: Build
         run: dotnet build --no-restore -c Release

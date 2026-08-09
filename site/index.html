@@ -10,14 +10,16 @@
 <meta property="og:description" content="Compare one SQL Server schema against every environment, in under a second. Read-only, fully offline, open source.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://schemascope.shadowmark.in">
+<meta property="og:image" content="https://schemascope.shadowmark.in/screenshots/dashboard.png">
+<meta name="twitter:card" content="summary_large_image">
 <style>
   :root{
-    --bg:#0b0d12; --bg-2:#101319; --panel:#141821; --line:#20252f;
-    --text:#e8eaf0; --muted:#8b93a7; --dim:#5f677a;
-    --accent:#14b8a6; --accent-dim:#0d7d72;
+    --bg:#0a0c11; --bg-2:#0e1117; --panel:#131720; --panel-2:#171c26; --line:#1f242f;
+    --text:#e9ebf1; --muted:#8b93a7; --dim:#5f677a;
+    --accent:#14b8a6; --accent-2:#38bdf8; --accent-dim:#0d7d72;
     --same:#3fb950; --fmt:#58a6ff; --diff:#d29922; --miss:#f85149; --extra:#bc8cff;
     --radius:14px;
-    --shell:min(1180px,100% - 3rem);
+    --shell:min(1220px,100% - 3rem);
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
@@ -27,27 +29,37 @@
     font:16px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     -webkit-font-smoothing:antialiased;overflow-x:hidden;
   }
-  h1,h2,h3{line-height:1.15;letter-spacing:-.022em;margin:0}
+  /* A very faint grid, so the dark background is not a flat void. */
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background-image:linear-gradient(rgba(255,255,255,.022) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,255,255,.022) 1px,transparent 1px);
+    background-size:56px 56px;
+    mask-image:radial-gradient(ellipse 80% 50% at 50% 0%,#000 30%,transparent 78%);
+  }
+  body>*{position:relative;z-index:1}
+  h1,h2,h3{line-height:1.14;letter-spacing:-.024em;margin:0}
   p{margin:0}
   a{color:inherit}
+  img{max-width:100%;display:block}
   .shell{width:var(--shell);margin-inline:auto}
   .mono{font-family:ui-monospace,"SF Mono",Consolas,"Liberation Mono",monospace}
 
   /* ---------- nav ---------- */
   nav{
     position:sticky;top:0;z-index:50;
-    background:color-mix(in srgb,var(--bg) 82%,transparent);
-    backdrop-filter:blur(14px);border-bottom:1px solid transparent;
+    background:color-mix(in srgb,var(--bg) 78%,transparent);
+    backdrop-filter:blur(16px);border-bottom:1px solid transparent;
     transition:border-color .3s;
   }
   nav.stuck{border-bottom-color:var(--line)}
   .nav-in{display:flex;align-items:center;gap:1.5rem;height:64px}
   .brand{display:flex;align-items:center;gap:.6rem;font-weight:650;letter-spacing:-.02em;text-decoration:none}
   .brand svg{border-radius:9px}
-  .nav-links{margin-left:auto;display:flex;align-items:center;gap:1.75rem}
+  .nav-links{margin-left:auto;display:flex;align-items:center;gap:1.6rem}
   .nav-links a{color:var(--muted);text-decoration:none;font-size:.925rem;transition:color .18s}
   .nav-links a:hover{color:var(--text)}
-  @media(max-width:640px){.nav-links a:not(.btn){display:none}}
+  @media(max-width:760px){.nav-links a:not(.btn){display:none}}
 
   /* ---------- buttons ---------- */
   .btn{
@@ -63,12 +75,12 @@
   .btn-lg{padding:.95rem 1.6rem;font-size:1.02rem;border-radius:12px}
 
   /* ---------- hero ---------- */
-  header{position:relative;padding:clamp(3.5rem,9vw,7rem) 0 clamp(3rem,6vw,5rem);overflow:hidden}
+  header{position:relative;padding:clamp(3.5rem,8vw,6rem) 0 0;overflow:hidden}
   .glow{
-    position:absolute;inset:-40% 0 auto 50%;translate:-50% 0;
-    width:min(1100px,140%);aspect-ratio:2/1;pointer-events:none;
-    background:radial-gradient(ellipse at center,rgba(20,184,166,.16),transparent 62%);
-    filter:blur(28px);
+    position:absolute;inset:-45% 0 auto 50%;translate:-50% 0;
+    width:min(1200px,150%);aspect-ratio:2/1;pointer-events:none;
+    background:radial-gradient(ellipse at center,rgba(20,184,166,.18),transparent 62%);
+    filter:blur(30px);
   }
   .pill{
     display:inline-flex;align-items:center;gap:.55rem;
@@ -77,36 +89,80 @@
   }
   .pill b{color:var(--accent);font-weight:600}
   .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(20,184,166,.18)}
-  h1{font-size:clamp(2.3rem,5.6vw,4rem);font-weight:680;max-width:17ch}
-  h1 em{font-style:normal;color:var(--accent)}
+  h1{font-size:clamp(2.3rem,5.6vw,4.05rem);font-weight:690;max-width:17ch}
+  h1 em{
+    font-style:normal;
+    background:linear-gradient(100deg,var(--accent),var(--accent-2));
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
   .lede{margin-top:1.4rem;font-size:clamp(1.02rem,1.9vw,1.2rem);color:var(--muted);max-width:60ch}
   .cta{display:flex;flex-wrap:wrap;gap:.85rem;align-items:center;margin-top:2.2rem}
   .cta-note{font-size:.85rem;color:var(--dim);margin-top:1rem}
   .cta-note b{color:var(--muted);font-weight:500}
 
-  /* ---------- benchmark ---------- */
+  /* ---------- screenshot frame ---------- */
+  .shot{
+    border:1px solid var(--line);border-radius:13px;overflow:hidden;
+    background:var(--panel);
+    box-shadow:0 40px 90px -40px rgba(0,0,0,.9),0 0 0 1px rgba(255,255,255,.03) inset;
+  }
+  .shot-bar{
+    display:flex;align-items:center;gap:.45rem;padding:.6rem .85rem;
+    background:var(--panel-2);border-bottom:1px solid var(--line);
+  }
+  .shot-bar i{width:10px;height:10px;border-radius:50%;background:#2c333f;display:block}
+  .shot-bar span{
+    margin-left:.6rem;font-size:.76rem;color:var(--dim);
+    font-family:ui-monospace,Consolas,monospace;
+  }
+  .shot img{width:100%;height:auto}
+  .hero-shot{
+    margin-top:clamp(2.5rem,5vw,3.8rem);
+    padding-bottom:clamp(3rem,6vw,5rem);
+  }
+  .hero-shot .shot{
+    /* Lifts the product shot off the page without hiding any of it. */
+    box-shadow:0 60px 120px -50px rgba(0,0,0,.95),
+               0 0 90px -30px rgba(20,184,166,.22),
+               0 0 0 1px rgba(255,255,255,.035) inset;
+  }
+  .cap{margin-top:1rem;font-size:.87rem;color:var(--dim);text-align:center}
+
+  /* ---------- sections ---------- */
   section{padding:clamp(3.5rem,7vw,6rem) 0}
   .eyebrow{
     font-size:.78rem;font-weight:640;letter-spacing:.13em;text-transform:uppercase;
     color:var(--accent);margin-bottom:.9rem;
   }
-  h2{font-size:clamp(1.7rem,3.4vw,2.4rem);font-weight:660;max-width:22ch}
-  .sub{margin-top:1rem;color:var(--muted);max-width:62ch}
+  h2{font-size:clamp(1.75rem,3.4vw,2.45rem);font-weight:670;max-width:22ch}
+  h2 em{
+    font-style:normal;
+    background:linear-gradient(100deg,var(--accent),var(--accent-2));
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .sub{margin-top:1rem;color:var(--muted);max-width:64ch}
 
+  /* ---------- benchmark ---------- */
   .bench{margin-top:2.8rem;display:grid;gap:1.1rem}
-  .bar-row{display:grid;grid-template-columns:minmax(0,15rem) 1fr;gap:1.2rem;align-items:center}
+  .bar-row{display:grid;grid-template-columns:minmax(0,16rem) 1fr;gap:1.2rem;align-items:center}
   @media(max-width:720px){.bar-row{grid-template-columns:1fr;gap:.45rem}}
   .bar-label{font-size:.94rem}
   .bar-label small{display:block;color:var(--dim);font-size:.8rem;margin-top:.15rem}
-  .track{position:relative;height:44px;background:var(--bg-2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .track{position:relative;height:44px;background:var(--bg-2);border:1px solid var(--line);border-radius:10px}
   .fill{
     position:absolute;inset:0 auto 0 0;width:0;border-radius:9px;
-    display:flex;align-items:center;justify-content:flex-end;padding-right:.9rem;
-    font-weight:640;font-size:.9rem;white-space:nowrap;
     transition:width 1.5s cubic-bezier(.22,.9,.25,1);
   }
-  .fill-fast{background:linear-gradient(90deg,var(--accent-dim),var(--accent));color:#04120f}
-  .fill-slow{background:linear-gradient(90deg,#252b36,#39414f);color:var(--muted)}
+  /* The fast bar is a sliver, so its label sits just outside it rather than
+     being clipped inside. */
+  .fill b{
+    position:absolute;top:50%;translate:0 -50%;
+    font-weight:640;font-size:.9rem;white-space:nowrap;
+  }
+  .fill-fast{background:linear-gradient(90deg,var(--accent-dim),var(--accent))}
+  .fill-fast b{left:calc(100% + .75rem);color:var(--accent)}
+  .fill-slow{background:linear-gradient(90deg,#252b36,#39414f)}
+  .fill-slow b{right:.9rem;color:var(--muted)}
   @media (prefers-reduced-motion:reduce){.fill{transition:none}}
   .bench-foot{margin-top:1.6rem;font-size:.87rem;color:var(--dim)}
 
@@ -119,6 +175,36 @@
   .stat{background:var(--panel);padding:1.5rem 1.4rem}
   .stat b{display:block;font-size:1.9rem;font-weight:660;letter-spacing:-.03em}
   .stat span{color:var(--dim);font-size:.86rem}
+
+  /* ---------- versus ---------- */
+  .versus{background:var(--bg-2);border-block:1px solid var(--line)}
+  .gripes{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:1.1rem;margin-top:2.6rem}
+  .gripe{
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:1.5rem;transition:border-color .2s,transform .2s;
+  }
+  .gripe:hover{border-color:#333b49;transform:translateY(-2px)}
+  .gripe h3{font-size:1.02rem;font-weight:630;margin-bottom:.5rem;display:flex;align-items:center;gap:.6rem}
+  .gripe h3 svg{color:var(--miss);flex:none}
+  .gripe p{color:var(--muted);font-size:.93rem}
+  .vs-table{
+    margin-top:2.6rem;border:1px solid var(--line);border-radius:var(--radius);
+    overflow:hidden;background:var(--panel);
+  }
+  .vs-scroll{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;min-width:520px;font-size:.94rem}
+  th,td{padding:.95rem 1.25rem;text-align:left;border-bottom:1px solid var(--line)}
+  tbody tr:last-child td{border-bottom:none}
+  thead th{
+    font-size:.78rem;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);
+    font-weight:620;background:var(--panel-2);
+  }
+  thead th:nth-child(2){color:var(--accent)}
+  td:first-child{color:var(--muted)}
+  .win{color:var(--accent);font-weight:620}
+  .lose{color:var(--muted)}
+  tr.total td{font-weight:660;font-size:1rem}
+  .vs-foot{padding:1rem 1.25rem;font-size:.85rem;color:var(--dim);background:var(--panel-2);border-top:1px solid var(--line)}
 
   /* ---------- statuses ---------- */
   .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1px;
@@ -133,6 +219,11 @@
   }
   .status h3{font-size:.98rem;font-weight:620}
   .status p{color:var(--muted);font-size:.9rem}
+
+  /* ---------- screens ---------- */
+  .screens{display:grid;gap:clamp(2.5rem,5vw,4rem);margin-top:3rem}
+  .screen h3{font-size:1.2rem;font-weight:640;margin-bottom:.5rem}
+  .screen p{color:var(--muted);max-width:62ch;margin-bottom:1.5rem}
 
   /* ---------- features ---------- */
   .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:1.1rem;margin-top:2.6rem}
@@ -187,7 +278,8 @@
   .copy:hover{color:var(--text);border-color:#39414f}
 
   /* ---------- final cta ---------- */
-  .final{text-align:center}
+  .final{text-align:center;position:relative;overflow:hidden}
+  .final .glow{inset:auto 0 -60% 50%}
   .final h2{margin-inline:auto}
   .final .sub{margin-inline:auto}
   .final .cta{justify-content:center}
@@ -221,7 +313,8 @@
     </a>
     <div class="nav-links">
       <a href="#speed">Speed</a>
-      <a href="#statuses">Statuses</a>
+      <a href="#versus">vs Visual Studio</a>
+      <a href="#screens">Screens</a>
       <a href="#privacy">Privacy</a>
       <a href="https://github.com/Shrikant-satpute/schemascope">GitHub</a>
       <a class="btn btn-primary" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe" data-dl>
@@ -238,9 +331,9 @@
     <div class="pill"><span class="dot"></span> 1,189 objects compared in <b>806&nbsp;ms</b></div>
     <h1>Compare one schema against <em>every</em> environment.</h1>
     <p class="lede">
-      SchemaScope reads the SQL Server catalog in bulk and hashes every object, so the
-      90% that match are never looked at twice. Dev against staging, UAT and production
-      at the same time — in less than a second.
+      Pick the database you trust. Add staging, UAT and production. Press Compare.
+      In about a second you know exactly what drifted, where, and by how much —
+      without ever opening Visual Studio.
     </p>
     <div class="cta">
       <a class="btn btn-primary btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe" data-dl>
@@ -257,6 +350,15 @@
       No admin rights needed &nbsp;·&nbsp; <b>Never writes to your databases</b>
     </p>
   </div>
+
+  <div class="shell hero-shot reveal">
+    <div class="shot">
+      <div class="shot-bar"><i></i><i></i><i></i><span>SchemaScope — Dev vs Staging, UAT, Production</span></div>
+      <img src="/screenshots/dashboard.png" width="1600" height="1000"
+           alt="SchemaScope comparing Dev against Staging, UAT and Production. Each environment has a tile showing how much of the source it still matches, a matrix lists every object with its status per target, and a side-by-side diff of a stored procedure sits below.">
+    </div>
+    <p class="cap">One source, three environments, one screen — and the actual difference underneath.</p>
+  </div>
 </header>
 
 <section id="speed">
@@ -264,20 +366,20 @@
     <p class="eyebrow">The difference</p>
     <h2>Minutes of waiting, replaced by one second.</h2>
     <p class="sub">
-      Visual Studio's Schema Compare builds a full semantic model of both databases before
-      it can tell you anything, and only ever compares one pair at a time. SchemaScope reads
-      the system catalog instead — two round trips per database — then hashes every object.
+      Visual Studio's Schema Compare builds a full model of both databases before it can
+      tell you anything, and it only ever does one pair at a time. SchemaScope reads the
+      system catalog instead — two round trips per database — then hashes every object.
       Measured on a real 1,189 object database against a 990 object copy.
     </p>
 
     <div class="bench" id="bench">
       <div class="bar-row">
         <div class="bar-label">SchemaScope<small>Read both, compare, classify</small></div>
-        <div class="track"><div class="fill fill-fast" data-w="4.5">806 ms</div></div>
+        <div class="track"><div class="fill fill-fast" data-w="4.5"><b>806 ms</b></div></div>
       </div>
       <div class="bar-row">
         <div class="bar-label">Visual Studio Schema Compare<small>One pair only</small></div>
-        <div class="track"><div class="fill fill-slow" data-w="100">60–180 seconds</div></div>
+        <div class="track"><div class="fill fill-slow" data-w="100"><b>60–180 seconds</b></div></div>
       </div>
     </div>
     <p class="bench-foot">
@@ -293,14 +395,70 @@
   </div>
 </section>
 
+<section class="versus" id="versus">
+  <div class="shell reveal">
+    <p class="eyebrow">Why not just use Visual Studio?</p>
+    <h2>Schema Compare <em>sucks</em> at this job.</h2>
+    <p class="sub">
+      It is fine at what it was built for — pushing one database into another. Ask it the
+      question people actually ask on a Friday afternoon, <i>is production still the same
+      as dev?</i>, and it wastes your afternoon. Anyone who has sat watching that progress
+      bar knows exactly why.
+    </p>
+
+    <div class="gripes">
+      <div class="gripe">
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Slow. Every single time.</h3>
+        <p>Before it says one word, it builds a full model of both databases. On a large database that is minutes of watching a progress bar — and you pay it again on every run.</p>
+      </div>
+      <div class="gripe">
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h7"/></svg> One pair at a time. That is it.</h3>
+        <p>Four environments means running it four times, waiting four times, and then holding four sets of results in your head.</p>
+      </div>
+      <div class="gripe">
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg> It cries wolf.</h3>
+        <p>Re-indent a stored procedure and it screams "changed". The one difference that will actually break production is buried in that noise.</p>
+      </div>
+      <div class="gripe">
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg> It drags a whole IDE along.</h3>
+        <p>A DBA who does not write C# should not have to install a multi-gigabyte IDE to find out whether last night's release landed.</p>
+      </div>
+    </div>
+
+    <div class="vs-table">
+      <div class="vs-scroll">
+        <table>
+          <thead>
+            <tr><th>&nbsp;</th><th>SchemaScope</th><th>VS Schema Compare</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Read both databases</td><td class="win">500 ms</td><td class="lose">—</td></tr>
+            <tr><td>Compare and classify</td><td class="win">296 ms</td><td class="lose">—</td></tr>
+            <tr class="total"><td>Total, 1,189 objects</td><td class="win">806 ms</td><td class="lose">60–180 seconds</td></tr>
+            <tr><td>Targets per run</td><td class="win">as many as you like</td><td class="lose">one</td></tr>
+            <tr><td>Tells formatting apart from a real change</td><td class="win">yes</td><td class="lose">no</td></tr>
+            <tr><td>Needs Visual Studio installed</td><td class="win">no</td><td class="lose">yes</td></tr>
+            <tr><td>Can write to your database</td><td class="win">never</td><td class="lose">yes, that is the point of it</td></tr>
+            <tr><td>Price</td><td class="win">free, Apache-2.0</td><td class="lose">bundled with the IDE</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="vs-foot">
+        Same hardware, same databases. SchemaScope only compares — if you want to push
+        changes into a database, Schema Compare is still the tool for that.
+      </p>
+    </div>
+  </div>
+</section>
+
 <section id="statuses">
   <div class="shell reveal">
-    <p class="eyebrow">Six statuses, not two</p>
+    <p class="eyebrow">Six answers, not two</p>
     <h2>A re-indented procedure is not a change.</h2>
     <p class="sub">
-      Most tools tell you "same" or "different" — which reports reformatted code as drift and
-      buries the differences that matter. SchemaScope separates them, and never hides anything:
-      an ignore rule downgrades an object rather than making it disappear.
+      Most tools say "same" or "different" — which reports reformatted code as drift and
+      buries the differences that matter. SchemaScope separates them, and never hides
+      anything: an ignore rule moves an object down a level rather than making it disappear.
     </p>
 
     <div class="status-grid">
@@ -310,11 +468,11 @@
       </div>
       <div class="status" style="color:var(--fmt)">
         <div class="status-head"><div class="sym">~</div><h3 style="color:var(--text)">Formatting</h3></div>
-        <p>Same code. Only layout, comments or bracket quoting moved.</p>
+        <p>Same code. Only spacing, comments or brackets moved.</p>
       </div>
       <div class="status" style="color:var(--diff)">
         <div class="status-head"><div class="sym">≠</div><h3 style="color:var(--text)">Different</h3></div>
-        <p>A real difference, with the changed line count beside it.</p>
+        <p>A real difference, with the number of changed lines beside it.</p>
       </div>
       <div class="status" style="color:var(--miss)">
         <div class="status-head"><div class="sym">✕</div><h3 style="color:var(--text)">Missing</h3></div>
@@ -322,11 +480,52 @@
       </div>
       <div class="status" style="color:var(--extra)">
         <div class="status-head"><div class="sym">+</div><h3 style="color:var(--text)">Extra</h3></div>
-        <p>Only in this target. Usually a local customisation.</p>
+        <p>Only in this target. Usually somebody's local change.</p>
       </div>
       <div class="status" style="color:var(--muted)">
         <div class="status-head"><div class="sym">?</div><h3 style="color:var(--text)">Unreadable</h3></div>
-        <p>Encrypted, or the login lacks VIEW DEFINITION. Said plainly, never guessed.</p>
+        <p>Encrypted, or your login lacks VIEW DEFINITION. Said plainly, never guessed.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="screens">
+  <div class="shell reveal">
+    <p class="eyebrow">What you actually see</p>
+    <h2>The answer, then the evidence.</h2>
+    <p class="sub">
+      Every screenshot on this page is the real application, comparing a real database
+      against three environments that had drifted apart.
+    </p>
+
+    <div class="screens">
+      <div class="screen">
+        <h3>Real diffs, in the VS Code editor</h3>
+        <p>
+          Monaco — the editor out of VS Code — with true line numbers, side by side or inline.
+          <span class="mono">F8</span> and <span class="mono">Shift+F8</span> walk you through the
+          changes. Here production picked up a hotfix that never made it back to dev.
+        </p>
+        <div class="shot">
+          <div class="shot-bar"><i></i><i></i><i></i><span>dbo.usp_ArchiveAuditLog — Dev vs Production</span></div>
+          <img src="/screenshots/diff.png" width="1600" height="1000" loading="lazy"
+               alt="A side-by-side diff of a stored procedure. The production copy deletes in batches and carries a hotfix comment; the dev copy still has the single unbatched delete.">
+        </div>
+      </div>
+
+      <div class="screen">
+        <h3>Tables compared field by field</h3>
+        <p>
+          A text diff lights up an entire <span class="mono">CREATE TABLE</span> when one column
+          is renamed. The grid shows only the cells that actually differ — column types, what was
+          dropped, what was added, and which index went missing.
+        </p>
+        <div class="shot">
+          <div class="shot-bar"><i></i><i></i><i></i><span>dbo.Product — Dev vs UAT</span></div>
+          <img src="/screenshots/table-grid.png" width="1600" height="1000" loading="lazy"
+               alt="A table comparison grid showing two columns whose types changed, one dropped column, two added columns, and a missing index.">
+        </div>
       </div>
     </div>
   </div>
@@ -346,7 +545,7 @@
       <div class="card">
         <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
         <h3>Drifted in exactly one target</h3>
-        <p>Objects that changed in a single environment. Almost always a local customisation rather than a missed deployment.</p>
+        <p>Objects that changed in a single environment. Almost always somebody's local change rather than a missed deployment.</p>
       </div>
       <div class="card">
         <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
@@ -445,6 +644,7 @@
 </section>
 
 <section class="final">
+  <div class="glow"></div>
   <div class="shell reveal">
     <h2>Find the drift before your users do.</h2>
     <p class="sub">Free, open source, and it never writes to your databases.</p>

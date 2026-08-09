@@ -5,9 +5,13 @@
 <h1 align="center">SchemaScope</h1>
 
 <p align="center">
-  <a href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe"><b>Download for Windows</b></a>
+  <b>Compare one SQL Server database against all your environments at once — in about a second.</b>
+</p>
+
+<p align="center">
+  <a href="https://schemascope.shadowmark.in"><b>schemascope.shadowmark.in</b></a>
   &nbsp;·&nbsp;
-  <a href="https://schemascope.shadowmark.in">Website</a>
+  <a href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe"><b>Download for Windows</b></a>
   &nbsp;·&nbsp;
   <a href="SECURITY.md">Security</a>
 </p>
@@ -18,116 +22,170 @@
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4" alt="Windows 10 and 11">
 </p>
 
-A fast SQL Server schema comparison tool for Windows.
+---
 
-Compares **one source database against many targets at the same time** and shows
-the result as a matrix, a drift dashboard, and a VS Code style diff.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/dashboard-dark.png">
+    <img src="assets/screenshots/dashboard-light.png" alt="SchemaScope comparing Dev against Staging, UAT and Production. A drift dashboard shows how much of the source each environment still matches, a matrix lists every object, and the panel below shows the difference." width="100%">
+  </picture>
+</p>
 
-**Read only.** There is no code in SchemaScope that writes to a database. It
-produces scripts and reports; applying them is your decision, in your own tools.
+<p align="center"><i>One source, three environments, one screen. Dev on the left, everything that drifted on the right.</i></p>
 
 ---
 
-## Why it exists
+## What it does
 
-Visual Studio's Schema Compare builds a full semantic model of both databases
-before it can tell you anything. On a large database that takes minutes, and it
-only ever compares one pair at a time.
+You have one database you trust — call it Dev. You also have Staging, UAT and
+Production, and you are not completely sure they still match.
 
-SchemaScope reads the system catalog in bulk instead, then hashes every object.
-Measured on a real 1,189 object database against a 990 object copy:
+SchemaScope answers that in one shot. Pick the source, add as many targets as
+you want, press **Compare**. You get:
 
-| Stage | Time |
-|---|---|
-| Read both databases (in parallel) | 500 ms |
-| Compare and classify | 296 ms |
-| **Total** | **806 ms** |
+- a score per environment — *"Production is 89.1% the same as Dev"*
+- a list of every object that is different, missing, or extra
+- the actual difference, side by side, in the VS Code editor
 
-Same work in Visual Studio: 60 to 180 seconds, for one target.
-
-### How it gets there
-
-1. **Read the catalog, not the model.** Two round trips per database: a version
-   probe, then one batch that returns every result set we need. Never one query
-   per object.
-2. **Hash first, diff later.** Every object gets a SHA-256 of its normalized
-   text. Matching hashes mean the object is identical and is never looked at
-   again - typically 90% or more of the database.
-3. **Compare tables as data, not text.** Columns, indexes and constraints are
-   rendered from catalog metadata by the *same code* on both sides, so
-   formatting can never produce a fake difference.
-4. **All targets in parallel.** Four databases cost about as much wall clock
-   time as one.
-5. **Cheap gate before expensive checks.** The T-SQL parser only runs on bodies
-   that are already nearly identical. Skipping it on the obviously-different
-   ones cut the compare stage from 1693 ms to 296 ms.
-6. **Stream to the screen.** Progress arrives per database as it happens.
+**It never writes to your databases.** There is no code in SchemaScope that
+writes. It only reads, and it only ever gives you scripts and reports. What you
+do with those is your call, in your own tools.
 
 ---
 
-## Six statuses, not two
+## Why not just use Visual Studio?
 
-Most tools tell you "same" or "different". That reports a re-indented procedure
-as a change and buries the real ones.
+Straight answer: **Visual Studio's Schema Compare sucks at this job.**
 
-| | Status | Meaning |
+It is fine at what it was built for — pushing one database into another. Ask it
+the question people actually ask on a Friday afternoon, *is production still the
+same as dev?*, and it wastes your afternoon.
+
+- **It is slow. Every single time.** Before it says one word, it builds a full
+  model of both databases. On a big database that is minutes of watching a
+  progress bar, and you pay it again on every run.
+- **One pair at a time. That is it.** Four environments means running it four
+  times, waiting four times, and then holding four sets of results in your head.
+- **It cries wolf.** Re-indent a stored procedure and it screams "changed". The
+  one difference that will actually break production is buried in that noise.
+- **It drags a whole IDE along.** A DBA who does not write C# should not have to
+  install a multi-gigabyte IDE to find out whether last night's release landed.
+- **It is the wrong tool pointed at production.** Schema Compare exists to write
+  to a database. If all you wanted was an answer, that is a lot of loaded gun to
+  be holding.
+
+SchemaScope does the one job, properly. Measured on a real 1,189 object database
+against a 990 object copy:
+
+| | SchemaScope | VS Schema Compare |
+|---|---|---|
+| Read both databases | 500 ms | — |
+| Compare and classify | 296 ms | — |
+| **Total** | **806 ms** | **60–180 seconds** |
+| Targets per run | as many as you like | one |
+| Needs Visual Studio | no | yes |
+
+Four target databases take about the same time as one, because they are read at
+the same time.
+
+### How it is that fast
+
+1. **Read the catalog, not the model.** Two round trips per database: check the
+   version, then one batch that returns everything. Never one query per object.
+2. **Hash first, look later.** Every object gets a SHA-256 of its cleaned-up
+   text. Same hash means the object is identical, and it is never opened again —
+   that is usually 90% or more of the database.
+3. **Compare tables as data, not as text.** Columns, indexes and constraints are
+   built from catalog metadata by the *same code* on both sides, so formatting
+   can never invent a fake difference.
+4. **Do all targets at once**, in parallel.
+5. **Run the expensive check last.** The T-SQL parser only runs on bodies that
+   already look nearly identical. Skipping it on the obviously different ones
+   took the compare stage from 1693 ms down to 296 ms.
+6. **Stream results to the screen** as each database finishes.
+
+---
+
+## Six answers, not two
+
+Most tools say "same" or "different". That is why a re-indented procedure looks
+like a change and the real one gets buried.
+
+| | Status | What it means |
 |:-:|---|---|
 | `=` | Same | Identical to the source |
-| `~` | Formatting | Same code, only layout, comments or bracket quoting moved |
-| `≠` | Different | A real difference, with the changed line count |
-| `✕` | Missing | In the source but not in this target |
-| `+` | Extra | Only in this target - usually a local customisation |
-| `?` | Unreadable | Encrypted, or the login lacks `VIEW DEFINITION` |
+| `~` | Formatting | Same code. Only spacing, comments or brackets moved |
+| `≠` | Different | A real difference, with the number of changed lines |
+| `✕` | Missing | In the source, but not in this target |
+| `+` | Extra | Only in this target — usually a local change |
+| `?` | Unreadable | Encrypted, or your login lacks `VIEW DEFINITION` |
 
-Nothing is ever hidden. An ignore rule downgrades an object to *Formatting*
-rather than making it disappear.
+Nothing is ever hidden. An ignore rule moves an object down to *Formatting*
+instead of making it disappear.
 
-Every status carries a symbol and a word as well as a colour, and the colours
-are validated for colour vision deficiency in both light and dark mode.
+Every status has a symbol and a word as well as a colour, and the colours are
+checked for colour blindness in both light and dark mode.
 
 ---
 
-## What it shows
+## What you see
 
-- **Drift dashboard** - one tile per target: how much of the source it still
-  matches, a breakdown meter, and counts you can click to filter.
-- **"Drifted in exactly one target"** - objects that changed in a single
-  environment. Almost always a local customisation rather than a missed release.
-- **Matrix grid** - one row per object, one column per target, virtualized so
+### Real diffs, in the VS Code editor
+
+<p align="center">
+  <img src="assets/screenshots/diff.png" alt="A side-by-side diff of a stored procedure. The production copy has a batched delete and a hotfix comment that the source never received." width="100%">
+</p>
+
+Monaco — the editor from VS Code — with real line numbers, side by side or
+inline. `F8` and `Shift+F8` jump between changes.
+
+### Tables compared field by field
+
+<p align="center">
+  <img src="assets/screenshots/table-grid.png" alt="A table comparison grid showing which columns changed type, which was dropped, which were added, and which index is missing." width="100%">
+</p>
+
+A text diff lights up a whole `CREATE TABLE` when one column is renamed. The
+grid shows you only the cells that actually differ — plus indexes, keys and
+constraints.
+
+### And the rest
+
+- **Drift dashboard** — one tile per environment: how much still matches, a
+  breakdown bar, and counts you can click to filter.
+- **"Drifted in exactly one target"** — objects that changed in a single
+  environment. Almost always a local change rather than a missed release.
+- **Matrix grid** — one row per object, one column per target. Virtualized, so
   thousands of rows stay smooth.
-- **Diff panel** - Monaco (the VS Code editor) with real line numbers,
-  side-by-side or inline. `F8` and `Shift+F8` walk the changes.
-- **Table grid diff** - tables compare field by field. A text diff of a
-  `CREATE TABLE` lights up the whole block when one column is renamed; the grid
-  highlights only the cells that actually differ.
-- **Export** - standalone HTML report, CSV, Markdown, or one `.sql` file per
-  object into a folder.
+- **Export** — a standalone HTML report, CSV, Markdown for the wiki, or one
+  `.sql` file per object into a folder.
 
 ---
 
-## Privacy
+## Your schema never leaves your machine
 
-Everything is local, and it is enforced rather than promised:
+This is built in, not promised in a policy document:
 
-- Connections and passwords live in `%LOCALAPPDATA%\SchemaScope\schemascope.db`.
-  Passwords are encrypted with Windows DPAPI under your account, so no other
-  Windows user can read them.
-- The UI is served from inside the exe. The page runs under a
-  `Content-Security-Policy` of `default-src 'self'`, so the browser engine
-  itself blocks any request to an outside host.
-- The window refuses to navigate anywhere except its own loopback origin.
-- No telemetry, no update check, no network calls of any kind.
+- Connections and passwords live in
+  `%LOCALAPPDATA%\SchemaScope\schemascope.db`. Passwords are encrypted with
+  Windows DPAPI under your account, so no other Windows user can read them.
+- The UI is served from inside the exe, under a
+  `Content-Security-Policy` of `default-src 'self'`. A request to an outside
+  host is not blocked by our code — the browser engine refuses to make it.
+- The window will not navigate anywhere except its own loopback address.
+- No telemetry. No update check. No network calls of any kind. The only
+  connections it opens are to the databases you named.
 
 ---
 
 ## Installing
 
 [**Download SchemaScope-Setup.exe**](https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe)
-and run it. It installs for your account only, so there is no administrator
-prompt, and it offers a desktop shortcut.
+and run it. It installs for your account only, so Windows never asks for
+administrator rights, and it offers a desktop shortcut.
 
 Prefer nothing installed? [`SchemaScope.exe`](https://github.com/Shrikant-satpute/schemascope/releases/latest)
-is the portable build - one self-contained file, no .NET install needed, nothing
+is the portable build — one self-contained file, no .NET install needed, nothing
 to unpack, no files beside it.
 
 ### From Scoop
@@ -136,14 +194,14 @@ to unpack, no files beside it.
 scoop install https://raw.githubusercontent.com/Shrikant-satpute/schemascope/main/packaging/scoop/schemascope.json
 ```
 
-This installs the portable build and keeps it current with `scoop update`, and
-it skips the SmartScreen prompt described below - that warning comes from the
-mark browsers attach to downloaded files, which a package manager never adds.
+This installs the portable build and keeps it up to date with `scoop update`. It
+also skips the SmartScreen warning below — that warning comes from a mark
+browsers attach to downloaded files, and a package manager never adds it.
 
-WebView2 is required and ships with Windows 10 and 11. If it is somehow missing
+WebView2 is required and ships with Windows 10 and 11. If it is somehow missing,
 you get a plain explanation and a download link.
 
-### Windows will warn you on first run
+### Windows will warn you the first time
 
 The binaries are not code-signed yet, so SmartScreen shows *"Windows protected
 your PC"*. Click **More info**, then **Run anyway**.
@@ -155,7 +213,7 @@ GitHub Actions from the tagged commit, and ships a `SHA256SUMS.txt`:
 Get-FileHash .\SchemaScope-Setup.exe -Algorithm SHA256
 ```
 
-### Permissions it needs
+### What it needs on the server
 
 A login that can read the catalog:
 
@@ -163,9 +221,9 @@ A login that can read the catalog:
 GRANT VIEW DEFINITION TO [your_login];
 ```
 
-Without it SchemaScope still sees object names but not their bodies, and says so
-per object instead of reporting a false difference. The connection test warns
-you up front.
+Without it, SchemaScope still sees object names but not their bodies. It says so
+per object instead of reporting a false difference, and the connection test
+warns you up front.
 
 ---
 
@@ -192,7 +250,7 @@ npm run dev
 ### Measuring the engine
 
 The Phase 0 spike is still in the repo. It reports stage timings and, more
-usefully, every object that differs *only* by formatting - each one is a
+usefully, every object that differs *only* by formatting — each one is a
 normalizer rule worth reviewing before trusting the tool on a new database.
 
 ```powershell
@@ -213,26 +271,33 @@ src/
   SchemaScope.Shell       WebView2 window, single file exe entry point
   SchemaScope.Spike       Phase 0 measurement console
 web/                      React + TypeScript + Vite + Tailwind + Monaco
+site/                     the landing page at schemascope.shadowmark.in
 ```
 
-Supports SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed
+Works with SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed
 Instance and AWS RDS. The catalog queries adjust to the server version.
 
 ---
 
 ## Not in this version
 
-Deployment scripting. Comparison is a solvable problem; generating a correct
-deploy script for every edge case - dependency order, drop and recreate, data
-preservation - is a much bigger one. Shipping half of it would be worse than
-not shipping it. Export the objects as `.sql` and review them yourself.
+Deployment scripting. Comparing is a solvable problem. Generating a correct
+deploy script for every edge case — dependency order, drop and recreate, keeping
+the data — is a much bigger one, and shipping half of it would be worse than not
+shipping it. Export the objects as `.sql` and review them yourself.
 
 ---
+
+## Links
+
+- **Website** — <https://schemascope.shadowmark.in>
+- **Download** — [latest release](https://github.com/Shrikant-satpute/schemascope/releases/latest)
+- **Report an issue** — <https://github.com/Shrikant-satpute/schemascope/issues>
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the build, the dev loop and where
-tests are expected. Found a security issue? [SECURITY.md](SECURITY.md) - please
+tests are expected. Found a security issue? [SECURITY.md](SECURITY.md) — please
 report it privately rather than in an issue.
 
 ## License

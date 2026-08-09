@@ -130,6 +130,16 @@ Prefer nothing installed? [`SchemaScope.exe`](https://github.com/Shrikant-satput
 is the portable build - one self-contained file, no .NET install needed, nothing
 to unpack, no files beside it.
 
+### From Scoop
+
+```powershell
+scoop install https://raw.githubusercontent.com/Shrikant-satpute/schemascope/main/packaging/scoop/schemascope.json
+```
+
+This installs the portable build and keeps it current with `scoop update`, and
+it skips the SmartScreen prompt described below - that warning comes from the
+mark browsers attach to downloaded files, which a package manager never adds.
+
 WebView2 is required and ships with Windows 10 and 11. If it is somehow missing
 you get a plain explanation and a download link.
 

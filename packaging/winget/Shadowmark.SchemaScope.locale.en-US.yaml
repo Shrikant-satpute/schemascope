@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 PackageIdentifier: Shadowmark.SchemaScope
-PackageVersion: 1.0.0
+PackageVersion: 1.1.0
 PackageLocale: en-US
 Publisher: Shadowmark
 PublisherUrl: https://shadowmark.in
@@ -33,6 +33,6 @@ Tags:
   - schema
   - sql
   - sql-server
-ReleaseNotesUrl: https://github.com/Shrikant-satpute/schemascope/releases/tag/v1.0.0
+ReleaseNotesUrl: https://github.com/Shrikant-satpute/schemascope/releases/tag/v1.1.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

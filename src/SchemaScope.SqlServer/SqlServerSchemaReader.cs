@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Microsoft.Data.SqlClient;
 using SchemaScope.Core.Model;
 using SchemaScope.Core.Normalization;
+using SchemaScope.Core.Storage;
 
 namespace SchemaScope.SqlServer;
 
@@ -12,10 +13,22 @@ namespace SchemaScope.SqlServer;
 /// This is the piece that makes SchemaScope fast. Tools that build a full
 /// semantic model spend minutes; reading the catalog in bulk takes about a
 /// second even on a five thousand object database.
+///
+/// A third round trip fetches procedure and view bodies, and only the ones whose
+/// modify_date has moved since the last run. That query is the only one that
+/// touches LOB pages, so on a busy server it is the entire cost of a compare -
+/// and on a second run of the same database there is usually nothing left for it
+/// to ask for.
 /// </summary>
 public sealed class SqlServerSchemaReader : ISchemaReader
 {
     public int CommandTimeoutSeconds { get; init; } = 180;
+
+    /// <summary>
+    /// Where unchanged bodies are kept between runs. Set to null to read every
+    /// body from the server every time.
+    /// </summary>
+    public DefinitionCache? Cache { get; init; } = new DefinitionCache();
 
     public async Task<SchemaSnapshot> ReadAsync(
         SchemaSource source,
@@ -62,6 +75,14 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         var raw = await ReadCatalogAsync(conn, snapshot.MajorVersion, ct);
         snapshot.TimingsMs["catalog"] = stage.ElapsedMilliseconds;
 
+        // --- round trip 3: only the bodies that have actually changed ---
+        progress?.Report(new ReadProgress(source.Id, "Reading bodies", 45));
+        stage.Restart();
+        var (reused, fetched) = await ReadModuleBodiesAsync(conn, snapshot, raw, options, ct);
+        snapshot.TimingsMs["bodies"] = stage.ElapsedMilliseconds;
+        snapshot.ReusedBodies = reused;
+        snapshot.FetchedBodies = fetched;
+
         progress?.Report(new ReadProgress(source.Id, "Building model", 70));
         stage.Restart();
         Assemble(snapshot, raw, options);
@@ -75,8 +96,13 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         snapshot.TimingsMs["connect"] = connectMs;
         snapshot.TimingsMs["total"] = total.ElapsedMilliseconds;
 
+        var bodyNote = reused == 0
+            ? ""
+            : $", {reused} bodies unchanged";
+
         progress?.Report(new ReadProgress(
-            source.Id, "Done", 100, $"{snapshot.Objects.Count} objects in {total.ElapsedMilliseconds} ms"));
+            source.Id, "Done", 100,
+            $"{snapshot.Objects.Count} objects in {total.ElapsedMilliseconds} ms{bodyNote}"));
 
         return snapshot;
     }
@@ -92,7 +118,13 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         {
             var b = new SqlConnectionStringBuilder(connectionString);
             if (b.PacketSize == 8000) b.PacketSize = 32767;
-            if (string.IsNullOrEmpty(b.ApplicationName) || b.ApplicationName == "Core .Net SqlClient Data Provider")
+
+            // Naming the connection is what lets a DBA see which sessions are
+            // ours. The default to test against is the driver's own, and it is
+            // "Core Microsoft SqlClient Data Provider" - the older ".Net"
+            // spelling never matched, so nothing was ever renamed.
+            if (string.IsNullOrEmpty(b.ApplicationName) ||
+                b.ApplicationName.EndsWith("SqlClient Data Provider", StringComparison.OrdinalIgnoreCase))
                 b.ApplicationName = "SchemaScope";
             return b.ConnectionString;
         }
@@ -183,15 +215,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 r.GetInt32(0), r.GetString(1), r.GetString(2), r.GetString(3),
                 r.GetDateTime(4), r.GetBoolean(5), r.GetString(6), r.GetString(7)));
 
-        // 2 - module bodies
-        await r.NextResultAsync(ct);
-        while (await r.ReadAsync(ct))
-            raw.Modules[r.GetInt32(0)] = (
-                r.IsDBNull(1) ? null : r.GetString(1),
-                r.GetBoolean(2),
-                r.GetBoolean(3));
-
-        // 3 - columns
+        // 2 - columns
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -224,7 +248,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             list.Add(col);
         }
 
-        // 4 - indexes
+        // 3 - indexes
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -250,7 +274,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             map[indexId] = ix;
         }
 
-        // 5 - index columns
+        // 4 - index columns
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -271,7 +295,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             });
         }
 
-        // 6 - foreign keys
+        // 5 - foreign keys
         await r.NextResultAsync(ct);
         var fkById = new Dictionary<int, ForeignKeyInfo>();
         while (await r.ReadAsync(ct))
@@ -295,7 +319,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             list.Add(fk);
         }
 
-        // 7 - foreign key columns
+        // 6 - foreign key columns
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -304,7 +328,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             fk.ReferencedColumns.Add(r.GetString(3));
         }
 
-        // 8 - check constraints
+        // 7 - check constraints
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -323,7 +347,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             list.Add(c);
         }
 
-        // 9 - default constraints
+        // 8 - default constraints
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -341,7 +365,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             list.Add(c);
         }
 
-        // 10 - parameters
+        // 9 - parameters
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -366,24 +390,24 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             list.Add(p);
         }
 
-        // 11 - synonyms
+        // 10 - synonyms
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.SynonymBases[$"{r.GetString(0)}.{r.GetString(1)}"] = r.IsDBNull(2) ? "" : r.GetString(2);
 
-        // 12 - user defined scalar types
+        // 11 - user defined scalar types
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.UserTypes.Add(new RawUserType(
                 r.GetString(0), r.GetString(1), r.IsDBNull(2) ? "" : r.GetString(2),
                 r.GetInt16(3), r.GetByte(4), r.GetByte(5), r.GetBoolean(6), r.GetString(7)));
 
-        // 13 - table types
+        // 12 - table types
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.TableTypes.Add((r.GetString(0), r.GetString(1), r.GetInt32(2)));
 
-        // 14 - sequences (2012+)
+        // 13 - sequences (2012+)
         if (majorVersion >= 11 && await r.NextResultAsync(ct))
         {
             while (await r.ReadAsync(ct))
@@ -403,6 +427,106 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         }
 
         return raw;
+    }
+
+    // -----------------------------------------------------------------
+    //  Module bodies - the expensive read, kept as small as possible
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// Fills in every module body: reused from the cache where modify_date says
+    /// nothing has moved, read from the server for the rest.
+    /// </summary>
+    /// <returns>How many bodies were reused, and how many had to be asked for.</returns>
+    private async Task<(int Reused, int Fetched)> ReadModuleBodiesAsync(
+        SqlConnection conn, SchemaSnapshot snapshot, RawCatalog raw, CompareOptions options, CancellationToken ct)
+    {
+        // A body is only ever needed for an object that survives the filters, so
+        // an excluded schema is worth skipping here as well as later - those are
+        // LOB pages nobody was going to look at.
+        var wanted = new List<RawObject>(raw.Objects.Count);
+        foreach (var ro in raw.Objects)
+        {
+            if (ro.IsMsShipped && !options.IncludeSystemObjects) continue;
+
+            var type = DbObjectTypeExtensions.FromSysType(ro.Type);
+            if (type is null || !type.Value.IsModule()) continue;
+            if (options.IsExcluded(type.Value, ro.Schema, ro.Name)) continue;
+
+            wanted.Add(ro);
+        }
+
+        var cached = Cache?.Load(snapshot.Server, snapshot.Database);
+        var fresh = new DefinitionCacheFile { Server = snapshot.Server, Database = snapshot.Database };
+        var needed = new List<int>(wanted.Count);
+        var reused = 0;
+
+        foreach (var ro in wanted)
+        {
+            var name = $"{ro.Schema}.{ro.Name}";
+
+            // Both stamps have to agree. modify_date proves the body has not been
+            // altered; the name proves this is still the same object and not a new
+            // one that landed on a recycled object_id.
+            if (cached is not null &&
+                cached.Modules.TryGetValue(ro.ObjectId, out var hit) &&
+                hit.ModifyTicks == ro.ModifyDate.Ticks &&
+                string.Equals(hit.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                raw.Modules[ro.ObjectId] = (hit.Definition, false, false);
+                fresh.Modules[ro.ObjectId] = hit;
+                reused++;
+                continue;
+            }
+
+            needed.Add(ro.ObjectId);
+        }
+
+        if (needed.Count > 0)
+        {
+            // Past the point where most of the database is being asked for, the
+            // id list costs the server more to compile than the filter saves it.
+            var everything = needed.Count * 4 > wanted.Count * 3;
+
+            await using var cmd = new SqlCommand(
+                CatalogQueries.ModuleBodies(everything ? null : needed), conn)
+            {
+                CommandTimeout = CommandTimeoutSeconds,
+                CommandType = CommandType.Text
+            };
+
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                raw.Modules[r.GetInt32(0)] = (
+                    r.IsDBNull(1) ? null : r.GetString(1),
+                    r.GetBoolean(2),
+                    r.GetBoolean(3));
+        }
+
+        if (Cache is null) return (reused, needed.Count);
+
+        foreach (var ro in wanted)
+        {
+            if (fresh.Modules.ContainsKey(ro.ObjectId)) continue;
+
+            // Only a body we could actually read is worth keeping. Storing the
+            // absence of an encrypted or unreadable one would outlive the
+            // permission grant that fixes it.
+            if (!raw.Modules.TryGetValue(ro.ObjectId, out var m) || m.Definition is null) continue;
+
+            fresh.Modules[ro.ObjectId] = new CachedDefinition
+            {
+                ModifyTicks = ro.ModifyDate.Ticks,
+                Name = $"{ro.Schema}.{ro.Name}",
+                Definition = m.Definition
+            };
+        }
+
+        // Rewriting a cache that nothing has changed in costs more than it saves.
+        if (needed.Count > 0 || cached is null || cached.Modules.Count != fresh.Modules.Count)
+            Cache.Save(fresh);
+
+        return (reused, needed.Count);
     }
 
     // -----------------------------------------------------------------

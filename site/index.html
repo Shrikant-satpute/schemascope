@@ -3,438 +3,991 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SchemaScope — compare one SQL Server schema against every environment, in under a second</title>
-<meta name="description" content="SchemaScope compares one SQL Server database against many targets at once. 1,189 objects in 806 ms, where Visual Studio takes 60 to 180 seconds for a single pair. Read-only, fully offline, free and open source.">
+<title>SchemaScope — SQL Server Drift Checker</title>
+<meta name="description" content="Is production still the same as dev? SchemaScope compares one SQL Server database against every environment at once, in about a second, then writes checked SQL scripts to bring a target back in line. Read-only, free and open source for Windows.">
+<meta name="theme-color" content="#0d0f14">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="https://schemascope.shadowmark.in/">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<meta property="og:title" content="SchemaScope">
-<meta property="og:description" content="Compare one SQL Server schema against every environment, in under a second. Read-only, fully offline, open source.">
+
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://schemascope.shadowmark.in">
-<meta property="og:image" content="https://schemascope.shadowmark.in/screenshots/dashboard.png">
+<meta property="og:site_name" content="SchemaScope">
+<meta property="og:url" content="https://schemascope.shadowmark.in/">
+<meta property="og:title" content="SchemaScope 1.1 — Is production still the same as dev?">
+<meta property="og:description" content="Compare one SQL Server schema against every environment in about a second. Generate checked sync scripts and share a read-only link with your team. Free, open source, read-only.">
+<meta property="og:image" content="https://schemascope.shadowmark.in/media/schemascope-explainer-poster.jpg">
+<meta property="og:image:width" content="1920">
+<meta property="og:image:height" content="1080">
+<meta property="og:image:alt" content="The SchemaScope logo: three schema rows, the middle one shorter and teal.">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="SchemaScope 1.1 — Is production still the same as dev?">
+<meta name="twitter:description" content="Compare one SQL Server schema against every environment in about a second. Free, open source, read-only.">
+<meta name="twitter:image" content="https://schemascope.shadowmark.in/media/schemascope-explainer-poster.jpg">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
 <style>
+  /* Palette: the app's dark tokens (web/src/index.css) for surfaces and
+     statuses, the logo's teal for the brand and the primary action. */
   :root{
-    --bg:#0a0c11; --bg-2:#0e1117; --panel:#131720; --panel-2:#171c26; --line:#1f242f;
-    --text:#e9ebf1; --muted:#8b93a7; --dim:#5f677a;
-    --accent:#14b8a6; --accent-2:#38bdf8; --accent-dim:#0d7d72;
-    --same:#3fb950; --fmt:#58a6ff; --diff:#d29922; --miss:#f85149; --extra:#bc8cff;
-    --radius:14px;
-    --shell:min(1220px,100% - 3rem);
+    --page:#0d0f14; --page-2:#10131a; --surface:#12141b; --surface-2:#171a23; --raised:#1d212c;
+    --line:#262b38; --line-soft:#1e2230;
+    --text:#e6e8ef; --text-2:#a3aabc; --text-3:#7a8194;
+    --brand:#14b8a6; --brand-hi:#2dd4bf; --brand-dim:#0d7d72;
+    --accent:#3987e5;
+    --same:#1baf7a; --fmt:#7d8598; --diff:#c98500; --miss:#d03b3b; --extra:#9085e9; --unread:#6b7285;
+    --miss-hi:#f0625c; --same-hi:#23c58b;
+    --radius:16px; --radius-sm:11px;
+    --gutter:clamp(16px,4vw,32px);
+    --shell:min(1200px,100% - 2*var(--gutter));
+    --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+    --ease:cubic-bezier(.22,.9,.25,1);
   }
-  *{box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  *,*::before,*::after{box-sizing:border-box}
+  html{scroll-behavior:smooth;scroll-padding-top:80px}
   body{
-    margin:0;background:var(--bg);color:var(--text);
-    font:16px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    margin:0;background:var(--page);color:var(--text);
+    font:16px/1.65 var(--sans);font-feature-settings:"cv11","ss01";
     -webkit-font-smoothing:antialiased;overflow-x:hidden;
   }
-  /* A very faint grid, so the dark background is not a flat void. */
-  body::before{
-    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
-    background-image:linear-gradient(rgba(255,255,255,.022) 1px,transparent 1px),
-                     linear-gradient(90deg,rgba(255,255,255,.022) 1px,transparent 1px);
-    background-size:56px 56px;
-    mask-image:radial-gradient(ellipse 80% 50% at 50% 0%,#000 30%,transparent 78%);
-  }
-  body>*{position:relative;z-index:1}
-  h1,h2,h3{line-height:1.14;letter-spacing:-.024em;margin:0}
+  h1,h2,h3,h4{line-height:1.12;letter-spacing:-.025em;margin:0;font-weight:700}
   p{margin:0}
   a{color:inherit}
-  img{max-width:100%;display:block}
+  img,video{max-width:100%;display:block}
+  code,.mono{font-family:var(--mono);font-size:.92em}
+  .num{font-variant-numeric:tabular-nums}
   .shell{width:var(--shell);margin-inline:auto}
-  .mono{font-family:ui-monospace,"SF Mono",Consolas,"Liberation Mono",monospace}
+  .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  :focus-visible{outline:2px solid var(--brand-hi);outline-offset:3px;border-radius:6px}
+  .skip{position:absolute;left:16px;top:-60px;z-index:100;background:var(--brand);color:#04120f;
+    padding:.6rem 1rem;border-radius:8px;font-weight:600;text-decoration:none}
+  .skip:focus{top:12px}
+
+  /* Faint grid behind the top of the page. */
+  .bg-grid{position:absolute;inset:0 0 auto;height:1100px;pointer-events:none;z-index:0;
+    background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);
+    background-size:56px 56px;
+    -webkit-mask-image:radial-gradient(ellipse 70% 60% at 50% 0%,#000 25%,transparent 75%);
+    mask-image:radial-gradient(ellipse 70% 60% at 50% 0%,#000 25%,transparent 75%)}
+  main,footer,nav{position:relative;z-index:1}
 
   /* ---------- nav ---------- */
-  nav{
-    position:sticky;top:0;z-index:50;
-    background:color-mix(in srgb,var(--bg) 78%,transparent);
-    backdrop-filter:blur(16px);border-bottom:1px solid transparent;
-    transition:border-color .3s;
-  }
+  nav{position:sticky;top:0;z-index:50;
+    background:color-mix(in srgb,var(--page) 80%,transparent);
+    -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+    border-bottom:1px solid transparent;transition:border-color .3s}
   nav.stuck{border-bottom-color:var(--line)}
-  .nav-in{display:flex;align-items:center;gap:1.5rem;height:64px}
-  .brand{display:flex;align-items:center;gap:.6rem;font-weight:650;letter-spacing:-.02em;text-decoration:none}
-  .brand svg{border-radius:9px}
-  .nav-links{margin-left:auto;display:flex;align-items:center;gap:1.6rem}
-  .nav-links a{color:var(--muted);text-decoration:none;font-size:.925rem;transition:color .18s}
+  .nav-in{display:flex;align-items:center;gap:1rem;height:64px}
+  .brand{display:flex;align-items:center;gap:.6rem;font-weight:700;letter-spacing:-.02em;text-decoration:none;font-size:1.02rem}
+  .brand .ver{font:500 .72rem/1 var(--mono);color:var(--text-2);border:1px solid var(--line);
+    padding:.22rem .42rem;border-radius:6px;letter-spacing:0}
+  .nav-links{margin-left:auto;display:flex;align-items:center;gap:1.5rem}
+  .nav-links a{color:var(--text-2);text-decoration:none;font-size:.92rem;transition:color .18s}
   .nav-links a:hover{color:var(--text)}
-  @media(max-width:760px){.nav-links a:not(.btn){display:none}}
+  .nav-links .btn{color:#04120f}
+  @media(max-width:900px){.nav-links a:not(.btn){display:none}}
 
   /* ---------- buttons ---------- */
-  .btn{
-    display:inline-flex;align-items:center;gap:.6rem;
-    padding:.72rem 1.25rem;border-radius:11px;border:1px solid transparent;
-    font-size:.94rem;font-weight:600;text-decoration:none;cursor:pointer;
-    transition:transform .16s,box-shadow .16s,background .16s,border-color .16s;
-  }
-  .btn-primary{background:var(--accent);color:#04120f;box-shadow:0 1px 0 rgba(255,255,255,.16) inset}
-  .btn-primary:hover{background:#19cfbb;transform:translateY(-1px);box-shadow:0 8px 26px -8px var(--accent)}
-  .btn-ghost{border-color:var(--line);color:var(--text);background:var(--panel)}
-  .btn-ghost:hover{border-color:#39414f;transform:translateY(-1px)}
-  .btn-lg{padding:.95rem 1.6rem;font-size:1.02rem;border-radius:12px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:.6rem;
+    padding:.7rem 1.2rem;border-radius:var(--radius-sm);border:1px solid transparent;
+    font:600 .94rem/1.2 var(--sans);text-decoration:none;cursor:pointer;
+    transition:transform .16s,box-shadow .2s,background .16s,border-color .16s,color .16s}
+  .btn svg{flex:none}
+  .btn-primary{background:var(--brand);color:#04120f;
+    box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 10px 30px -12px rgba(20,184,166,.7)}
+  .btn-primary:hover{background:var(--brand-hi);transform:translateY(-1px);
+    box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 14px 36px -10px rgba(20,184,166,.8)}
+  .btn-ghost{border-color:var(--line);color:var(--text);background:var(--surface)}
+  .btn-ghost:hover{border-color:#3a4152;background:var(--surface-2);transform:translateY(-1px)}
+  .btn-lg{padding:.95rem 1.5rem;font-size:1.02rem;border-radius:13px}
+  .btn-sm{padding:.5rem .9rem;font-size:.86rem;border-radius:9px}
+  .btn small{display:block;font:500 .72rem/1.2 var(--mono);opacity:.75;margin-top:.15rem}
+  @media (max-width:480px){.cta .btn-lg{width:100%}}
 
   /* ---------- hero ---------- */
-  header{position:relative;padding:clamp(3.5rem,8vw,6rem) 0 0;overflow:hidden}
-  .glow{
-    position:absolute;inset:-45% 0 auto 50%;translate:-50% 0;
-    width:min(1200px,150%);aspect-ratio:2/1;pointer-events:none;
-    background:radial-gradient(ellipse at center,rgba(20,184,166,.18),transparent 62%);
-    filter:blur(30px);
-  }
-  .pill{
-    display:inline-flex;align-items:center;gap:.55rem;
-    padding:.36rem .8rem .36rem .5rem;border:1px solid var(--line);border-radius:999px;
-    background:var(--panel);font-size:.83rem;color:var(--muted);margin-bottom:1.6rem;
-  }
-  .pill b{color:var(--accent);font-weight:600}
-  .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(20,184,166,.18)}
-  h1{font-size:clamp(2.3rem,5.6vw,4.05rem);font-weight:690;max-width:17ch}
-  h1 em{
-    font-style:normal;
-    background:linear-gradient(100deg,var(--accent),var(--accent-2));
-    -webkit-background-clip:text;background-clip:text;color:transparent;
-  }
-  .lede{margin-top:1.4rem;font-size:clamp(1.02rem,1.9vw,1.2rem);color:var(--muted);max-width:60ch}
-  .cta{display:flex;flex-wrap:wrap;gap:.85rem;align-items:center;margin-top:2.2rem}
-  .cta-note{font-size:.85rem;color:var(--dim);margin-top:1rem}
-  .cta-note b{color:var(--muted);font-weight:500}
+  .hero{position:relative;padding:clamp(3rem,8vw,5.5rem) 0 0;text-align:center;overflow-x:clip}
+  .hero .glow{position:absolute;left:50%;top:-180px;translate:-50% 0;width:min(1100px,140%);height:700px;
+    pointer-events:none;
+    background:radial-gradient(ellipse at 35% 40%,rgba(20,184,166,.20),transparent 60%),
+               radial-gradient(ellipse at 70% 45%,rgba(57,135,229,.16),transparent 60%);
+    filter:blur(20px)}
+  .badge-new{display:inline-flex;align-items:center;gap:.6rem;max-width:100%;
+    padding:.34rem .9rem .34rem .38rem;border:1px solid var(--line);border-radius:999px;
+    background:color-mix(in srgb,var(--surface) 85%,transparent);
+    font-size:.86rem;color:var(--text-2);text-decoration:none;margin-bottom:1.7rem;transition:border-color .2s}
+  .badge-new:hover{border-color:#3a4152;color:var(--text)}
+  .badge-new b{font:600 .72rem/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:#04120f;
+    background:linear-gradient(100deg,var(--brand),#5fb0ff);padding:.32rem .55rem;border-radius:999px;flex:none}
+  .badge-new span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  h1{font-size:clamp(2.35rem,7vw,4.6rem);font-weight:800;letter-spacing:-.04em;max-width:15ch;margin-inline:auto}
+  h1 .prod{color:var(--miss-hi)}
+  h1 .dev{color:var(--same-hi)}
+  .lede{margin:1.4rem auto 0;font-size:clamp(1.03rem,2vw,1.22rem);color:var(--text-2);max-width:58ch}
+  .lede strong{color:var(--text);font-weight:600}
+  .cta{display:flex;flex-wrap:wrap;gap:.8rem;justify-content:center;margin-top:2.1rem}
+  .cta-note{display:flex;flex-wrap:wrap;justify-content:center;gap:.4rem 1.1rem;margin-top:1.2rem;
+    font-size:.86rem;color:var(--text-3)}
+  .cta-note span{display:inline-flex;align-items:center;gap:.4rem}
+  .cta-note svg{color:var(--brand)}
 
-  /* ---------- screenshot frame ---------- */
-  .shot{
-    border:1px solid var(--line);border-radius:13px;overflow:hidden;
-    background:var(--panel);
-    box-shadow:0 40px 90px -40px rgba(0,0,0,.9),0 0 0 1px rgba(255,255,255,.03) inset;
-  }
-  .shot-bar{
-    display:flex;align-items:center;gap:.45rem;padding:.6rem .85rem;
-    background:var(--panel-2);border-bottom:1px solid var(--line);
-  }
-  .shot-bar i{width:10px;height:10px;border-radius:50%;background:#2c333f;display:block}
-  .shot-bar span{
-    margin-left:.6rem;font-size:.76rem;color:var(--dim);
-    font-family:ui-monospace,Consolas,monospace;
-  }
-  .shot img{width:100%;height:auto}
-  .hero-shot{
-    margin-top:clamp(2.5rem,5vw,3.8rem);
-    padding-bottom:clamp(3rem,6vw,5rem);
-  }
-  .hero-shot .shot{
-    /* Lifts the product shot off the page without hiding any of it. */
-    box-shadow:0 60px 120px -50px rgba(0,0,0,.95),
-               0 0 90px -30px rgba(20,184,166,.22),
-               0 0 0 1px rgba(255,255,255,.035) inset;
-  }
-  .cap{margin-top:1rem;font-size:.87rem;color:var(--dim);text-align:center}
+  /* ---------- app window frame ---------- */
+  .window{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;
+    background:var(--surface);
+    box-shadow:0 50px 120px -50px rgba(0,0,0,.95),0 0 0 1px rgba(255,255,255,.03) inset}
+  .titlebar{display:flex;align-items:center;gap:.7rem;height:40px;padding:0 .85rem;
+    background:var(--surface-2);border-bottom:1px solid var(--line);font-size:.78rem;color:var(--text-3)}
+  .titlebar .t{display:flex;align-items:center;gap:.5rem;min-width:0;color:var(--text-2);font-weight:500}
+  .titlebar .t span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .titlebar .tabs{display:flex;gap:.25rem;margin-left:auto}
+  .titlebar .tabs i{font-style:normal;padding:.18rem .55rem;border-radius:6px}
+  .titlebar .tabs i.on{background:var(--raised);color:var(--text)}
+  .titlebar .ctl{display:flex;gap:.9rem;margin-left:.6rem;color:var(--text-3)}
+  @media(max-width:640px){.titlebar .tabs{display:none}.titlebar .ctl{margin-left:auto}}
+  .hero-frame{position:relative;margin:clamp(2.6rem,6vw,4rem) auto 0;width:min(1080px,100%)}
+  .hero-frame::before{content:"";position:absolute;inset:8% 4% -6%;z-index:-1;border-radius:40px;
+    background:linear-gradient(120deg,rgba(20,184,166,.35),rgba(57,135,229,.28));filter:blur(70px);opacity:.55}
+  .hero-frame video{width:100%;height:auto;aspect-ratio:16/9;background:var(--page);object-fit:cover}
+
+  /* ---------- proof strip ---------- */
+  .proof{display:grid;grid-template-columns:repeat(4,1fr);margin-top:clamp(2.6rem,5vw,3.6rem);
+    border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);overflow:hidden}
+  .proof div{padding:1.35rem 1.4rem;border-left:1px solid var(--line);text-align:left}
+  .proof div:first-child{border-left:0}
+  .proof b{display:block;font-size:clamp(1.5rem,3vw,2rem);font-weight:750;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+  .proof b.hl{color:var(--brand-hi)}
+  .proof span{display:block;color:var(--text-2);font-size:.86rem;line-height:1.45;margin-top:.2rem}
+  @media(max-width:820px){.proof{grid-template-columns:1fr 1fr}
+    .proof div:nth-child(3){border-left:0}.proof div:nth-child(n+3){border-top:1px solid var(--line)}}
 
   /* ---------- sections ---------- */
-  section{padding:clamp(3.5rem,7vw,6rem) 0}
-  .eyebrow{
-    font-size:.78rem;font-weight:640;letter-spacing:.13em;text-transform:uppercase;
-    color:var(--accent);margin-bottom:.9rem;
-  }
-  h2{font-size:clamp(1.75rem,3.4vw,2.45rem);font-weight:670;max-width:22ch}
-  h2 em{
-    font-style:normal;
-    background:linear-gradient(100deg,var(--accent),var(--accent-2));
-    -webkit-background-clip:text;background-clip:text;color:transparent;
-  }
-  .sub{margin-top:1rem;color:var(--muted);max-width:64ch}
+  section{padding:clamp(4rem,9vw,7rem) 0}
+  .band{background:var(--page-2);border-block:1px solid var(--line-soft)}
+  .eyebrow{display:inline-flex;align-items:center;gap:.5rem;font:600 .76rem/1 var(--sans);letter-spacing:.14em;
+    text-transform:uppercase;color:var(--brand-hi);margin-bottom:1rem}
+  h2{font-size:clamp(1.85rem,4vw,2.8rem);font-weight:750;max-width:22ch}
+  .grad{background:linear-gradient(100deg,var(--brand-hi),#5fb0ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{margin-top:1rem;color:var(--text-2);max-width:62ch;font-size:1.04rem}
+  .center{text-align:center}.center h2,.center .sub{margin-inline:auto}
+  .tag{display:inline-flex;align-items:center;gap:.35rem;font:600 .68rem/1 var(--sans);letter-spacing:.07em;
+    text-transform:uppercase;padding:.3rem .5rem;border-radius:999px;
+    color:var(--brand-hi);background:rgba(20,184,166,.1);border:1px solid rgba(20,184,166,.3)}
 
-  /* ---------- benchmark ---------- */
-  .bench{margin-top:2.8rem;display:grid;gap:1.1rem}
-  .bar-row{display:grid;grid-template-columns:minmax(0,16rem) 1fr;gap:1.2rem;align-items:center}
-  @media(max-width:720px){.bar-row{grid-template-columns:1fr;gap:.45rem}}
-  .bar-label{font-size:.94rem}
-  .bar-label small{display:block;color:var(--dim);font-size:.8rem;margin-top:.15rem}
-  .track{position:relative;height:44px;background:var(--bg-2);border:1px solid var(--line);border-radius:10px}
-  .fill{
-    position:absolute;inset:0 auto 0 0;width:0;border-radius:9px;
-    transition:width 1.5s cubic-bezier(.22,.9,.25,1);
+  /* ---------- explainer video ---------- */
+  .player{position:relative;margin-top:2.8rem}
+  .player .window{border-radius:16px}
+  .player video{width:100%;height:auto;aspect-ratio:16/9;background:#000}
+  .play{position:absolute;inset:40px 0 0;display:flex;align-items:flex-start;justify-content:flex-start;border:0;
+    padding:clamp(12px,3vw,28px);cursor:pointer;color:var(--text);font:inherit;
+    background:linear-gradient(160deg,rgba(13,15,20,.55),rgba(13,15,20,0) 45%)}
+  .play-pill{display:inline-flex;align-items:center;gap:.85rem;padding:.45rem 1.15rem .45rem .45rem;border-radius:999px;
+    background:rgba(13,15,20,.82);border:1px solid var(--line);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    transition:border-color .2s}
+  .play:hover .play-pill{border-color:rgba(45,212,191,.6)}
+  .play-btn{display:grid;place-items:center;width:clamp(40px,5vw,54px);aspect-ratio:1;border-radius:50%;flex:none;
+    background:var(--brand);color:#04120f;position:relative;
+    box-shadow:0 0 0 6px rgba(20,184,166,.18),0 12px 30px -8px rgba(20,184,166,.7);transition:transform .2s var(--ease)}
+  .play-btn::after{content:"";position:absolute;inset:-6px;border-radius:50%;border:2px solid rgba(45,212,191,.5);
+    animation:ring 2.4s var(--ease) infinite}
+  .play:hover .play-btn{transform:scale(1.06)}
+  .play-label{text-align:left;font-size:.95rem;font-weight:600;line-height:1.25;white-space:nowrap}
+  .play-label small{display:block;font-size:.78rem;font-weight:500;color:var(--text-2)}
+  .player.playing .play{display:none}
+  @media(max-width:640px){
+    .play{align-items:flex-end;padding:8px;background:linear-gradient(0deg,rgba(13,15,20,.6),rgba(13,15,20,0) 45%)}
+    .play-pill{gap:.5rem;padding:.2rem .75rem .2rem .2rem}
+    .play-btn{width:28px;box-shadow:0 0 0 3px rgba(20,184,166,.18)}
+    .play-btn::after{inset:-4px}
+    .play-label{font-size:.8rem}.play-label small{display:none}
   }
-  /* The fast bar is a sliver, so its label sits just outside it rather than
-     being clipped inside. */
-  .fill b{
-    position:absolute;top:50%;translate:0 -50%;
-    font-weight:640;font-size:.9rem;white-space:nowrap;
-  }
-  .fill-fast{background:linear-gradient(90deg,var(--accent-dim),var(--accent))}
-  .fill-fast b{left:calc(100% + .75rem);color:var(--accent)}
-  .fill-slow{background:linear-gradient(90deg,#252b36,#39414f)}
-  .fill-slow b{right:.9rem;color:var(--muted)}
-  @media (prefers-reduced-motion:reduce){.fill{transition:none}}
-  .bench-foot{margin-top:1.6rem;font-size:.87rem;color:var(--dim)}
+  @keyframes ring{0%{transform:scale(.9);opacity:.9}100%{transform:scale(1.35);opacity:0}}
+  .player-meta{display:flex;flex-wrap:wrap;gap:.5rem 1.4rem;justify-content:center;margin-top:1rem;font-size:.85rem;color:var(--text-3)}
+  .player-meta a{color:var(--text-2)}
 
-  /* ---------- stat strip ---------- */
-  .stats{
-    display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
-    gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);
-    overflow:hidden;margin-top:3rem;
+  /* ---------- how it works ---------- */
+  .flow{list-style:none;margin:3.2rem 0 0;padding:0;position:relative;display:grid;gap:1.1rem}
+  .flow::before{content:"";position:absolute;left:21px;top:22px;bottom:22px;width:2px;
+    background:linear-gradient(var(--brand),rgba(57,135,229,.6) 60%,transparent)}
+  .step{position:relative;display:grid;grid-template-columns:44px minmax(0,1fr) minmax(0,300px);gap:1.4rem;align-items:center}
+  .step-n{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;align-self:start;margin-top:1rem;
+    background:var(--page);border:2px solid var(--brand);color:var(--brand-hi);font:600 .95rem/1 var(--mono);z-index:1}
+  .step-body{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.35rem 1.5rem;
+    display:grid;grid-template-columns:minmax(0,1fr) minmax(0,300px);gap:1.5rem;align-items:center;grid-column:2/4}
+  .step h3{font-size:1.15rem;font-weight:650;display:flex;flex-wrap:wrap;align-items:center;gap:.6rem}
+  .step p{color:var(--text-2);font-size:.95rem;margin-top:.4rem}
+  .step p b{color:var(--text);font-weight:600}
+  @media(max-width:900px){
+    .step{grid-template-columns:44px minmax(0,1fr);gap:1rem}
+    .step-body{grid-column:2;grid-template-columns:minmax(0,1fr);padding:1.1rem 1.1rem 1.2rem;gap:1rem}
+    .step .ill{min-height:0}
   }
-  .stat{background:var(--panel);padding:1.5rem 1.4rem}
-  .stat b{display:block;font-size:1.9rem;font-weight:660;letter-spacing:-.03em}
-  .stat span{color:var(--dim);font-size:.86rem}
 
-  /* ---------- versus ---------- */
-  .versus{background:var(--bg-2);border-block:1px solid var(--line)}
-  .gripes{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:1.1rem;margin-top:2.6rem}
-  .gripe{
-    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    padding:1.5rem;transition:border-color .2s,transform .2s;
-  }
-  .gripe:hover{border-color:#333b49;transform:translateY(-2px)}
-  .gripe h3{font-size:1.02rem;font-weight:630;margin-bottom:.5rem;display:flex;align-items:center;gap:.6rem}
-  .gripe h3 svg{color:var(--miss);flex:none}
-  .gripe p{color:var(--muted);font-size:.93rem}
-  .vs-table{
-    margin-top:2.6rem;border:1px solid var(--line);border-radius:var(--radius);
-    overflow:hidden;background:var(--panel);
-  }
-  .vs-scroll{overflow-x:auto}
-  table{border-collapse:collapse;width:100%;min-width:520px;font-size:.94rem}
-  th,td{padding:.95rem 1.25rem;text-align:left;border-bottom:1px solid var(--line)}
-  tbody tr:last-child td{border-bottom:none}
-  thead th{
-    font-size:.78rem;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);
-    font-weight:620;background:var(--panel-2);
-  }
-  thead th:nth-child(2){color:var(--accent)}
-  td:first-child{color:var(--muted)}
-  .win{color:var(--accent);font-weight:620}
-  .lose{color:var(--muted)}
-  tr.total td{font-weight:660;font-size:1rem}
-  .vs-foot{padding:1rem 1.25rem;font-size:.85rem;color:var(--dim);background:var(--panel-2);border-top:1px solid var(--line)}
+  /* Mini illustrations. They show their final state by default; with JS and
+     motion allowed they play once when the step scrolls into view. */
+  .ill{min-height:120px;border-radius:12px;background:var(--page);border:1px solid var(--line-soft);
+    padding:12px;position:relative;overflow:hidden;font:500 11px/1.3 var(--mono);color:var(--text-2)}
+  .ill .row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px}
+  .ill .row.sel{background:rgba(57,135,229,.16);color:var(--text);box-shadow:inset 2px 0 0 var(--accent)}
+  .ill .db{width:10px;height:12px;border-radius:5px/3px;border:1.5px solid currentColor;flex:none}
+  .ill .use{display:table;margin:8px 0 0 auto;background:var(--accent);color:#fff;font:600 10.5px/1 var(--sans);
+    padding:6px 9px;border-radius:6px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;background:var(--surface-2);
+    border:1px solid var(--line);color:var(--text)}
+  .chip i{width:7px;height:7px;border-radius:50%}
+  .chip.add{border-style:dashed;color:var(--text-2);background:none}
+  .bars{display:grid;gap:7px}
+  .bars div{display:grid;grid-template-columns:80px 1fr;align-items:center;gap:8px}
+  .bars s{display:block;height:6px;border-radius:3px;background:var(--surface-2);position:relative;overflow:hidden;text-decoration:none}
+  .bars s::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,var(--brand-dim),var(--brand));
+    transform-origin:left;transform:scaleX(var(--w,1))}
+  .timer{position:absolute;right:12px;top:10px;color:var(--brand-hi);font-weight:600}
+  .matrix{display:grid;grid-template-columns:auto repeat(4,1fr);gap:4px;font-size:11px}
+  .matrix span{display:grid;place-items:center;height:18px;border-radius:4px;font-weight:600}
+  .matrix .n{justify-content:start;place-items:center start;color:var(--text-3);font-weight:500;padding-right:6px}
+  .s-same{color:var(--same);background:rgba(27,175,122,.12)}
+  .s-fmt{color:var(--fmt);background:rgba(125,133,152,.14)}
+  .s-diff{color:var(--diff);background:rgba(201,133,0,.15)}
+  .s-miss{color:var(--miss);background:rgba(208,59,59,.15)}
+  .s-extra{color:var(--extra);background:rgba(144,133,233,.15)}
+  .s-unr{color:var(--unread);background:rgba(107,114,133,.14)}
+  .diffv{display:grid;grid-template-columns:1fr 1fr;gap:8px;height:100%}
+  .diffv div{display:grid;gap:5px;align-content:start}
+  .diffv i{display:block;height:7px;border-radius:3px;background:var(--surface-2)}
+  .diffv i.d{background:rgba(208,59,59,.45)}.diffv i.a{background:rgba(27,175,122,.45)}
+  .diffv i.h{background:rgba(240,160,50,.35);outline:1px solid rgba(190,115,10,.75)}
+  .files{display:grid;gap:4px}
+  .files span{display:flex;gap:8px;align-items:center}
+  .files span::before{content:"";width:9px;height:9px;border-radius:2px;background:var(--raised);border:1px solid var(--line)}
+  .files .rv{color:var(--diff)}
+  .okline{display:block;margin-top:8px;padding:5px 8px;border-radius:6px;
+    background:rgba(27,175,122,.12);border:1px solid rgba(27,175,122,.35);color:var(--same-hi);font-size:10.5px}
+  .link{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--surface-2);
+    border:1px solid var(--line);color:var(--text);overflow:hidden;white-space:nowrap}
+  .link svg{flex:none;color:var(--brand-hi)}
+  .live{display:flex;align-items:center;gap:7px;margin-top:10px;color:var(--text-2)}
+  .live i{width:8px;height:8px;border-radius:50%;background:var(--same);box-shadow:0 0 0 0 rgba(27,175,122,.6)}
+
+  .js-motion .ill .row.sel,.js-motion .ill .use,.js-motion .chip,.js-motion .bars s::after,
+  .js-motion .matrix span:not(.n),.js-motion .diffv i,.js-motion .files span,.js-motion .okline,.js-motion .link{opacity:0}
+  .js-motion .play-ill .row.sel{animation:fadein .4s .5s var(--ease) forwards}
+  .js-motion .play-ill .use{animation:pop .4s 1s var(--ease) forwards}
+  .js-motion .play-ill .chip{animation:pop .4s var(--ease) forwards;animation-delay:calc(var(--i)*.22s + .2s)}
+  .js-motion .bars s::after{opacity:1;transform:scaleX(0)}
+  .js-motion .play-ill .bars s::after{animation:fill 1s var(--ease) forwards;animation-delay:calc(var(--i)*.07s + .2s)}
+  .js-motion .play-ill .matrix span:not(.n){animation:flip .35s var(--ease) forwards;animation-delay:calc(var(--i)*.04s + .2s)}
+  .js-motion .play-ill .diffv i{animation:fadein .3s var(--ease) forwards;animation-delay:calc(var(--i)*.06s + .2s)}
+  .js-motion .play-ill .files span{animation:slide .35s var(--ease) forwards;animation-delay:calc(var(--i)*.12s + .2s)}
+  .js-motion .play-ill .okline{animation:pop .4s 1.2s var(--ease) forwards}
+  .js-motion .play-ill .link{animation:pop .45s .3s var(--ease) forwards}
+  .play-ill .live i{animation:pulse 1.8s ease-out infinite}
+  @keyframes fadein{to{opacity:1}}
+  @keyframes pop{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:none}}
+  @keyframes slide{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+  @keyframes flip{from{opacity:0;transform:rotateX(90deg)}to{opacity:1;transform:none}}
+  @keyframes fill{from{transform:scaleX(0)}to{transform:scaleX(var(--w,1))}}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(27,175,122,.6)}100%{box-shadow:0 0 0 9px rgba(27,175,122,0)}}
 
   /* ---------- statuses ---------- */
-  .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1px;
-    background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-top:2.6rem}
-  .status{background:var(--panel);padding:1.35rem 1.4rem;transition:background .2s}
-  .status:hover{background:#191e28}
-  .status-head{display:flex;align-items:center;gap:.7rem;margin-bottom:.5rem}
-  .sym{
-    width:30px;height:30px;flex:none;display:grid;place-items:center;
-    border-radius:8px;font-weight:700;font-size:1rem;
-    background:color-mix(in srgb,currentColor 14%,transparent);
-  }
-  .status h3{font-size:.98rem;font-weight:620}
-  .status p{color:var(--muted);font-size:.9rem}
+  .statuses{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:1px;margin-top:2.6rem;
+    background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  .status{background:var(--surface);padding:1.3rem 1.4rem}
+  .status-head{display:flex;align-items:center;gap:.75rem;margin-bottom:.45rem}
+  .sym{width:32px;height:32px;flex:none;display:grid;place-items:center;border-radius:9px;font:700 1rem/1 var(--mono)}
+  .status h3{font-size:1rem;font-weight:650}
+  .status p{color:var(--text-2);font-size:.9rem}
 
-  /* ---------- screens ---------- */
-  .screens{display:grid;gap:clamp(2.5rem,5vw,4rem);margin-top:3rem}
-  .screen h3{font-size:1.2rem;font-weight:640;margin-bottom:.5rem}
-  .screen p{color:var(--muted);max-width:62ch;margin-bottom:1.5rem}
+  /* ---------- new in 1.1 ---------- */
+  .spot{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;margin-top:2.8rem}
+  @media(max-width:900px){.spot{grid-template-columns:minmax(0,1fr)}}
+  .spot-card{position:relative;display:flex;flex-direction:column;background:linear-gradient(180deg,var(--surface-2),var(--surface));border:1px solid var(--line);
+    border-radius:20px;padding:clamp(1.4rem,3vw,2rem);overflow:hidden}
+  .spot-card::before{content:"";position:absolute;inset:-1px -1px auto;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(45,212,191,.7),transparent)}
+  .spot-card h3{font-size:clamp(1.3rem,2.4vw,1.6rem);margin-top:.9rem}
+  .spot-card > p{color:var(--text-2);margin-top:.6rem}
+  .ticks{list-style:none;padding:0;margin:1.1rem 0 0;display:grid;gap:.5rem;font-size:.93rem;color:var(--text-2)}
+  .ticks li{display:flex;gap:.6rem;align-items:flex-start}
+  .ticks li::before{content:"";flex:none;width:16px;height:16px;margin-top:.22rem;border-radius:5px;
+    background:rgba(20,184,166,.14) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%232dd4bf' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 8.5 2.5 2.5L12 5.5'/%3E%3C/svg%3E") center/12px no-repeat}
+  .ticks b{color:var(--text);font-weight:600}
+  .spot-card > .tag{align-self:flex-start}
+  .spot-card .ticks{margin-bottom:1.5rem}
+  .spot-card .mock{margin-top:auto}
+  .mock{margin-top:1.5rem;border:1px solid var(--line);border-radius:12px;background:var(--page);overflow:hidden;font-size:.82rem}
+  .mock-h{display:flex;justify-content:space-between;gap:1rem;align-items:center;padding:.7rem .9rem;border-bottom:1px solid var(--line-soft)}
+  .mock-h b{font-weight:650}
+  .mock-h small{color:var(--text-3);font-size:.76rem}
+  .sec{display:grid;grid-template-columns:auto 1fr auto;gap:.4rem .8rem;padding:.75rem .9rem;align-items:center}
+  .sec code{color:var(--text-3);font-size:.75rem}
+  .sec span{color:var(--text-2);min-width:0}
+  .sec span em{font-style:normal;color:var(--text-3);font-size:.75rem}
+  .tog{width:28px;height:16px;border-radius:999px;background:var(--brand);position:relative;flex:none}
+  .tog::after{content:"";position:absolute;top:2px;right:2px;width:12px;height:12px;border-radius:50%;background:#fff}
+  .tog.off{background:var(--raised);border:1px solid var(--line)}
+  .tog.off::after{right:auto;left:2px;top:1px;background:var(--text-3)}
+  .mock-ok{margin:0 .9rem .9rem;padding:.6rem .75rem;border-radius:8px;background:rgba(27,175,122,.1);
+    border:1px solid rgba(27,175,122,.35);color:var(--same-hi);font-size:.8rem}
+  .browser-bar{display:flex;align-items:center;gap:.5rem;padding:.55rem .75rem;background:var(--surface-2);border-bottom:1px solid var(--line-soft)}
+  .browser-bar i{width:9px;height:9px;border-radius:50%;background:#2c3240;flex:none}
+  .browser-bar span{flex:1;min-width:0;margin-left:.4rem;padding:.25rem .6rem;border-radius:6px;background:var(--page);
+    color:var(--text-2);font:500 .74rem/1.4 var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ro{display:inline-flex;align-items:center;gap:.4rem;font-size:.76rem;font-weight:600;color:var(--accent);
+    background:rgba(57,135,229,.12);border:1px solid rgba(57,135,229,.35);padding:.2rem .5rem;border-radius:999px}
+  .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;padding:.9rem}
+  .tile{border:1px solid var(--line);border-radius:9px;padding:.6rem .65rem;background:var(--surface)}
+  .tile small{display:block;color:var(--text-3);font-size:.7rem}
+  .tile b{display:block;font-size:1.05rem;font-variant-numeric:tabular-nums;margin-top:.1rem}
+  .meter{display:flex;height:5px;border-radius:3px;overflow:hidden;margin-top:.4rem;background:var(--raised)}
+  .meter i{display:block}
+  .objs{display:grid;grid-template-columns:minmax(0,1fr) repeat(3,30px);gap:4px 6px;padding:0 .9rem .9rem;
+    font:500 .74rem/1 var(--mono);color:var(--text-2);align-items:center}
+  .objs span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .objs i{display:grid;place-items:center;height:20px;border-radius:5px;font:600 .72rem/1 var(--mono);font-style:normal}
+  .objs .h{color:var(--text-3);font-size:.64rem;letter-spacing:.04em;text-transform:uppercase}
+  .objs .h:not(:first-child){text-align:center}
+  .viewers{display:flex;align-items:center;gap:.5rem;padding:0 .9rem .9rem;color:var(--text-2);font-size:.8rem}
+  .viewers i{width:8px;height:8px;border-radius:50%;background:var(--same);animation:pulse 1.8s ease-out infinite}
+  @media(max-width:420px){.tiles{grid-template-columns:1fr 1fr}.tiles .tile:last-child{display:none}}
 
-  /* ---------- features ---------- */
-  .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:1.1rem;margin-top:2.6rem}
-  .card{
-    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    padding:1.6rem;transition:border-color .2s,transform .2s;
-  }
-  .card:hover{border-color:#333b49;transform:translateY(-2px)}
-  .card h3{font-size:1.05rem;font-weight:620;margin-bottom:.55rem}
-  .card p{color:var(--muted);font-size:.93rem}
-  .card .ico{
-    width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
-    background:rgba(20,184,166,.1);color:var(--accent);margin-bottom:1rem;
-  }
+  .grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:1rem;margin-top:1.2rem}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.4rem;
+    transition:border-color .2s,transform .2s var(--ease),background .2s}
+  .card:hover{border-color:#3a4152;transform:translateY(-3px);background:var(--surface-2)}
+  .card .ico{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;margin-bottom:1rem;
+    background:rgba(20,184,166,.1);color:var(--brand-hi);border:1px solid rgba(20,184,166,.22)}
+  .card .ico.blue{background:rgba(57,135,229,.1);color:#6aa8f0;border-color:rgba(57,135,229,.25)}
+  .card h3{font-size:1.02rem;font-weight:650;display:flex;flex-wrap:wrap;align-items:center;gap:.5rem}
+  .card p{color:var(--text-2);font-size:.92rem;margin-top:.45rem}
+  .card .big{font:700 1.35rem/1 var(--sans);letter-spacing:-.02em;color:var(--text);font-variant-numeric:tabular-nums;margin-top:.7rem}
+  .card .big s{color:var(--text-3);text-decoration:none;font-weight:500}
 
-  /* ---------- privacy ---------- */
-  .privacy{background:var(--bg-2);border-block:1px solid var(--line)}
-  .locks{display:grid;gap:.9rem;margin-top:2.4rem}
-  .lock{display:flex;gap:1rem;align-items:flex-start;padding:1.2rem 1.35rem;
-    background:var(--panel);border:1px solid var(--line);border-radius:12px}
-  .lock svg{flex:none;color:var(--accent);margin-top:.15rem}
-  .lock b{font-weight:600}
-  .lock p{color:var(--muted);font-size:.92rem;margin-top:.25rem}
+  /* ---------- gallery ---------- */
+  .gallery{margin-top:2.6rem}
+  .g-tabs{display:flex;gap:.4rem;flex-wrap:wrap;padding:.35rem;border:1px solid var(--line);border-radius:13px;
+    background:var(--surface);width:max-content;max-width:100%;margin:0 auto 1.4rem}
+  .g-tab{border:0;background:none;color:var(--text-2);font:600 .9rem/1 var(--sans);padding:.7rem 1rem;border-radius:9px;cursor:pointer;
+    transition:background .18s,color .18s}
+  .g-tab:hover{color:var(--text)}
+  @media(max-width:560px){.g-tabs{display:grid;grid-template-columns:repeat(3,1fr);width:100%;gap:.25rem}
+    .g-tab{padding:.65rem .35rem;font-size:.8rem;line-height:1.2}}
+  .g-tab[aria-selected="true"]{background:var(--raised);color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}
+  .g-panel[hidden]{display:none}
+  .g-panel .window{animation:fadein .4s var(--ease)}
+  .g-panel a{display:block}
+  .g-panel img{width:100%;height:auto}
+  .g-cap{max-width:68ch;margin:1.1rem auto 0;text-align:center;color:var(--text-2);font-size:.95rem}
+  .g-cap b{color:var(--text);font-weight:600}
+  .core{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:1.4rem 2rem;margin-top:3.4rem;
+    padding-top:2.6rem;border-top:1px solid var(--line-soft)}
+  .core h3{font-size:.98rem;font-weight:650;display:flex;align-items:center;gap:.55rem}
+  .core h3 svg{color:var(--brand-hi);flex:none}
+  .core p{color:var(--text-2);font-size:.9rem;margin-top:.35rem}
+
+  /* ---------- speed ---------- */
+  .speed-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:clamp(2rem,5vw,4rem);align-items:start}
+  @media(max-width:900px){.speed-grid{grid-template-columns:minmax(0,1fr)}}
+  .bench{display:grid;gap:1.2rem;margin-top:2rem}
+  .bar-label{font-size:.94rem;font-weight:600;display:flex;justify-content:space-between;gap:1rem;margin-bottom:.5rem}
+  .bar-label small{color:var(--text-3);font-weight:500;font-size:.82rem}
+  .track{position:relative;height:40px;background:var(--page);border:1px solid var(--line);border-radius:10px}
+  .fill{position:absolute;inset:0 auto 0 0;width:var(--w);border-radius:9px}
+  .js-motion .fill{width:0;transition:width 1.6s var(--ease)}
+  .js-motion .fill.go{width:var(--w)}
+  .fill b{position:absolute;top:50%;translate:0 -50%;font-weight:650;font-size:.9rem;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .fill-fast{background:linear-gradient(90deg,var(--brand-dim),var(--brand))}
+  .fill-fast b{left:calc(100% + .75rem);color:var(--brand-hi)}
+  .fill-slow{background:linear-gradient(90deg,#222733,#3a4152)}
+  .fill-slow b{right:.9rem;color:var(--text-2)}
+  .bench-foot{margin-top:1.3rem;font-size:.88rem;color:var(--text-3)}
+  .vs{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--surface)}
+  .vs-scroll{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;min-width:460px;font-size:.92rem}
+  th,td{padding:.85rem 1.1rem;text-align:left;border-bottom:1px solid var(--line-soft);vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  thead th{font-size:.74rem;letter-spacing:.09em;text-transform:uppercase;color:var(--text-3);font-weight:650;background:var(--surface-2)}
+  thead th:nth-child(2){color:var(--brand-hi)}
+  td:first-child{color:var(--text-2)}
+  .win{color:var(--brand-hi);font-weight:600}
+  .lose{color:var(--text-3)}
+  tr.total td{font-weight:700}
+  @media(max-width:560px){table{min-width:0;font-size:.84rem}th,td{padding:.7rem .65rem}
+    thead th{font-size:.66rem;letter-spacing:.06em}}
+  .vs-foot{padding:.9rem 1.1rem;font-size:.84rem;color:var(--text-3);background:var(--surface-2);border-top:1px solid var(--line-soft)}
+
+  /* ---------- security ---------- */
+  .sec-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:1.2rem;margin-top:2.6rem;align-items:start}
+  @media(max-width:900px){.sec-grid{grid-template-columns:minmax(0,1fr)}}
+  .locks{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:1rem}
+  .lock{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.25rem 1.3rem}
+  .lock svg{color:var(--brand-hi);margin-bottom:.7rem}
+  .lock b{display:block;font-weight:650;font-size:.98rem;line-height:1.35}
+  .lock p{color:var(--text-2);font-size:.89rem;margin-top:.4rem}
+  .share-note{background:linear-gradient(180deg,rgba(201,133,0,.08),rgba(201,133,0,.03));border:1px solid rgba(201,133,0,.35);
+    border-radius:var(--radius);padding:1.5rem}
+  .share-note h3{font-size:1.08rem;color:#e0a43a;display:flex;align-items:center;gap:.55rem}
+  .share-note p{color:var(--text-2);font-size:.92rem;margin-top:.7rem}
+  .share-note ul{margin:.8rem 0 0;padding-left:1.1rem;color:var(--text-2);font-size:.9rem;display:grid;gap:.4rem}
+  .share-note b{color:var(--text);font-weight:600}
+  .oss{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:space-between;margin-top:1.2rem;
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.2rem 1.4rem}
+  .oss p{color:var(--text-2);font-size:.93rem;max-width:60ch}
+  .oss b{color:var(--text)}
 
   /* ---------- install ---------- */
-  .steps{counter-reset:s;display:grid;gap:1.5rem;margin-top:2.6rem}
-  .step{display:grid;grid-template-columns:auto 1fr;gap:1.1rem;align-items:start}
-  .step::before{
-    counter-increment:s;content:counter(s);
-    width:32px;height:32px;border-radius:50%;display:grid;place-items:center;
-    background:var(--panel);border:1px solid var(--line);color:var(--accent);
-    font-size:.9rem;font-weight:650;
-  }
-  .step h3{font-size:1rem;font-weight:620;margin-bottom:.3rem}
-  .step p{color:var(--muted);font-size:.93rem}
-  .warnbox{
-    margin-top:2.4rem;padding:1.4rem 1.5rem;border-radius:12px;
-    background:rgba(210,153,34,.07);border:1px solid rgba(210,153,34,.3);
-  }
-  .warnbox h3{font-size:.98rem;font-weight:620;color:var(--diff);margin-bottom:.5rem}
-  .warnbox p{color:var(--muted);font-size:.92rem}
-  .code{
-    display:flex;align-items:center;gap:.8rem;margin-top:1rem;padding:.75rem 1rem;
-    background:var(--bg);border:1px solid var(--line);border-radius:9px;
-    font-size:.85rem;color:var(--text);overflow-x:auto;
-  }
-  .code span{flex:1;white-space:nowrap}
-  .copy{
-    flex:none;background:none;border:1px solid var(--line);color:var(--muted);
-    padding:.3rem .6rem;border-radius:6px;font-size:.78rem;cursor:pointer;transition:.18s;
-  }
-  .copy:hover{color:var(--text);border-color:#39414f}
+  .install{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:clamp(1.5rem,4vw,3rem);margin-top:2.6rem;align-items:start}
+  @media(max-width:900px){.install{grid-template-columns:minmax(0,1fr)}}
+  .isteps{counter-reset:s;list-style:none;margin:0;padding:0;display:grid;gap:1.3rem}
+  .isteps li{display:grid;grid-template-columns:34px minmax(0,1fr);gap:1rem}
+  .isteps li::before{counter-increment:s;content:counter(s);width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+    background:var(--surface);border:1px solid var(--line);color:var(--brand-hi);font:600 .9rem/1 var(--mono)}
+  .isteps h3{font-size:1rem;font-weight:650;margin-top:.35rem}
+  .isteps p{color:var(--text-2);font-size:.92rem;margin-top:.25rem}
+  .warnbox{padding:1.4rem 1.5rem;border-radius:var(--radius);background:rgba(201,133,0,.06);border:1px solid rgba(201,133,0,.32)}
+  .warnbox h3{font-size:1rem;font-weight:650;color:#e0a43a;margin-bottom:.5rem}
+  .warnbox p{color:var(--text-2);font-size:.92rem}
+  .warnbox > * + *{margin-top:.8rem}
+  .warnbox b{color:var(--text)}
+  .smart{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin-top:.9rem;font-size:.84rem;color:var(--text-2)}
+  .smart kbd{font:600 .8rem/1 var(--sans);padding:.45rem .7rem;border-radius:7px;background:var(--raised);border:1px solid var(--line);color:var(--text)}
+  .code{display:flex;align-items:flex-start;gap:.8rem;margin-top:.9rem;padding:.7rem .9rem;background:var(--page);
+    border:1px solid var(--line);border-radius:9px;font-size:.82rem;min-width:0}
+  .code span{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono);color:var(--text)}
+  .copy{flex:none;margin-block:-.1rem;background:var(--surface-2);border:1px solid var(--line);color:var(--text-2);
+    padding:.35rem .65rem;border-radius:6px;font:500 .78rem/1 var(--sans);cursor:pointer;transition:.18s}
+  .copy:hover{color:var(--text);border-color:#3a4152}
+  .alt{margin-top:1.2rem;display:grid;grid-template-columns:minmax(0,1fr);gap:1rem}
+  .alt-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.2rem 1.3rem}
+  .alt-card h3{font-size:.98rem;font-weight:650}
+  .alt-card p{color:var(--text-2);font-size:.9rem;margin-top:.3rem}
+  .alt-card a{color:var(--brand-hi)}
+
+  /* ---------- faq ---------- */
+  .faq{max-width:820px;margin:2.6rem auto 0;display:grid;gap:.7rem}
+  .faq details{background:var(--surface);border:1px solid var(--line);border-radius:14px;transition:border-color .2s}
+  .faq details[open]{border-color:#343b4b}
+  .faq summary{list-style:none;cursor:pointer;padding:1.1rem 1.3rem;font-weight:600;display:flex;justify-content:space-between;gap:1rem;align-items:center}
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary::after{content:"";flex:none;width:10px;height:10px;border-right:2px solid var(--text-3);border-bottom:2px solid var(--text-3);
+    transform:rotate(45deg) translate(-2px,-2px);transition:transform .25s var(--ease)}
+  .faq details[open] summary::after{transform:rotate(225deg) translate(-2px,-2px)}
+  .faq summary:focus-visible{border-radius:14px}
+  .faq .a{padding:0 1.3rem 1.2rem;color:var(--text-2);font-size:.94rem}
+  .faq .a p + p{margin-top:.6rem}
+  .faq .a b{color:var(--text);font-weight:600}
+  .faq .a a{color:var(--brand-hi)}
 
   /* ---------- final cta ---------- */
-  .final{text-align:center;position:relative;overflow:hidden}
-  .final .glow{inset:auto 0 -60% 50%}
-  .final h2{margin-inline:auto}
+  .final{position:relative;overflow:hidden;text-align:center}
+  .final .glow{position:absolute;left:50%;bottom:-320px;translate:-50% 0;width:min(1000px,140%);height:600px;pointer-events:none;
+    background:radial-gradient(ellipse at center,rgba(20,184,166,.22),transparent 62%);filter:blur(20px)}
+  .final-logo{width:72px;height:72px;margin:0 auto 1.6rem;filter:drop-shadow(0 12px 30px rgba(20,184,166,.35))}
+  .final h2{margin-inline:auto;font-size:clamp(2rem,5vw,3.3rem);max-width:18ch}
   .final .sub{margin-inline:auto}
-  .final .cta{justify-content:center}
+  .final .cta-note{margin-top:1.4rem}
 
   /* ---------- footer ---------- */
-  footer{border-top:1px solid var(--line);padding:2.6rem 0;color:var(--dim);font-size:.88rem}
+  footer{border-top:1px solid var(--line-soft);padding:2.4rem 0 2.8rem;color:var(--text-3);font-size:.88rem}
   .foot-in{display:flex;flex-wrap:wrap;gap:1.2rem;align-items:center;justify-content:space-between}
-  .foot-links{display:flex;gap:1.5rem;flex-wrap:wrap}
-  .foot-links a{text-decoration:none;color:var(--muted);transition:color .18s}
-  .foot-links a:hover{color:var(--accent)}
+  .foot-in .brand{color:var(--text)}
+  .foot-links{display:flex;gap:.6rem 1.4rem;flex-wrap:wrap}
+  .foot-links a{text-decoration:none;color:var(--text-2);transition:color .18s}
+  .foot-links a:hover{color:var(--brand-hi)}
+  .foot-in a.sm{color:var(--brand-hi);text-decoration:none}
 
   /* ---------- reveal ---------- */
-  .reveal{opacity:0;transform:translateY(14px);transition:opacity .7s ease,transform .7s ease}
-  .reveal.in{opacity:1;transform:none}
-  @media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}}
+  .js-motion .reveal{opacity:0;transform:translateY(16px);transition:opacity .7s ease,transform .7s var(--ease)}
+  .js-motion .reveal.in{opacity:1;transform:none}
+
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+    .play-btn::after{display:none}
+  }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="bg-grid" aria-hidden="true"></div>
 
-<nav id="nav">
+<nav id="nav" aria-label="Main">
   <div class="shell nav-in">
-    <a class="brand" href="#top">
-      <svg width="26" height="26" viewBox="0 0 64 64" aria-hidden="true">
-        <rect x="2" y="2" width="60" height="60" rx="14" fill="#12141b"/>
+    <a class="brand" href="#top" aria-label="SchemaScope, back to top">
+      <svg width="28" height="28" viewBox="0 0 64 64" aria-hidden="true">
+        <defs><linearGradient id="lg-nav" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c2029"/><stop offset="1" stop-color="#0e1015"/></linearGradient></defs>
+        <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#lg-nav)"/>
         <rect x="2.5" y="2.5" width="59" height="59" rx="13.5" fill="none" stroke="#2a2f3a"/>
         <rect x="14" y="17" width="36" height="7" rx="3.5" fill="#4b5563"/>
         <rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#14b8a6"/>
         <rect x="14" y="40" width="36" height="7" rx="3.5" fill="#4b5563"/>
       </svg>
-      SchemaScope
+      SchemaScope <span class="ver">v1.1</span>
     </a>
     <div class="nav-links">
-      <a href="#speed">Speed</a>
-      <a href="#versus">vs Visual Studio</a>
+      <a href="#how">How it works</a>
+      <a href="#new">New in 1.1</a>
       <a href="#screens">Screens</a>
-      <a href="#privacy">Privacy</a>
+      <a href="#security">Security</a>
+      <a href="#faq">FAQ</a>
       <a href="https://github.com/Shrikant-satpute/schemascope">GitHub</a>
-      <a class="btn btn-primary" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe" data-dl>
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <a class="btn btn-primary btn-sm" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Download
       </a>
     </div>
   </div>
 </nav>
 
-<header id="top">
-  <div class="glow"></div>
+<main id="main">
+
+<!-- ================= HERO ================= -->
+<header class="hero" id="top">
+  <div class="glow" aria-hidden="true"></div>
   <div class="shell">
-    <div class="pill"><span class="dot"></span> 1,189 objects compared in <b>806&nbsp;ms</b></div>
-    <h1>Compare one schema against <em>every</em> environment.</h1>
+    <a class="badge-new" href="#new"><b>New in 1.1</b><span>Sync scripts, read-only share links, Find references</span></a>
+    <h1>Is <span class="prod">production</span> still the same as <span class="dev">dev?</span></h1>
     <p class="lede">
-      Pick the database you trust. Add staging, UAT and production. Press Compare.
-      In about a second you know exactly what drifted, where, and by how much —
-      without ever opening Visual Studio.
+      SchemaScope compares the SQL Server database you trust against <strong>every other environment at once</strong>
+      — Staging, UAT, Production, every client's copy — and shows you what drifted, where, and by how much
+      in about a second. Then it writes the scripts to fix it. It never changes a database.
     </p>
     <div class="cta">
-      <a class="btn btn-primary btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe" data-dl>
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <a class="btn btn-primary btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Download for Windows
       </a>
       <a class="btn btn-ghost btn-lg" href="https://github.com/Shrikant-satpute/schemascope">
-        <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-        View source
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        View on GitHub
       </a>
     </div>
-    <p class="cta-note">
-      Free and open source · <b>Apache-2.0</b> &nbsp;·&nbsp; Windows 10 and 11 &nbsp;·&nbsp;
-      No admin rights needed &nbsp;·&nbsp; <b>Never writes to your databases</b>
-    </p>
-  </div>
-
-  <div class="shell hero-shot reveal">
-    <div class="shot">
-      <div class="shot-bar"><i></i><i></i><i></i><span>SchemaScope — Dev vs Staging, UAT, Production</span></div>
-      <img src="/screenshots/dashboard.png" width="1600" height="1000"
-           alt="SchemaScope comparing Dev against Staging, UAT and Production. Each environment has a tile showing how much of the source it still matches, a matrix lists every object with its status per target, and a side-by-side diff of a stored procedure sits below.">
+    <div class="cta-note">
+      <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Free &amp; open source, Apache-2.0</span>
+      <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Windows 10 &amp; 11</span>
+      <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>No admin rights to install</span>
+      <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Never writes to your databases</span>
     </div>
-    <p class="cap">One source, three environments, one screen — and the actual difference underneath.</p>
+
+    <div class="hero-frame reveal">
+      <div class="window">
+        <div class="titlebar" aria-hidden="true">
+          <div class="t">
+            <svg width="16" height="16" viewBox="0 0 64 64"><rect x="2" y="2" width="60" height="60" rx="14" fill="#171a23" stroke="#2a2f3a"/><rect x="14" y="17" width="36" height="7" rx="3.5" fill="#4b5563"/><rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#14b8a6"/><rect x="14" y="40" width="36" height="7" rx="3.5" fill="#4b5563"/></svg>
+            <span>SchemaScope — Dev vs Staging, UAT, Production</span>
+          </div>
+          <div class="tabs"><i class="on">Compare</i><i>Connections</i><i>History</i><i>Share</i></div>
+          <div class="ctl"><span>—</span><span>☐</span><span>✕</span></div>
+        </div>
+        <video id="hook" muted loop playsinline preload="auto" width="1280" height="720"
+               poster="/media/schemascope-hook-poster.jpg"
+               aria-label="Short silent loop: the question 'Is production still the same as dev?' over a field of databases, most of them drifted, then the SchemaScope logo.">
+          <source src="/media/schemascope-hook.webm" type="video/webm">
+          <source src="/media/schemascope-hook.mp4" type="video/mp4">
+        </video>
+      </div>
+    </div>
+
+    <div class="proof reveal" role="list">
+      <div role="listitem"><b class="hl" data-count="806" data-suffix=" ms">806 ms</b><span>1,189 objects against 990, read and compared</span></div>
+      <div role="listitem"><b>60–180 s</b><span>Visual Studio Schema Compare, for one pair</span></div>
+      <div role="listitem"><b>All at once</b><span>Every target is read in parallel</span></div>
+      <div role="listitem"><b data-count="0">0</b><span>Writes to any database. Ever.</span></div>
+    </div>
   </div>
 </header>
 
-<section id="speed">
-  <div class="shell reveal">
-    <p class="eyebrow">The difference</p>
-    <h2>Minutes of waiting, replaced by one second.</h2>
-    <p class="sub">
-      Visual Studio's Schema Compare builds a full model of both databases before it can
-      tell you anything, and it only ever does one pair at a time. SchemaScope reads the
-      system catalog instead — two round trips per database — then hashes every object.
-      Measured on a real 1,189 object database against a 990 object copy.
-    </p>
+<!-- ================= EXPLAINER ================= -->
+<section id="watch" aria-labelledby="watch-h">
+  <div class="shell center reveal">
+    <p class="eyebrow">55-second tour</p>
+    <h2 id="watch-h">See it in <span class="grad">under a minute.</span></h2>
+    <p class="sub">From "nobody is sure" to a score per environment, the exact differences, the fix scripts and a link for your team.</p>
 
-    <div class="bench" id="bench">
-      <div class="bar-row">
-        <div class="bar-label">SchemaScope<small>Read both, compare, classify</small></div>
-        <div class="track"><div class="fill fill-fast" data-w="4.5"><b>806 ms</b></div></div>
+    <div class="player" id="player">
+      <div class="window">
+        <div class="titlebar" aria-hidden="true">
+          <div class="t"><span>schemascope-explainer.mp4</span></div>
+          <div class="ctl"><span>0:55</span></div>
+        </div>
+        <video id="explainer" preload="none" playsinline width="1920" height="1080"
+               poster="/media/schemascope-explainer-poster.jpg"
+               aria-label="SchemaScope explainer video, 55 seconds, no sound. On-screen text explains each step.">
+          <source src="/media/schemascope-explainer.webm" type="video/webm">
+          <source src="/media/schemascope-explainer.mp4" type="video/mp4">
+          <track kind="captions" src="/media/schemascope-explainer.vtt" srclang="en" label="English">
+          <p>Your browser cannot play this video. <a href="/media/schemascope-explainer.mp4">Download the MP4</a>.</p>
+        </video>
       </div>
-      <div class="bar-row">
-        <div class="bar-label">Visual Studio Schema Compare<small>One pair only</small></div>
-        <div class="track"><div class="fill fill-slow" data-w="100"><b>60–180 seconds</b></div></div>
-      </div>
+      <button class="play" id="play" type="button" aria-label="Play the 55-second SchemaScope video">
+        <span class="play-pill" aria-hidden="true">
+          <span class="play-btn"><svg width="40%" height="40%" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5Z"/></svg></span>
+          <span class="play-label">Watch the tour<small>0:55 · no sound needed</small></span>
+        </span>
+      </button>
     </div>
-    <p class="bench-foot">
-      Four target databases cost about the same wall-clock time as one — they are read in parallel.
-    </p>
+    <p class="player-meta"><span>Silent, with on-screen text and an English captions track.</span><a href="/media/schemascope-explainer.mp4">Download MP4</a></p>
+  </div>
+</section>
 
-    <div class="stats">
-      <div class="stat"><b>500 ms</b><span>Read both databases</span></div>
-      <div class="stat"><b>296 ms</b><span>Compare and classify</span></div>
-      <div class="stat"><b>~90%</b><span>Settled by hash alone</span></div>
-      <div class="stat"><b>0</b><span>Writes to your database</span></div>
+<!-- ================= HOW IT WORKS ================= -->
+<section id="how" class="band" aria-labelledby="how-h">
+  <div class="shell">
+    <div class="reveal">
+      <p class="eyebrow">How it works</p>
+      <h2 id="how-h">One trusted database. <span class="grad">Every copy checked.</span></h2>
+      <p class="sub">Seven steps, and most of them take a click. SchemaScope only reads — you review the scripts and run them yourself.</p>
+    </div>
+
+    <ol class="flow">
+      <li class="step reveal">
+        <span class="step-n" aria-hidden="true">01</span>
+        <div class="step-body">
+          <div>
+            <h3>Pick the database you trust</h3>
+            <p>Usually Dev. Connect with <b>Windows</b>, a <b>SQL login</b>, or <b>Microsoft Entra</b> (password, interactive MFA or default). <b>Browse</b> lists the databases and <b>Test connection</b> checks the login.</p>
+          </div>
+          <div class="ill" aria-hidden="true">
+            <div class="row"><span class="db" style="color:#7d8598"></span>Inventory_QA</div>
+            <div class="row sel"><span class="db" style="color:var(--same)"></span>Inventory_Dev</div>
+            <div class="row"><span class="db" style="color:#7d8598"></span>Inventory_UAT</div>
+            <span class="use">Use this database</span>
+          </div>
+        </div>
+      </li>
+
+      <li class="step reveal">
+        <span class="step-n" aria-hidden="true">02</span>
+        <div class="step-body">
+          <div>
+            <h3>Add every copy you want to check</h3>
+            <p><b>+ Add target</b> as many times as you like: Staging, UAT, Production, each client's copy. Every database gets its own colour.</p>
+          </div>
+          <div class="ill" aria-hidden="true">
+            <div class="chips">
+              <span class="chip" style="--i:0"><i style="background:#3987e5"></i>Staging</span>
+              <span class="chip" style="--i:1"><i style="background:#9085e9"></i>UAT</span>
+              <span class="chip" style="--i:2"><i style="background:#d03b3b"></i>Production</span>
+              <span class="chip" style="--i:3"><i style="background:#c98500"></i>Client A</span>
+              <span class="chip add" style="--i:4">+ Add target</span>
+            </div>
+          </div>
+        </div>
+      </li>
+
+      <li class="step reveal">
+        <span class="step-n" aria-hidden="true">03</span>
+        <div class="step-body">
+          <div>
+            <h3>Compare them all at once</h3>
+            <p>Every target is read in parallel, so four cost about the same as one. Each gets a score like <b>“89.1% matches source”</b>, worst first.</p>
+          </div>
+          <div class="ill" aria-hidden="true">
+            <span class="timer">806 ms</span>
+            <div class="bars" style="margin-top:18px">
+              <div><span>Dev</span><s style="--i:0"></s></div>
+              <div><span>Staging</span><s style="--i:1"></s></div>
+              <div><span>UAT</span><s style="--i:2"></s></div>
+              <div><span>Production</span><s style="--i:3"></s></div>
+            </div>
+          </div>
+        </div>
+      </li>
+
+      <li class="step reveal">
+        <span class="step-n" aria-hidden="true">04</span>
+        <div class="step-body">
+          <div>
+            <h3>See exactly what differs, and where</h3>
+            <p>A matrix of every object against every target. Filter by name with <code>%</code>, <code>*</code> and <code>?</code> wildcards, by type or by status, or tick <b>Differences only</b>.</p>
+          </div>
+          <div class="ill" aria-hidden="true">
+            <div class="matrix">
+              <span class="n">usp_Archive…</span><span class="s-same" style="--i:0">=</span><span class="s-diff" style="--i:1">≠</span><span class="s-same" style="--i:2">=</span><span class="s-diff" style="--i:3">≠</span>
+              <span class="n">Product</span><span class="s-same" style="--i:4">=</span><span class="s-fmt" style="--i:5">~</span><span class="s-diff" style="--i:6">≠</span><span class="s-same" style="--i:7">=</span>
+              <span class="n">vw_Orders</span><span class="s-miss" style="--i:8">✕</span><span class="s-same" style="--i:9">=</span><span class="s-same" style="--i:10">=</span><span class="s-unr" style="--i:11">?</span>
+              <span class="n">tmp_Fix</span><span class="s-same" style="--i:12">=</span><span class="s-same" style="--i:13">=</span><span class="s-extra" style="--i:14">+</span><span class="s-same" style="--i:15">=</span>
+            </div>
+          </div>
+        </div>
+      </li>
+
+      <li class="step reveal">
+        <span class="step-n" aria-hidden="true">05</span>
+        <div class="step-body">
+          <div>
+            <h3>Open any object, side by side</h3>
+            <p>The VS Code editor, split or inline, with <code>F8</code> to jump between changes. Tables also get a field-by-field <b>Grid</b>. Right-click any name to <b>Find references</b>.</p>
+          </div>
+          <div class="ill" aria-hidden="true">
+            <div class="diffv">
+              <div><i style="--i:0;width:80%"></i><i style="--i:1;width:60%"></i><i class="d" style="--i:2;width:90%"></i><i style="--i:3;width:50%"></i><i class="d" style="--i:4;width:70%"></i><i style="--i:5;width:85%"></i><i style="--i:6;width:40%"></i></div>
+              <div><i style="--i:0;width:80%"></i><i style="--i:1;width:60%"></i><i class="a" style="--i:2;width:75%"></i><i class="a h" style="--i:3;width:55%"></i><i class="a" style="--i:4;width:92%"></i><i style="--i:5;width:85%"></i><i style="--i:6;width:40%"></i></div>
+            </div>
+          </div>
+        </div>
+      </li>
+
+      <li class="step reveal">
+        <span class="step-n" aria-hidden="true">06</span>
+        <div class="step-body">
+          <div>
+            <h3>Generate the SQL to fix it <span class="tag">New in 1.1</span></h3>
+            <p>Numbered, reviewable script folders that make a target look like the source, <b>checked offline</b> before you see them. Nothing is executed — you run <code>RUN.ps1</code> yourself.</p>
+          </div>
+          <div class="ill" aria-hidden="true">
+            <div class="files">
+              <span style="--i:0">01_new_columns</span>
+              <span style="--i:1">03_missing_objects</span>
+              <span style="--i:2">06_indexes</span>
+              <span class="rv" style="--i:3">99_review</span>
+            </div>
+            <span class="okline">✓ Checked offline: every batch parses</span>
+          </div>
+        </div>
+      </li>
+
+      <li class="step reveal">
+        <span class="step-n" aria-hidden="true">07</span>
+        <div class="step-body">
+          <div>
+            <h3>Share a read-only link <span class="tag">New in 1.1</span></h3>
+            <p>Your team opens the same dashboard, matrix and diffs in any browser on your network. Nothing to install. You see who is reading.</p>
+          </div>
+          <div class="ill" aria-hidden="true">
+            <div class="link"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>http://your-pc:5280/s/…</div>
+            <div class="live"><i></i>Read-only · reading now</div>
+          </div>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ================= STATUSES ================= -->
+<section id="statuses" aria-labelledby="st-h">
+  <div class="shell reveal">
+    <p class="eyebrow">Six answers, not two</p>
+    <h2 id="st-h">A re-indented procedure is not a change.</h2>
+    <p class="sub">
+      Most tools say "same" or "different", which reports reformatted code as drift and buries the
+      differences that matter. SchemaScope separates them, and never hides anything: an ignore rule
+      moves an object down a level rather than making it disappear. Every status has a symbol and a
+      word as well as a colour.
+    </p>
+    <div class="statuses">
+      <div class="status"><div class="status-head"><div class="sym s-same" aria-hidden="true">=</div><h3>Same</h3></div><p>Identical to the source. Settled by hash, never looked at again.</p></div>
+      <div class="status"><div class="status-head"><div class="sym s-fmt" aria-hidden="true">~</div><h3>Formatting</h3></div><p>Same code. Only spacing, comments or brackets moved.</p></div>
+      <div class="status"><div class="status-head"><div class="sym s-diff" aria-hidden="true">≠</div><h3>Different</h3></div><p>A real difference, with the number of changed lines beside it.</p></div>
+      <div class="status"><div class="status-head"><div class="sym s-miss" aria-hidden="true">✕</div><h3>Missing</h3></div><p>In the source, but not in this target. A release that did not land.</p></div>
+      <div class="status"><div class="status-head"><div class="sym s-extra" aria-hidden="true">+</div><h3>Extra</h3></div><p>Only in this target. Usually somebody's local change.</p></div>
+      <div class="status"><div class="status-head"><div class="sym s-unr" aria-hidden="true">?</div><h3>Unreadable</h3></div><p>Encrypted, or your login lacks VIEW DEFINITION. Said plainly, never guessed.</p></div>
     </div>
   </div>
 </section>
 
-<section class="versus" id="versus">
-  <div class="shell reveal">
-    <p class="eyebrow">Why not just use Visual Studio?</p>
-    <h2>Schema Compare <em>sucks</em> at this job.</h2>
-    <p class="sub">
-      It is fine at what it was built for — pushing one database into another. Ask it the
-      question people actually ask on a Friday afternoon, <i>is production still the same
-      as dev?</i>, and it wastes your afternoon. Anyone who has sat watching that progress
-      bar knows exactly why.
-    </p>
+<!-- ================= NEW IN 1.1 ================= -->
+<section id="new" class="band" aria-labelledby="new-h">
+  <div class="shell">
+    <div class="reveal">
+      <p class="eyebrow"><span class="tag">New in 1.1</span></p>
+      <h2 id="new-h">From "what's different" to <span class="grad">"here's the fix".</span></h2>
+      <p class="sub">Version 1.1 writes the scripts that bring a target back in line, proves them offline, and lets your team see the results without installing anything.</p>
+    </div>
 
-    <div class="gripes">
-      <div class="gripe">
-        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Slow. Every single time.</h3>
-        <p>Before it says one word, it builds a full model of both databases. On a large database that is minutes of watching a progress bar — and you pay it again on every run.</p>
+    <div class="spot">
+      <article class="spot-card reveal">
+        <span class="tag">New in 1.1</span>
+        <h3>Create scripts</h3>
+        <p>Click the script icon on any target's tile. You get numbered folders of SQL that make that target look like the source, with a README to read first.</p>
+        <ul class="ticks">
+          <li><span><b>Checked offline.</b> Every batch is parsed, and procedure and view bodies are compared byte for byte with the source before you run anything.</span></li>
+          <li><span><b>Risky changes held back.</b> NOT NULL columns with no default, keys existing data would break, code that would not compile: listed in <code>99_review</code> with the reason, not scripted.</span></li>
+          <li><span><b>Safe defaults.</b> Table types, triggers and changed code are off by default, and come with undo scripts. Column types are never narrowed.</span></li>
+          <li><span><b>No secrets in the folder.</b> <code>RUN.ps1</code> runs under your Windows login, so no connection details are written to any file.</span></li>
+        </ul>
+        <div class="mock" aria-hidden="true">
+          <div class="mock-h"><b>Create scripts</b><small>Make Production look like Dev</small></div>
+          <div class="sec"><code>01</code><span>New columns</span><i class="tog"></i></div>
+          <div class="sec"><code>02</code><span>Table types <em>· can break the running app</em></span><i class="tog off"></i></div>
+          <div class="sec"><code>03</code><span>Missing objects</span><i class="tog"></i></div>
+          <div class="sec"><code>04</code><span>Column types <em>· never narrows</em></span><i class="tog"></i></div>
+          <div class="sec"><code>10</code><span>Different code <em>· with rollback</em></span><i class="tog off"></i></div>
+          <div class="mock-ok">✓ Checked offline: every batch parses, and every code body matches the source exactly.</div>
+        </div>
+      </article>
+
+      <article class="spot-card reveal">
+        <span class="tag">New in 1.1</span>
+        <h3>Share a read-only link</h3>
+        <p>Press <b>Share</b> and a link is copied. A teammate opens it in any browser and explores the exact comparison: the dashboard, the matrix, every diff and the references.</p>
+        <ul class="ticks">
+          <li><span><b>Read only.</b> Viewers cannot export, run a compare or create scripts.</span></li>
+          <li><span><b>See who is reading.</b> The Share tab shows opens, who is reading now, and the addresses connected.</span></li>
+          <li><span><b>Short-lived.</b> Links expire after 7 days, or the moment you press Stop.</span></li>
+          <li><span><b>On your network, from your PC.</b> Links work while your PC is awake and SchemaScope is open. Nothing is uploaded anywhere.</span></li>
+        </ul>
+        <div class="mock" aria-hidden="true">
+          <div class="browser-bar"><i></i><i></i><i></i><span>http://your-pc:5280/s/…</span></div>
+          <div class="mock-h"><b>Dev vs 3 targets</b><span class="ro">Shared view · read only</span></div>
+          <div class="tiles">
+            <div class="tile"><small>Production</small><b>89.1%</b><div class="meter"><i style="width:89%;background:var(--same)"></i><i style="width:6%;background:var(--diff)"></i><i style="width:5%;background:var(--miss)"></i></div></div>
+            <div class="tile"><small>UAT</small><b>91.3%</b><div class="meter"><i style="width:91%;background:var(--same)"></i><i style="width:6%;background:var(--diff)"></i><i style="width:3%;background:var(--miss)"></i></div></div>
+            <div class="tile"><small>Staging</small><b>91.7%</b><div class="meter"><i style="width:92%;background:var(--same)"></i><i style="width:5%;background:var(--diff)"></i><i style="width:3%;background:var(--extra)"></i></div></div>
+          </div>
+          <div class="objs">
+            <span class="h">Object</span><span class="h">Prod</span><span class="h">UAT</span><span class="h">Stg</span>
+            <span>dbo.usp_ArchiveAuditLog</span><i class="s-diff">≠</i><i class="s-same">=</i><i class="s-same">=</i>
+            <span>dbo.Product</span><i class="s-same">=</i><i class="s-diff">≠</i><i class="s-fmt">~</i>
+            <span>dbo.vw_LowStock</span><i class="s-miss">✕</i><i class="s-same">=</i><i class="s-same">=</i>
+            <span>dbo.UAT_ScenarioSeed</span><i class="s-same">=</i><i class="s-extra">+</i><i class="s-same">=</i>
+            <span>dbo.vw_DailySales</span><i class="s-same">=</i><i class="s-same">=</i><i class="s-diff">≠</i>
+          </div>
+          <div class="viewers"><i></i>Reading now · nothing to install</div>
+        </div>
+      </article>
+    </div>
+
+    <div class="grid4">
+      <div class="card reveal">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35M8 11h6M11 8v6"/></svg></div>
+        <h3>Find references <span class="tag">1.1</span></h3>
+        <p>Right-click any name: <b>Find references</b> shows where it is used, <b>Find what it uses</b> shows its dependencies, in every database. Click a hit to jump to the line.</p>
       </div>
-      <div class="gripe">
-        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h7"/></svg> One pair at a time. That is it.</h3>
-        <p>Four environments means running it four times, waiting four times, and then holding four sets of results in your head.</p>
+      <div class="card reveal">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a1 1 0 0 1 1-1h11"/></svg></div>
+        <h3>Right-click everywhere <span class="tag">1.1</span></h3>
+        <p>Copy a name, copy the whole object, or open it, from anywhere in the results.</p>
       </div>
-      <div class="gripe">
-        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg> It cries wolf.</h3>
-        <p>Re-indent a stored procedure and it screams "changed". The one difference that will actually break production is buried in that noise.</p>
+      <div class="card reveal">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/></svg></div>
+        <h3>Definition cache <span class="tag">1.1</span></h3>
+        <p>Procedure and view bodies are only re-read when <code>modify_date</code> changes. On a memory-starved server:</p>
+        <p class="big">25.9 s <s>→</s> 1.8 s</p>
       </div>
-      <div class="gripe">
-        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg> It drags a whole IDE along.</h3>
-        <p>A DBA who does not write C# should not have to install a multi-gigabyte IDE to find out whether last night's release landed.</p>
+      <div class="card reveal">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></svg></div>
+        <h3>Stage timing <span class="tag">1.1</span></h3>
+        <p>Hover the elapsed time to see reading, indexing, comparing and summarising — so you know whether a slow run is the server or the tool.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= SCREENS + CORE FEATURES ================= -->
+<section id="screens" aria-labelledby="scr-h">
+  <div class="shell">
+    <div class="center reveal">
+      <p class="eyebrow">What you actually see</p>
+      <h2 id="scr-h">The answer, then the evidence.</h2>
+      <p class="sub">Real screenshots of the application, comparing a real database against three environments that had drifted apart.</p>
+    </div>
+
+    <div class="gallery reveal">
+      <div class="g-tabs" role="tablist" aria-label="Screenshots">
+        <button class="g-tab" role="tab" id="tab-dash" aria-controls="p-dash" aria-selected="true">Drift dashboard</button>
+        <button class="g-tab" role="tab" id="tab-diff" aria-controls="p-diff" aria-selected="false" tabindex="-1">Side-by-side diff</button>
+        <button class="g-tab" role="tab" id="tab-grid" aria-controls="p-grid" aria-selected="false" tabindex="-1">Table grid</button>
+      </div>
+
+      <div class="g-panel" role="tabpanel" id="p-dash" aria-labelledby="tab-dash">
+        <div class="window">
+          <div class="titlebar" aria-hidden="true"><div class="t"><span>SchemaScope — Dev vs Staging, UAT, Production</span></div></div>
+          <a href="/screenshots/dashboard.png" target="_blank" rel="noopener" aria-label="Open the dashboard screenshot full size">
+            <img src="/screenshots/dashboard.png" width="1600" height="1000" loading="lazy" decoding="async"
+                 alt="SchemaScope comparing Dev against Staging, UAT and Production. Each environment has a tile showing how much of the source it still matches, a matrix lists every object with its status per target, and a side-by-side diff of a stored procedure sits below.">
+          </a>
+        </div>
+        <p class="g-cap"><b>One tile per environment</b>, worst first: how much of the source it still matches, a breakdown meter, and counts you can click to filter the matrix.</p>
+      </div>
+
+      <div class="g-panel" role="tabpanel" id="p-diff" aria-labelledby="tab-diff" hidden>
+        <div class="window">
+          <div class="titlebar" aria-hidden="true"><div class="t"><span>dbo.usp_ArchiveAuditLog — Dev vs Production</span></div></div>
+          <a href="/screenshots/diff.png" target="_blank" rel="noopener" aria-label="Open the diff screenshot full size">
+            <img src="/screenshots/diff.png" width="1600" height="1000" loading="lazy" decoding="async"
+                 alt="A side-by-side diff of a stored procedure. The production copy deletes in batches and carries a hotfix comment; the dev copy still has the single unbatched delete.">
+          </a>
+        </div>
+        <p class="g-cap"><b>Monaco, the editor from VS Code</b>, with true line numbers, side by side or inline. <code>F8</code> and <code>Shift+F8</code> walk the changes. Here production picked up a hotfix that never made it back to dev.</p>
+      </div>
+
+      <div class="g-panel" role="tabpanel" id="p-grid" aria-labelledby="tab-grid" hidden>
+        <div class="window">
+          <div class="titlebar" aria-hidden="true"><div class="t"><span>dbo.Product — Dev vs UAT</span></div></div>
+          <a href="/screenshots/table-grid.png" target="_blank" rel="noopener" aria-label="Open the table grid screenshot full size">
+            <img src="/screenshots/table-grid.png" width="1600" height="1000" loading="lazy" decoding="async"
+                 alt="A table comparison grid showing two columns whose types changed, one dropped column, two added columns, and a missing index.">
+          </a>
+        </div>
+        <p class="g-cap"><b>Tables compared field by field.</b> A text diff lights up a whole <code>CREATE TABLE</code> when one column is renamed; the grid shows only the cells that differ, and which index went missing.</p>
       </div>
     </div>
 
-    <div class="vs-table">
+    <div class="core reveal">
+      <div>
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M3 12h18"/></svg>Drifted in one target only</h3>
+        <p>Objects that changed in a single environment. Almost always somebody's local change rather than a missed deployment.</p>
+      </div>
+      <div>
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>Smart compare options</h3>
+        <p>Ignore comments, letter case, auto-generated constraint names or column order. Skip schemas or name patterns.</p>
+      </div>
+      <div>
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export anywhere</h3>
+        <p>A standalone HTML report, CSV or Excel, Markdown for the wiki, or one .sql file per object.</p>
+      </div>
+      <div>
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>History</h3>
+        <p>Reload a past source and targets pairing in one click.</p>
+      </div>
+      <div>
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/></svg>Anywhere SQL Server runs</h3>
+        <p>SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed Instance and AWS RDS.</p>
+      </div>
+      <div>
+        <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>Keyboard-friendly</h3>
+        <p>Arrow keys move through the matrix, <code>F8</code> through the changes. Select text to highlight every place it appears.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= SPEED ================= -->
+<section id="speed" class="band" aria-labelledby="sp-h">
+  <div class="shell speed-grid">
+    <div class="reveal">
+      <p class="eyebrow">Why not Visual Studio?</p>
+      <h2 id="sp-h">Minutes of waiting, replaced by <span class="grad">one second.</span></h2>
+      <p class="sub">
+        Schema Compare builds a full model of both databases before it can tell you anything, and it
+        only does one pair at a time. SchemaScope reads the system catalog instead — two round trips
+        per database — then hashes every object. Measured on a real 1,189 object database against a
+        990 object copy.
+      </p>
+      <div class="bench" id="bench">
+        <div>
+          <div class="bar-label"><span>SchemaScope</span><small>read both, compare, classify</small></div>
+          <div class="track"><div class="fill fill-fast" style="--w:4.5%"><b>806 ms</b></div></div>
+        </div>
+        <div>
+          <div class="bar-label"><span>VS Schema Compare</span><small>one pair only</small></div>
+          <div class="track"><div class="fill fill-slow" style="--w:100%"><b>60–180 s</b></div></div>
+        </div>
+      </div>
+      <p class="bench-foot">Four target databases cost about the same wall-clock time as one — they are read in parallel.</p>
+    </div>
+
+    <div class="vs reveal">
       <div class="vs-scroll">
         <table>
-          <thead>
-            <tr><th>&nbsp;</th><th>SchemaScope</th><th>VS Schema Compare</th></tr>
-          </thead>
+          <thead><tr><th scope="col"><span class="sr-only">Measure</span></th><th scope="col">SchemaScope</th><th scope="col">VS Schema Compare</th></tr></thead>
           <tbody>
-            <tr><td>Read both databases</td><td class="win">500 ms</td><td class="lose">—</td></tr>
-            <tr><td>Compare and classify</td><td class="win">296 ms</td><td class="lose">—</td></tr>
-            <tr class="total"><td>Total, 1,189 objects</td><td class="win">806 ms</td><td class="lose">60–180 seconds</td></tr>
+            <tr><td>Read both databases</td><td class="win num">500 ms</td><td class="lose">—</td></tr>
+            <tr><td>Compare and classify</td><td class="win num">296 ms</td><td class="lose">—</td></tr>
+            <tr class="total"><td>Total, 1,189 objects</td><td class="win num">806 ms</td><td class="lose">60–180 seconds</td></tr>
             <tr><td>Targets per run</td><td class="win">as many as you like</td><td class="lose">one</td></tr>
             <tr><td>Tells formatting apart from a real change</td><td class="win">yes</td><td class="lose">no</td></tr>
             <tr><td>Needs Visual Studio installed</td><td class="win">no</td><td class="lose">yes</td></tr>
@@ -443,227 +996,205 @@
           </tbody>
         </table>
       </div>
-      <p class="vs-foot">
-        Same hardware, same databases. SchemaScope only compares — if you want to push
-        changes into a database, Schema Compare is still the tool for that.
-      </p>
+      <p class="vs-foot">Same hardware, same databases. SchemaScope never applies changes itself: it writes scripts you review and run. If you want a tool that pushes changes straight into a database, Schema Compare is still that tool.</p>
     </div>
   </div>
 </section>
 
-<section id="statuses">
-  <div class="shell reveal">
-    <p class="eyebrow">Six answers, not two</p>
-    <h2>A re-indented procedure is not a change.</h2>
-    <p class="sub">
-      Most tools say "same" or "different" — which reports reformatted code as drift and
-      buries the differences that matter. SchemaScope separates them, and never hides
-      anything: an ignore rule moves an object down a level rather than making it disappear.
-    </p>
-
-    <div class="status-grid">
-      <div class="status" style="color:var(--same)">
-        <div class="status-head"><div class="sym">=</div><h3 style="color:var(--text)">Same</h3></div>
-        <p>Identical to the source. Settled by hash, never looked at again.</p>
-      </div>
-      <div class="status" style="color:var(--fmt)">
-        <div class="status-head"><div class="sym">~</div><h3 style="color:var(--text)">Formatting</h3></div>
-        <p>Same code. Only spacing, comments or brackets moved.</p>
-      </div>
-      <div class="status" style="color:var(--diff)">
-        <div class="status-head"><div class="sym">≠</div><h3 style="color:var(--text)">Different</h3></div>
-        <p>A real difference, with the number of changed lines beside it.</p>
-      </div>
-      <div class="status" style="color:var(--miss)">
-        <div class="status-head"><div class="sym">✕</div><h3 style="color:var(--text)">Missing</h3></div>
-        <p>In the source, but not in this target. A release that did not land.</p>
-      </div>
-      <div class="status" style="color:var(--extra)">
-        <div class="status-head"><div class="sym">+</div><h3 style="color:var(--text)">Extra</h3></div>
-        <p>Only in this target. Usually somebody's local change.</p>
-      </div>
-      <div class="status" style="color:var(--muted)">
-        <div class="status-head"><div class="sym">?</div><h3 style="color:var(--text)">Unreadable</h3></div>
-        <p>Encrypted, or your login lacks VIEW DEFINITION. Said plainly, never guessed.</p>
-      </div>
+<!-- ================= SECURITY ================= -->
+<section id="security" aria-labelledby="sec-h">
+  <div class="shell">
+    <div class="reveal">
+      <p class="eyebrow">Security &amp; privacy</p>
+      <h2 id="sec-h">Your schema stays on <span class="grad">your machine.</span></h2>
+      <p class="sub">SchemaScope is for people whose schema is not allowed to leave the building. Every one of these is a mechanism you can check in the source, not a line in a policy.</p>
     </div>
-  </div>
-</section>
 
-<section id="screens">
-  <div class="shell reveal">
-    <p class="eyebrow">What you actually see</p>
-    <h2>The answer, then the evidence.</h2>
-    <p class="sub">
-      Every screenshot on this page is the real application, comparing a real database
-      against three environments that had drifted apart.
-    </p>
-
-    <div class="screens">
-      <div class="screen">
-        <h3>Real diffs, in the VS Code editor</h3>
-        <p>
-          Monaco — the editor out of VS Code — with true line numbers, side by side or inline.
-          <span class="mono">F8</span> and <span class="mono">Shift+F8</span> walk you through the
-          changes. Here production picked up a hotfix that never made it back to dev.
-        </p>
-        <div class="shot">
-          <div class="shot-bar"><i></i><i></i><i></i><span>dbo.usp_ArchiveAuditLog — Dev vs Production</span></div>
-          <img src="/screenshots/diff.png" width="1600" height="1000" loading="lazy"
-               alt="A side-by-side diff of a stored procedure. The production copy deletes in batches and carries a hotfix comment; the dev copy still has the single unbatched delete.">
+    <div class="sec-grid">
+      <div class="locks">
+        <div class="lock reveal">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <b>Read-only, structurally.</b>
+          <p>There is no code path that writes to a database. Scripts are generated and checked offline, never run by the app.</p>
+        </div>
+        <div class="lock reveal">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>
+          <b>Passwords encrypted with Windows DPAPI.</b>
+          <p>Stored in <code>%LOCALAPPDATA%\SchemaScope</code>, scoped to your Windows account. A saved password is only used for the server and login it was saved with.</p>
+        </div>
+        <div class="lock reveal">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          <b>The local API answers only its own window.</b>
+          <p>It listens on loopback, every call carries a token minted at startup, and requests addressed to any other host name are refused.</p>
+        </div>
+        <div class="lock reveal">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <b>The browser engine blocks outside requests.</b>
+          <p>The UI runs under <code>Content-Security-Policy: default-src 'self'</code>. A request to another host is refused before it is made.</p>
+        </div>
+        <div class="lock reveal">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          <b>No telemetry. No update check.</b>
+          <p>Not "anonymised analytics" — none. The only outgoing connections are to the databases you named.</p>
+        </div>
+        <div class="lock reveal">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>
+          <b>Object text cached locally, never data.</b>
+          <p>Bodies are cached in <code>%LOCALAPPDATA%\SchemaScope\cache</code>. Delete the folder and the only cost is the next run's time.</p>
         </div>
       </div>
 
-      <div class="screen">
-        <h3>Tables compared field by field</h3>
-        <p>
-          A text diff lights up an entire <span class="mono">CREATE TABLE</span> when one column
-          is renamed. The grid shows only the cells that actually differ — column types, what was
-          dropped, what was added, and which index went missing.
-        </p>
-        <div class="shot">
-          <div class="shot-bar"><i></i><i></i><i></i><span>dbo.Product — Dev vs UAT</span></div>
-          <img src="/screenshots/table-grid.png" width="1600" height="1000" loading="lazy"
-               alt="A table comparison grid showing two columns whose types changed, one dropped column, two added columns, and a missing index.">
+      <aside class="share-note reveal" aria-labelledby="share-h">
+        <h3 id="share-h"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>What changes when you share</h3>
+        <p>Nothing listens on your network until you press <b>Share</b>. Then SchemaScope starts a second, read-only listener on <b>port 5280</b>, and stops it when the last link is stopped or expires, or when you close the app.</p>
+        <ul>
+          <li>It serves only the shared snapshot. Your connections, passwords, history and the compare and script features are not on it — they stay on the token-protected loopback API.</li>
+          <li><b>The link is the key.</b> Anyone on your network who has it can read the full text of every object in that comparison, plus server and database names, over plain HTTP. Share it the way you would share the <code>.sql</code> files.</li>
+          <li>Links expire after 7 days, or when you press Stop.</li>
+          <li>Letting teammates through Windows Firewall needs administrator rights; the Share tab shows the exact rule first.</li>
+        </ul>
+      </aside>
+    </div>
+
+    <div class="oss reveal">
+      <p><b>Open source, built in public.</b> Apache-2.0. Every release is built by GitHub Actions from a tagged commit and ships a <code>SHA256SUMS.txt</code>. Found a problem? See the security policy.</p>
+      <div class="cta" style="margin:0">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/Shrikant-satpute/schemascope">Read the source</a>
+        <a class="btn btn-ghost btn-sm" href="https://github.com/Shrikant-satpute/schemascope/blob/main/SECURITY.md">SECURITY.md</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= INSTALL ================= -->
+<section id="install" class="band" aria-labelledby="in-h">
+  <div class="shell">
+    <div class="reveal">
+      <p class="eyebrow">Installing</p>
+      <h2 id="in-h">Two clicks to a desktop icon.</h2>
+    </div>
+    <div class="install">
+      <div class="reveal">
+        <ol class="isteps">
+          <li><div><h3>Download the installer</h3><p>Everything is bundled — no .NET install, nothing to unpack.</p></div></li>
+          <li><div><h3>Run it</h3><p>It installs for your account only, so Windows never asks for administrator rights. Tick the box for a desktop shortcut.</p></div></li>
+          <li><div><h3>Point it at your databases</h3><p>Add one source and as many targets as you like. A login with <code>VIEW DEFINITION</code> is all it needs:</p>
+            <div class="code"><span id="grant-cmd">GRANT VIEW DEFINITION TO [your_login];</span><button class="copy" type="button" data-copy="#grant-cmd">Copy</button></div></div></li>
+        </ol>
+        <div class="alt">
+          <div class="alt-card">
+            <h3>Prefer nothing installed?</h3>
+            <p><a href="https://github.com/Shrikant-satpute/schemascope/releases/latest">SchemaScope.exe</a> is the portable build: one self-contained file, no .NET install, no files beside it.</p>
+          </div>
+          <div class="alt-card">
+            <h3>Use Scoop?</h3>
+            <p>Installs the portable build, keeps it current with <code>scoop update</code>, and skips the SmartScreen prompt.</p>
+            <div class="code"><span id="scoop-cmd">scoop install https://raw.githubusercontent.com/Shrikant-satpute/schemascope/main/packaging/scoop/schemascope.json</span><button class="copy" type="button" data-copy="#scoop-cmd">Copy</button></div>
+          </div>
         </div>
       </div>
-    </div>
-  </div>
-</section>
 
-<section>
-  <div class="shell reveal">
-    <p class="eyebrow">What you get</p>
-    <h2>Built for the moment before a release.</h2>
-
-    <div class="features">
-      <div class="card">
-        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
-        <h3>Drift dashboard</h3>
-        <p>One tile per environment: how much of the source it still matches, a breakdown meter, and counts you can click to filter.</p>
-      </div>
-      <div class="card">
-        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
-        <h3>Drifted in exactly one target</h3>
-        <p>Objects that changed in a single environment. Almost always somebody's local change rather than a missed deployment.</p>
-      </div>
-      <div class="card">
-        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
-        <h3>Real diffs, in Monaco</h3>
-        <p>The VS Code editor with true line numbers, side-by-side or inline. F8 walks the changes.</p>
-      </div>
-      <div class="card">
-        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v18H3z"/><path d="M3 9h18M9 9v12"/></svg></div>
-        <h3>Tables compared as data</h3>
-        <p>A text diff lights up a whole CREATE TABLE when one column is renamed. The grid highlights only the cells that actually differ.</p>
-      </div>
-      <div class="card">
-        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div>
-        <h3>Export anywhere</h3>
-        <p>A standalone HTML report, CSV, Markdown for the wiki, or one .sql file per object straight into a schema project.</p>
-      </div>
-      <div class="card">
-        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/></svg></div>
-        <h3>Anywhere SQL Server runs</h3>
-        <p>SQL Server 2012 and later, Azure SQL Database, Managed Instance and AWS RDS. The catalog queries adapt to the version.</p>
+      <div class="warnbox reveal">
+        <h3>Windows will warn you on first run</h3>
+        <p>SchemaScope is not code-signed yet, so SmartScreen shows <b>"Windows protected your PC"</b>. Click <b>More info</b>, then <b>Run anyway</b>.</p>
+        <div class="smart" aria-hidden="true"><kbd>More info</kbd><span>→</span><kbd>Run anyway</kbd></div>
+        <p>You do not have to take that on trust. Every release is built in public by GitHub Actions from the tagged commit, and ships a <code>SHA256SUMS.txt</code> you can check:</p>
+        <div class="code"><span id="verify-cmd">Get-FileHash .\SchemaScope-Setup.exe -Algorithm SHA256</span><button class="copy" type="button" data-copy="#verify-cmd">Copy</button></div>
+        <p>WebView2 is required and ships with Windows 10 and 11. If it is somehow missing, you get a plain explanation and a download link.</p>
       </div>
     </div>
   </div>
 </section>
 
-<section class="privacy" id="privacy">
-  <div class="shell reveal">
-    <p class="eyebrow">Privacy</p>
-    <h2>Enforced, not promised.</h2>
-    <p class="sub">
-      SchemaScope is for people whose schema is not allowed to leave the building.
-      Every one of these is a mechanism you can check in the source, not a policy in a document.
-    </p>
-
-    <div class="locks">
-      <div class="lock">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        <div><b>The browser engine blocks the network for us.</b>
-        <p>The UI runs under <span class="mono">Content-Security-Policy: default-src 'self'</span>. A request to an outside host is not refused by our code — it is refused before it is made.</p></div>
-      </div>
-      <div class="lock">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>
-        <div><b>Passwords are encrypted with Windows DPAPI.</b>
-        <p>Scoped to your Windows account. Another user on the same PC cannot read them even holding the database file.</p></div>
-      </div>
-      <div class="lock">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-        <div><b>No telemetry. No update check. No network calls at all.</b>
-        <p>Not "anonymised analytics" — none. The only connections SchemaScope opens are to the databases you named.</p></div>
-      </div>
-      <div class="lock">
-        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-        <div><b>Read-only, structurally.</b>
-        <p>There is no code path in SchemaScope that writes to a database. It produces scripts and reports; applying them stays your decision, in your own tools.</p></div>
-      </div>
+<!-- ================= FAQ ================= -->
+<section id="faq" aria-labelledby="faq-h">
+  <div class="shell">
+    <div class="center reveal">
+      <p class="eyebrow">FAQ</p>
+      <h2 id="faq-h">Questions, answered plainly.</h2>
+    </div>
+    <div class="faq">
+      <details class="reveal">
+        <summary>Why does Windows say "Windows protected your PC"?</summary>
+        <div class="a"><p>The binaries are not code-signed yet, so SmartScreen does not recognise them. Click <b>More info</b>, then <b>Run anyway</b>. If you would rather check first, compare the file against the <code>SHA256SUMS.txt</code> on the release — every release is built by GitHub Actions from the tagged commit. Installing through Scoop avoids the prompt altogether.</p></div>
+      </details>
+      <details class="reveal">
+        <summary>Do I need administrator rights?</summary>
+        <div class="a"><p>No. The installer is per-user, and the portable build needs no install at all. The one exception is optional: if you share a comparison and teammates cannot reach it, adding the Windows Firewall rule needs an administrator.</p></div>
+      </details>
+      <details class="reveal">
+        <summary>Which SQL Server versions does it support?</summary>
+        <div class="a"><p>SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed Instance and AWS RDS. The catalog queries adjust to the server version. You can sign in with Windows, a SQL login, or Microsoft Entra (password, interactive MFA, or default).</p></div>
+      </details>
+      <details class="reveal">
+        <summary>What permissions does the login need?</summary>
+        <div class="a"><p><code>VIEW DEFINITION</code>. Without it SchemaScope still sees object names but not their bodies, and marks those objects <b>Unreadable</b> instead of reporting a false difference. The connection test warns you up front.</p></div>
+      </details>
+      <details class="reveal">
+        <summary>Can it change my database?</summary>
+        <div class="a"><p>No. There is no code that writes to a database. <b>Create scripts</b> writes SQL files to a folder and checks them offline; you review them and run <code>RUN.ps1</code> yourself, ideally on a rehearsal copy first.</p></div>
+      </details>
+      <details class="reveal">
+        <summary>Does it migrate data?</summary>
+        <div class="a"><p>Not in this version. Scripts change structure only. Changes that existing data could break are held back in <code>99_review</code> with the reason, instead of being scripted.</p></div>
+      </details>
+      <details class="reveal">
+        <summary>Who can open a shared link?</summary>
+        <div class="a"><p>Anyone who has the link and can reach your PC on the network. They get a read-only view of that one comparison, including the full text of its objects. Links expire after 7 days or when you press Stop, and only work while your PC is awake and SchemaScope is open.</p></div>
+      </details>
+      <details class="reveal">
+        <summary>Does it run on macOS or Linux?</summary>
+        <div class="a"><p>No — Windows 10 and 11 only. Teammates on other systems can still open a shared read-only link in their browser.</p></div>
+      </details>
+      <details class="reveal">
+        <summary>What does it cost?</summary>
+        <div class="a"><p>Nothing. SchemaScope is free and open source under the Apache-2.0 licence, built by <a href="https://shadowmark.in">Shadowmark</a>. Issues and contributions are welcome on <a href="https://github.com/Shrikant-satpute/schemascope">GitHub</a>.</p></div>
+      </details>
     </div>
   </div>
 </section>
 
-<section id="install">
+<!-- ================= FINAL CTA ================= -->
+<section class="final" aria-labelledby="fin-h">
+  <div class="glow" aria-hidden="true"></div>
   <div class="shell reveal">
-    <p class="eyebrow">Installing</p>
-    <h2>Two clicks to a desktop icon.</h2>
-
-    <div class="steps">
-      <div class="step">
-        <div><h3>Download the installer</h3>
-        <p>About 30 MB. Everything is bundled — no .NET install, nothing to unpack.</p></div>
-      </div>
-      <div class="step">
-        <div><h3>Run it</h3>
-        <p>Installs for your account only, so Windows never asks for administrator rights. Tick the box for a desktop shortcut.</p></div>
-      </div>
-      <div class="step">
-        <div><h3>Point it at your databases</h3>
-        <p>Add one source and as many targets as you like. A login with <span class="mono">VIEW DEFINITION</span> is all it needs.</p></div>
-      </div>
-    </div>
-
-    <div class="warnbox">
-      <h3>Windows will warn you on first run</h3>
-      <p>
-        SchemaScope is not code-signed yet, so SmartScreen shows <b>"Windows protected your PC"</b>.
-        Click <b>More info</b>, then <b>Run anyway</b>. A signing certificate is on the roadmap.
-      </p>
-      <p style="margin-top:.8rem">
-        You do not have to take that on trust. Every release is built in public by GitHub Actions
-        from a tagged commit, and ships a <span class="mono">SHA256SUMS.txt</span> you can check:
-      </p>
-      <div class="code">
-        <span class="mono" id="verify-cmd">Get-FileHash .\SchemaScope-Setup.exe -Algorithm SHA256</span>
-        <button class="copy" data-copy="#verify-cmd">Copy</button>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="final">
-  <div class="glow"></div>
-  <div class="shell reveal">
-    <h2>Find the drift before your users do.</h2>
-    <p class="sub">Free, open source, and it never writes to your databases.</p>
+    <svg class="final-logo" viewBox="0 0 64 64" aria-hidden="true">
+      <defs><linearGradient id="lg-fin" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c2029"/><stop offset="1" stop-color="#0e1015"/></linearGradient></defs>
+      <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#lg-fin)"/>
+      <rect x="2.5" y="2.5" width="59" height="59" rx="13.5" fill="none" stroke="#2a2f3a"/>
+      <rect x="14" y="17" width="36" height="7" rx="3.5" fill="#4b5563"/>
+      <rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#14b8a6"/>
+      <rect x="14" y="40" width="36" height="7" rx="3.5" fill="#4b5563"/>
+    </svg>
+    <h2 id="fin-h">Find the drift before your users do.</h2>
+    <p class="sub">SchemaScope 1.1. Free, open source, and it never writes to your databases.</p>
     <div class="cta">
-      <a class="btn btn-primary btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe" data-dl>
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <a class="btn btn-primary btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Download for Windows
       </a>
-      <a class="btn btn-ghost btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest">Portable build</a>
+      <a class="btn btn-ghost btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest">Portable build &amp; release notes</a>
     </div>
+    <div class="cta-note"><span>Windows 10 &amp; 11</span><span>Per-user install, no admin</span><span>Apache-2.0</span></div>
   </div>
 </section>
+
+</main>
 
 <footer>
   <div class="shell foot-in">
-    <div>© 2026 SchemaScope · Apache-2.0 · built by <a href="https://shadowmark.in" style="color:var(--accent);text-decoration:none">Shadowmark</a></div>
+    <div>
+      <a class="brand" href="#top" aria-label="SchemaScope, back to top">
+        <svg width="22" height="22" viewBox="0 0 64 64" aria-hidden="true"><rect x="2" y="2" width="60" height="60" rx="14" fill="#171a23" stroke="#2a2f3a"/><rect x="14" y="17" width="36" height="7" rx="3.5" fill="#4b5563"/><rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#14b8a6"/><rect x="14" y="40" width="36" height="7" rx="3.5" fill="#4b5563"/></svg>
+        SchemaScope
+      </a>
+      <p style="margin-top:.5rem">© 2026 SchemaScope · Apache-2.0 · built by <a class="sm" href="https://shadowmark.in">Shadowmark</a></p>
+    </div>
     <div class="foot-links">
       <a href="https://github.com/Shrikant-satpute/schemascope">GitHub</a>
+      <a href="https://github.com/Shrikant-satpute/schemascope/releases">Releases</a>
       <a href="https://github.com/Shrikant-satpute/schemascope/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/Shrikant-satpute/schemascope/blob/main/LICENSE">License</a>
       <a href="https://github.com/Shrikant-satpute/schemascope/issues">Report an issue</a>
       <a href="https://shadowmark.in">Shadowmark</a>
     </div>
@@ -671,47 +1202,107 @@
 </footer>
 
 <script>
-  // Sticky nav hairline once you leave the hero.
+(() => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduce && 'IntersectionObserver' in window) document.documentElement.classList.add('js-motion');
+
+  // Sticky nav hairline once you leave the top.
   const nav = document.getElementById('nav');
-  const onScroll = () => nav.classList.toggle('stuck', window.scrollY > 12);
+  const onScroll = () => nav.classList.toggle('stuck', scrollY > 12);
   onScroll();
   addEventListener('scroll', onScroll, { passive: true });
 
-  // Reveal on scroll.
+  // Hero loop: honour reduced motion, and pause it while off screen.
+  const hook = document.getElementById('hook');
+  // No autoplay attribute, so nothing moves before this runs.
+  if (!reduce) {
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(([e]) => {
+        if (e.isIntersecting) hook.play().catch(() => {}); else hook.pause();
+      }, { threshold: 0.2 }).observe(hook);
+    } else hook.play().catch(() => {});
+  }
+
+  // Explainer: click-to-play overlay, then native controls.
+  const player = document.getElementById('player');
+  const explainer = document.getElementById('explainer');
+  document.getElementById('play').addEventListener('click', () => {
+    player.classList.add('playing');
+    explainer.controls = true;
+    explainer.play().catch(() => {});
+    explainer.focus();
+  });
+
+  if (!document.documentElement.classList.contains('js-motion')) return wireStatic();
+
+  // Scroll reveal; illustrations play once their step is in view.
   const io = new IntersectionObserver((entries) => {
     for (const e of entries) {
-      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+      if (!e.isIntersecting) continue;
+      e.target.classList.add('in');
+      e.target.querySelectorAll('.ill').forEach(el => el.classList.add('play-ill'));
+      io.unobserve(e.target);
     }
-  }, { rootMargin: '0px 0px -12% 0px' });
+  }, { rootMargin: '0px 0px -10% 0px' });
   document.querySelectorAll('.reveal').forEach(el => io.observe(el));
 
-  // Run the benchmark bars once, when they scroll into view.
-  const bench = document.getElementById('bench');
-  const benchIo = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (!e.isIntersecting) continue;
-      e.target.querySelectorAll('.fill').forEach((fill, i) => {
-        setTimeout(() => { fill.style.width = fill.dataset.w + '%'; }, i * 260);
-      });
-      benchIo.unobserve(e.target);
-    }
+  // Benchmark bars fill when they come into view.
+  const benchIo = new IntersectionObserver(([e]) => {
+    if (!e.isIntersecting) return;
+    e.target.querySelectorAll('.fill').forEach((f, i) => setTimeout(() => f.classList.add('go'), i * 250));
+    benchIo.disconnect();
   }, { threshold: 0.4 });
-  benchIo.observe(bench);
+  benchIo.observe(document.getElementById('bench'));
 
-  // Copy the verification command.
-  document.querySelectorAll('.copy').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const text = document.querySelector(btn.dataset.copy).textContent.trim();
-      try {
-        await navigator.clipboard.writeText(text);
-        const was = btn.textContent;
-        btn.textContent = 'Copied';
-        setTimeout(() => { btn.textContent = was; }, 1600);
-      } catch {
-        /* clipboard blocked - the text is selectable anyway */
-      }
-    });
+  // Count up the hero figure.
+  document.querySelectorAll('[data-count]').forEach(el => {
+    const end = +el.dataset.count, suffix = el.dataset.suffix || '';
+    if (!end) return;
+    const t0 = performance.now(), dur = 1100;
+    const tick = (t) => {
+      const p = Math.min(1, (t - t0) / dur), v = Math.round(end * (1 - Math.pow(1 - p, 3)));
+      el.textContent = v + suffix;
+      if (p < 1) requestAnimationFrame(tick);
+    };
+    el.textContent = '0' + suffix;
+    setTimeout(() => requestAnimationFrame(tick), 500);
   });
+
+  wireStatic();
+
+  function wireStatic() {
+    // Gallery tabs (WAI-ARIA tabs pattern).
+    const tabs = [...document.querySelectorAll('.g-tab')];
+    const select = (tab) => {
+      tabs.forEach(t => {
+        const on = t === tab;
+        t.setAttribute('aria-selected', on);
+        t.tabIndex = on ? 0 : -1;
+        document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+      });
+      tab.focus();
+    };
+    tabs.forEach((t, i) => {
+      t.addEventListener('click', () => select(t));
+      t.addEventListener('keydown', (e) => {
+        const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (d) { e.preventDefault(); select(tabs[(i + d + tabs.length) % tabs.length]); }
+      });
+    });
+
+    // Copy buttons.
+    document.querySelectorAll('.copy').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const text = document.querySelector(btn.dataset.copy).textContent.trim();
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.textContent = 'Copied';
+          setTimeout(() => { btn.textContent = 'Copy'; }, 1600);
+        } catch { /* clipboard blocked; the text is selectable anyway */ }
+      });
+    });
+  }
+})();
 </script>
 </body>
 </html>

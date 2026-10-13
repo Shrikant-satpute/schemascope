@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { Download, Filter, Search, X } from 'lucide-react'
+import { Download, Filter, Search, Share2, X } from 'lucide-react'
 import type { CompareResult, DbObjectType, ObjectStatus } from '../types'
 import { STATUS, STATUS_ORDER } from '../status'
-import { Button, Input } from './ui'
+import { Button, Input, Spinner } from './ui'
 import type { MatrixFilters } from './MatrixGrid'
 import { Legend } from './MatrixGrid'
 
@@ -13,13 +13,18 @@ export function ResultsToolbar({
   shownCount,
   onExport,
   exporting,
+  onShare,
+  sharing,
 }: {
   result: CompareResult
   filters: MatrixFilters
   onChange: (f: MatrixFilters) => void
   shownCount: number
-  onExport: (format: 'html' | 'csv' | 'md' | 'sql') => void
-  exporting: boolean
+  /** Left out for a shared read-only view, which has no export. */
+  onExport?: (format: 'html' | 'csv' | 'md' | 'sql') => void
+  exporting?: boolean
+  onShare?: () => void
+  sharing?: boolean
 }) {
   const [openMenu, setOpenMenu] = useState<'types' | 'status' | 'export' | null>(null)
 
@@ -49,6 +54,7 @@ export function ResultsToolbar({
           value={filters.search}
           onChange={(e) => set({ search: e.target.value })}
           placeholder="Filter objects..."
+          title={'Part of a name is enough.\nSeveral words: all must appear, any order.\n% or * = any characters (EY%Logs), ? = one character.'}
           className="w-56 pl-7"
         />
         {filters.search && (
@@ -168,35 +174,43 @@ export function ResultsToolbar({
 
       <Legend />
 
-      <Dropdown
-        open={openMenu === 'export'}
-        onToggle={() => setOpenMenu(openMenu === 'export' ? null : 'export')}
-        label="Export"
-        icon={<Download size={13} />}
-        align="right"
-        disabled={exporting}
-      >
-        {[
-          { f: 'html' as const, label: 'HTML report', hint: 'Standalone page you can send to anyone' },
-          { f: 'csv' as const, label: 'CSV / Excel', hint: 'One row per object' },
-          { f: 'md' as const, label: 'Markdown', hint: 'Drops into a wiki or a PR description' },
-          { f: 'sql' as const, label: 'SQL files...', hint: 'One .sql per object, into a folder' },
-        ].map((x) => (
-          <button
-            key={x.f}
-            onClick={() => {
-              setOpenMenu(null)
-              onExport(x.f)
-            }}
-            className="block w-full px-2.5 py-1.5 text-left hover:bg-[var(--raised)]"
-          >
-            <span className="block text-[12.5px]">{x.label}</span>
-            <span className="block text-[11px]" style={{ color: 'var(--text-3)' }}>
-              {x.hint}
-            </span>
-          </button>
-        ))}
-      </Dropdown>
+      {onShare && (
+        <Button size="sm" variant="outline" onClick={onShare} disabled={sharing} title="Create a read-only link for your team">
+          {sharing ? <Spinner size={12} /> : <Share2 size={13} />} Share
+        </Button>
+      )}
+
+      {onExport && (
+        <Dropdown
+          open={openMenu === 'export'}
+          onToggle={() => setOpenMenu(openMenu === 'export' ? null : 'export')}
+          label="Export"
+          icon={<Download size={13} />}
+          align="right"
+          disabled={exporting}
+        >
+          {[
+            { f: 'html' as const, label: 'HTML report', hint: 'Standalone page you can send to anyone' },
+            { f: 'csv' as const, label: 'CSV / Excel', hint: 'One row per object' },
+            { f: 'md' as const, label: 'Markdown', hint: 'Drops into a wiki or a PR description' },
+            { f: 'sql' as const, label: 'SQL files...', hint: 'One .sql per object, into a folder' },
+          ].map((x) => (
+            <button
+              key={x.f}
+              onClick={() => {
+                setOpenMenu(null)
+                onExport(x.f)
+              }}
+              className="block w-full px-2.5 py-1.5 text-left hover:bg-[var(--raised)]"
+            >
+              <span className="block text-[12.5px]">{x.label}</span>
+              <span className="block text-[11px]" style={{ color: 'var(--text-3)' }}>
+                {x.hint}
+              </span>
+            </button>
+          ))}
+        </Dropdown>
+      )}
     </div>
   )
 }

@@ -281,6 +281,102 @@ export interface CompareRequest {
   profileId?: string
 }
 
+// ---------------- where is this used ----------------
+
+export interface ReferenceLine {
+  line: number
+  column: number
+  text: string
+}
+
+export interface ReferenceObject {
+  key: string
+  schema: string
+  name: string
+  typeLabel: string
+  /** This object *is* the thing being searched for. */
+  isDefinition: boolean
+  matchCount: number
+  lines: ReferenceLine[]
+}
+
+export interface ReferenceDatabase {
+  /** "source", or a target's index as a string. */
+  id: string
+  label: string
+  objectCount: number
+  matchCount: number
+  objects: ReferenceObject[]
+}
+
+export interface ReferenceResult {
+  name: string
+  mode: 'usedBy' | 'uses'
+  databases: ReferenceDatabase[]
+  truncated: boolean
+  elapsedMs: number
+}
+
+/** One browser currently reading a shared link. We know its address, not who it is. */
+export interface ShareViewer {
+  ipAddress: string
+  connectedUtc: string
+}
+
+/**
+ * lan - a real network card, the one to send people
+ * name - this computer's name, which only works if the network can resolve it
+ * virtual - a Hyper-V or WSL adapter that exists only on this PC
+ */
+export type AddressKind = 'lan' | 'name' | 'virtual'
+
+export interface ShareAddress {
+  value: string
+  kind: AddressKind
+}
+
+export interface ShareLink {
+  url: string
+  kind: AddressKind
+}
+
+export interface ShareSummary {
+  token: string
+  sourceLabel: string
+  sourceDetail: string
+  targetLabels: string[]
+  comparedUtc: string
+  createdUtc: string
+  expiresUtc: string
+  objectCount: number
+  totalViews: number
+  /** One per address this machine answers on, best first. Empty while sharing is off. */
+  urls: ShareLink[]
+  viewersNow: number
+  viewers: ShareViewer[]
+}
+
+export interface ShareStatus {
+  sharing: boolean
+  port: number
+  addresses: ShareAddress[]
+  firewallAllowed: boolean
+  firewallCommand: string
+  error?: string | null
+  shares: ShareSummary[]
+}
+
+/** What a shared link serves: the comparison, and when it was taken. */
+export interface SharedComparison {
+  token: string
+  sourceLabel: string
+  hostName: string
+  comparedUtc: string
+  sharedUtc: string
+  expiresUtc: string
+  result: CompareResult
+}
+
 export interface Health {
   ok: boolean
   version: string
@@ -294,4 +390,82 @@ export interface ExportResult {
   message?: string
   path?: string
   fileCount: number
+}
+
+/**
+ * The folders "Create scripts" can write, in folder order. The server's
+ * ScriptSection enum, serialised as camelCase strings.
+ */
+export type ScriptSection =
+  | 'newColumns'
+  | 'tableTypes'
+  | 'missingObjects'
+  | 'columnTypes'
+  | 'constraints'
+  | 'indexes'
+  | 'triggers'
+  | 'formatting'
+  | 'differentModules'
+
+export interface ScriptOptions {
+  sections: ScriptSection[]
+  /** Must be a full Windows path; the server writes a new dated folder inside it. */
+  outputFolder: string
+  quarantineFolder?: string
+  /** `*` and `?` wildcards, matched against "schema.name" or "name". */
+  excludePatterns: string[]
+  checkExistingData: boolean
+  largeTableRows: number
+  probeTimeoutSeconds: number
+}
+
+export interface ScriptRequest {
+  /** Index into `CompareResult.targets` - not the tile's position on screen. */
+  targetIndex: number
+  options: ScriptOptions
+  /** Made up by the caller, to poll `api.scripts.progress` while the run is going. */
+  progressId?: string
+}
+
+/** How far a "Create scripts" run is: 0-100 and the step it is on. */
+export interface ScriptProgress {
+  percent: number
+  step: string
+}
+
+export interface FolderResult {
+  folder: string
+  title: string
+  files: number
+  inRunAll: boolean
+  hasRollback: boolean
+  notes: string[]
+}
+
+export interface HeldBackItem {
+  section: string
+  object: string
+  reason: string
+}
+
+export interface ScriptValidation {
+  batches: number
+  syntaxErrors: number
+  modulesChecked: number
+  modulesExact: number
+  problems: string[]
+  passed: boolean
+}
+
+export interface ScriptOutcome {
+  success: boolean
+  message?: string
+  /** The dated run folder that was written, even when the run stopped part way. */
+  path?: string
+  fileCount: number
+  folders: FolderResult[]
+  heldBack: HeldBackItem[]
+  warnings: string[]
+  validation: ScriptValidation
+  elapsedMs: number
 }

@@ -37,6 +37,7 @@ export function StructureGrid({
   targetColour,
   showUnchanged,
   onToggleUnchanged,
+  onNameContextMenu,
 }: {
   sections: StructureSection[]
   sourceLabel: string
@@ -45,6 +46,8 @@ export function StructureGrid({
   targetColour?: DbColour | null
   showUnchanged: boolean
   onToggleUnchanged: (v: boolean) => void
+  /** Right-click a column to ask which procedures touch it. */
+  onNameContextMenu?: (name: string, x: number, y: number) => void
 }) {
   const totalChanged = sections.reduce((n, s) => n + s.changedCount, 0)
 
@@ -145,7 +148,15 @@ export function StructureGrid({
                         >
                           {STATUS_SYMBOL[r.status]}
                         </td>
-                        <td className="px-2 py-1 font-mono" style={{ color: STATUS_COLOUR[r.status] }}>
+                        <td
+                          className="px-2 py-1 font-mono"
+                          style={{ color: STATUS_COLOUR[r.status] }}
+                          onContextMenu={(e) => {
+                            if (!onNameContextMenu) return
+                            e.preventDefault()
+                            onNameContextMenu(r.name, e.clientX, e.clientY)
+                          }}
+                        >
                           {r.name}
                         </td>
 

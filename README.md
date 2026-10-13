@@ -92,17 +92,25 @@ the same time.
 
 1. **Read the catalog, not the model.** Two round trips per database: check the
    version, then one batch that returns everything. Never one query per object.
-2. **Hash first, look later.** Every object gets a SHA-256 of its cleaned-up
+2. **Never read the same procedure body twice.** Bodies are the only thing here
+   that touches LOB pages, and on a server whose buffer pool is under pressure
+   they are the entire cost of a compare. They are kept between runs and re-read
+   only when `sys.objects.modify_date` says the object has actually been altered,
+   so a third round trip fetches the handful that changed and is skipped when
+   none did. On a 1,170 against 1,193 object pair, on an instance squeezed down
+   to a 555 MB buffer pool: **25.9 s on the first run, 1.8 s on the next**, with
+   an identical answer both times.
+3. **Hash first, look later.** Every object gets a SHA-256 of its cleaned-up
    text. Same hash means the object is identical, and it is never opened again —
    that is usually 90% or more of the database.
-3. **Compare tables as data, not as text.** Columns, indexes and constraints are
+4. **Compare tables as data, not as text.** Columns, indexes and constraints are
    built from catalog metadata by the *same code* on both sides, so formatting
    can never invent a fake difference.
-4. **Do all targets at once**, in parallel.
-5. **Run the expensive check last.** The T-SQL parser only runs on bodies that
+5. **Do all targets at once**, in parallel.
+6. **Run the expensive check last.** The T-SQL parser only runs on bodies that
    already look nearly identical. Skipping it on the obviously different ones
    took the compare stage from 1693 ms down to 296 ms.
-6. **Stream results to the screen** as each database finishes.
+7. **Stream results to the screen** as each database finishes.
 
 ---
 
@@ -156,13 +164,65 @@ constraints.
 - **"Drifted in exactly one target"** — objects that changed in a single
   environment. Almost always a local change rather than a missed release.
 - **Matrix grid** — one row per object, one column per target. Virtualized, so
-  thousands of rows stay smooth.
+  thousands of rows stay smooth. The filter box works like SQL `LIKE '%...%'`:
+  part of a name is enough, several words must all appear in any order, and
+  `%` or `*` stands for any characters (`EY%Logs`).
+- **Where is this used?** — pick an object and see what references it, and what
+  it uses, in the source and in every target. The answer can differ between
+  environments, which is itself the finding.
 - **Export** — a standalone HTML report, CSV, Markdown for the wiki, or one
   `.sql` file per object into a folder.
+- **Create scripts** — the SQL that would make a target look like the source,
+  as numbered folders you review and run yourself. See [Create scripts](#create-scripts).
+- **Share on your network** — send a colleague a read-only link to a finished
+  comparison. See [Share on your network](#share-on-your-network).
 
 ---
 
-## Your schema never leaves your machine
+## Share on your network
+
+A finished comparison can be handed to someone else on the same network as a
+link, so they can read the dashboard, the matrix and every diff in their own
+browser without installing anything or having a login on your servers.
+
+1. Run a compare, then click **Share**.
+2. Send the link it shows you, for example
+   `http://192.168.1.20:5280/s/<token>`. The Share tab lists your live links and
+   who is reading them right now.
+3. **Revoke** a link whenever you like. Links also expire on their own after
+   seven days.
+
+How it is kept contained:
+
+- **Off until you use it.** Nothing listens on the network until you share. The
+  listener stops when you revoke the last link, when the last one expires, and
+  when you close SchemaScope.
+- **A separate, read-only server.** The link is served by a second listener on
+  port 5280 that only knows a handful of `GET` routes for the shared snapshot.
+  Your connections, passwords, history and the compare and script routes are not
+  on it at all — they stay on the token-protected loopback API.
+- **The link is the key.** Each link carries a 128-bit random token, compared in
+  constant time. Wrong guesses are rate limited, and so is everything else.
+- **A snapshot, not a connection.** The shared copy is written when you click
+  Share. It never goes back to a database, and it never contains a connection
+  string or password; driver error messages are scrubbed before they are
+  written.
+- **Windows Firewall.** If others cannot reach the link, the Share tab offers to
+  add a rule. It is limited to private and domain networks, to callers on your
+  local subnet, and to SchemaScope itself, and the exact `netsh` command is shown
+  before you click. To remove it later:
+  `netsh advfirewall firewall delete rule name="SchemaScope share"` from an
+  admin prompt.
+
+Be clear about what a link hands over: **the full text of every object in the
+comparison**, plus the server and database names, over plain HTTP, to anyone who
+has the link and can reach your machine. Share it the way you would share the
+`.sql` files themselves. Shared snapshots are kept in
+`%LOCALAPPDATA%\SchemaScope\shares` until they are revoked or expire.
+
+---
+
+## Your schema stays on your machine
 
 This is built in, not promised in a policy document:
 
@@ -172,9 +232,19 @@ This is built in, not promised in a policy document:
 - The UI is served from inside the exe, under a
   `Content-Security-Policy` of `default-src 'self'`. A request to an outside
   host is not blocked by our code — the browser engine refuses to make it.
+- The local API only answers its own window: every call must carry a token
+  minted at startup, and requests addressed to any other host name are refused.
+- Saved passwords are only ever used for the server and login they were saved
+  with. Point a saved connection somewhere else and you have to type it again.
 - The window will not navigate anywhere except its own loopback address.
-- No telemetry. No update check. No network calls of any kind. The only
-  connections it opens are to the databases you named.
+- Procedure and view bodies are cached in `%LOCALAPPDATA%\SchemaScope\cache` so
+  an unchanged one is never read twice. It is object text, not data, it never
+  leaves the machine, and deleting the folder costs nothing but the next run's
+  time.
+- No telemetry. No update check. The only outgoing connections it opens are to
+  the databases you named. Nothing listens on the network unless you
+  [share a comparison](#share-on-your-network) — and then only the read-only
+  viewer, until you stop.
 
 ---
 
@@ -242,6 +312,9 @@ Needs the .NET 9 SDK and Node 20+.
 # terminal 1 - the API on a fixed port
 dotnet run --project src\SchemaScope.Shell -- --server --port 5199
 
+# optional: a throwaway settings store, so you never touch your own connections
+dotnet run --project src\SchemaScope.Shell -- --server --port 5199 --store C:\temp\scratch.db
+
 # terminal 2 - Vite with hot reload, proxying /api to 5199
 cd web
 npm run dev
@@ -267,11 +340,13 @@ dotnet run --project src\SchemaScope.Spike -c Release -- `
 src/
   SchemaScope.Core        models, T-SQL normalizer, hashing, diff engine, local store
   SchemaScope.SqlServer   catalog reader, connection handling
-  SchemaScope.Api         minimal API + SSE, embeds the built UI
+  SchemaScope.Scripting   Create scripts: folder generators, offline validator
+  SchemaScope.Api         minimal API + SSE, share viewer, embeds the built UI
   SchemaScope.Shell       WebView2 window, single file exe entry point
   SchemaScope.Spike       Phase 0 measurement console
 web/                      React + TypeScript + Vite + Tailwind + Monaco
 site/                     the landing page at schemascope.shadowmark.in
+tests/                    xUnit: engine, normalizer, and the security rules
 ```
 
 Works with SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed
@@ -279,12 +354,61 @@ Instance and AWS RDS. The catalog queries adjust to the server version.
 
 ---
 
+## Create scripts
+
+After a compare, each target tile has a **Create scripts** button. It writes the
+SQL that would make that target look like the source, as numbered folders. It
+**never runs anything**: SchemaScope only reads the two databases (catalog
+`SELECT`s and row counts) and checks the scripts offline. You review them and
+run them yourself.
+
+1. Run a compare, then click **Create scripts** on the target's tile.
+2. Untick what you do not want. Everything is ticked except **Table types** and
+   **Triggers**, which change how the running application behaves.
+3. Click **Generate** and pick a folder. The run goes into
+   `<folder>\<Target>_<yyyyMMdd-HHmm>\`. Its `README.md` explains each folder.
+
+| Folder | What it does | Run by `RUN.ps1` |
+|---|---|---|
+| `01_columns` | Adds missing columns to tables both sides have | yes |
+| `02_tabletypes` | Rebuilds changed table types (drops and recreates the procedures that use them) | only with `-WithTableTypes` |
+| `03_missing` | Creates missing tables, functions, views, procedures, schemas, sequences, synonyms | yes |
+| `04_columntypes` | Widens columns and relaxes NOT NULL; never narrows | yes (first) |
+| `05_constraints` | Adds missing defaults, checks, keys and foreign keys | yes |
+| `06_indexes` | Adds missing indexes | yes |
+| `07_triggers` | Creates missing triggers | no - run on its own |
+| `08_formatting_modules` | Replaces modules that differ only by formatting, with a `rollback\` | no - run on its own |
+| `09_formatting_tables` | Renames names that differ only by letter case (`sp_rename`) | no - run on its own |
+| `99_review` | Reports only: everything held back, and why | - |
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\RUN.ps1 -Database <TargetDatabase> [-Server <name>] [-WithTableTypes]
+```
+
+What it is careful about:
+
+- **Module text is byte for byte.** Procedure, function and view bodies come out
+  exactly as the source has them, even through SSMS. The offline check proves
+  it for every module.
+- **Nothing is dropped that only the target has.** `04` never narrows a column.
+- **Anything risky is held back, not scripted**: a NOT NULL column with no
+  default, a key that existing data would break, a procedure that would not
+  compile on the target, a module that reads a column the target will not get,
+  and so on. Each one is listed in `99_review` with the reason.
+- **No connection details in any file.** `RUN.ps1` uses your Windows login.
+- **Only into a local folder you chose.** Network paths, and system and Startup
+  folders, are refused, so a `RUN.ps1` can never land somewhere it would run by
+  itself.
+- If you stop a run, the folder gets an `INCOMPLETE - DO NOT RUN.txt` marker.
+
+Always run the scripts on a restored copy of the target first, then compare
+again, before touching the real one.
+
+---
+
 ## Not in this version
 
-Deployment scripting. Comparing is a solvable problem. Generating a correct
-deploy script for every edge case — dependency order, drop and recreate, keeping
-the data — is a much bigger one, and shipping half of it would be worse than not
-shipping it. Export the objects as `.sql` and review them yourself.
+Data migration. The scripts change structure only; they never move or fix rows.
 
 ---
 

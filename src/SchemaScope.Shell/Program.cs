@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using Microsoft.Extensions.DependencyInjection;
 using SchemaScope.Api;
+using SchemaScope.Api.Services;
 
 namespace SchemaScope.Shell;
 
@@ -9,8 +11,9 @@ namespace SchemaScope.Shell;
 /// The desktop entry point.
 ///
 /// SchemaScope is one exe: it starts its own web server on a private loopback
-/// port, then shows that page in a WebView2 window. Nothing listens on a public
-/// interface and nothing is fetched from the internet.
+/// port, then shows that page in a WebView2 window. Nothing is fetched from the
+/// internet, and nothing listens on a public interface unless the user shares a
+/// comparison - then a separate read-only viewer listens until sharing stops.
 ///
 /// Run with --server to start the API alone on a fixed port. That is what the
 /// Vite dev server proxies to while working on the front end.
@@ -69,6 +72,10 @@ internal static class Program
 
         try
         {
+            // Close the network listener first. Nothing should be answering on a
+            // public port a moment after the window has gone.
+            app.Services.GetRequiredService<ViewerHost>().StopAsync().GetAwaiter().GetResult();
+
             using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(3));
             app.StopAsync(shutdown.Token).GetAwaiter().GetResult();
         }
@@ -88,13 +95,31 @@ internal static class Program
         if (portIndex >= 0 && portIndex + 1 < args.Length && int.TryParse(args[portIndex + 1], out var parsed))
             port = parsed;
 
+        // --store <file>: a throwaway settings database, so a test run leaves the user's own store alone.
+        string? store = null;
+        var storeIndex = Array.FindIndex(args, a => a.Equals("--store", StringComparison.OrdinalIgnoreCase));
+        if (storeIndex >= 0 && storeIndex + 1 < args.Length && Path.IsPathFullyQualified(args[storeIndex + 1]))
+            store = args[storeIndex + 1];
+
+#if DEBUG
         // The Vite dev proxy adds the matching header to everything it forwards,
-        // so development uses a fixed token rather than a minted one.
-        var app = SchemaScopeApi.Build(args, desktop: true, new LocalAuth(LocalAuth.DevToken));
+        // so a Debug build uses a fixed token rather than a minted one.
+        var auth = new LocalAuth(LocalAuth.DevToken);
+#else
+        // The shipped exe never accepts a well-known token: a page in any browser
+        // could send it. It mints one like the desktop does and says what it is;
+        // set SCHEMASCOPE_TOKEN to it before starting Vite to point the proxy here.
+        var auth = LocalAuth.Mint();
+#endif
+
+        var app = SchemaScopeApi.Build(args, desktop: true, auth, storePath: store);
         app.Urls.Clear();
         app.Urls.Add($"http://127.0.0.1:{port}");
 
         Console.WriteLine($"SchemaScope API listening on http://127.0.0.1:{port}  (Ctrl+C to stop)");
+#if !DEBUG
+        Console.WriteLine($"API token: {auth.Token}");
+#endif
         app.Run();
     }
 

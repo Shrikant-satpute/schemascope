@@ -43,7 +43,37 @@ public class LocalAuthTests
     {
         var auth = LocalAuth.Mint();
         Assert.True(auth.IsAuthorised(RequestWith(r =>
-            r.QueryString = new QueryString($"?{LocalAuth.QueryName}={auth.Token}"))));
+        {
+            r.Method = HttpMethods.Get;
+            r.QueryString = new QueryString($"?{LocalAuth.QueryName}={auth.Token}");
+        })));
+    }
+
+    [Theory]
+    // A cross-site page can send any of these as a "simple" no-cors request, with
+    // no preflight, but it can never add our header to one.
+    [InlineData("POST")]
+    [InlineData("DELETE")]
+    [InlineData("PUT")]
+    public void The_query_token_never_authorises_a_state_changing_request(string method)
+    {
+        var auth = LocalAuth.Mint();
+        Assert.False(auth.IsAuthorised(RequestWith(r =>
+        {
+            r.Method = method;
+            r.QueryString = new QueryString($"?{LocalAuth.QueryName}={auth.Token}");
+        })));
+    }
+
+    [Fact]
+    public void The_header_token_still_authorises_a_post()
+    {
+        var auth = LocalAuth.Mint();
+        Assert.True(auth.IsAuthorised(RequestWith(r =>
+        {
+            r.Method = HttpMethods.Post;
+            r.Headers[LocalAuth.HeaderName] = auth.Token;
+        })));
     }
 
     [Fact]
@@ -179,6 +209,63 @@ public sealed class RehydrateTests : IDisposable
     }
 
     [Fact]
+    public void A_windows_login_with_an_edited_server_needs_no_password()
+    {
+        var windows = _store.SaveConnection(new ConnectionSettings
+        {
+            Label = "Dev",
+            Server = "dev-sql.internal",
+            Database = "Sales",
+            Auth = AuthMode.Windows
+        });
+
+        var request = new ConnectionSettings
+        {
+            Id = windows.Id,
+            Server = "other-sql.internal",
+            Database = "Sales",
+            Auth = AuthMode.Windows
+        };
+
+        Assert.True(SchemaScopeApi.TryRehydrate(request, _store, out var error));
+        Assert.Null(error);
+        Assert.True(string.IsNullOrEmpty(request.Password));
+    }
+
+    [Fact]
+    public void Saving_a_redirected_connection_drops_the_stored_password()
+    {
+        // Straight to the store, past the API's own check: the store itself must
+        // not carry the old secret along to the new host.
+        var request = Masked();
+        request.Server = "attacker.example.com";
+        _store.SaveConnection(request);
+
+        Assert.True(string.IsNullOrEmpty(_store.GetConnection(_saved.Id)!.Password));
+    }
+
+    [Fact]
+    public void Saving_a_swapped_login_drops_the_stored_password()
+    {
+        var request = Masked();
+        request.UserName = "sa";
+        _store.SaveConnection(request);
+
+        Assert.True(string.IsNullOrEmpty(_store.GetConnection(_saved.Id)!.Password));
+    }
+
+    [Fact]
+    public void Saving_unchanged_or_on_another_database_keeps_the_stored_password()
+    {
+        var request = Masked();
+        request.Label = "Production (renamed)";
+        request.Database = "Archive";
+        _store.SaveConnection(request);
+
+        Assert.Equal(RealPassword, _store.GetConnection(_saved.Id)!.Password);
+    }
+
+    [Fact]
     public void An_unknown_connection_id_yields_nothing()
     {
         var request = Masked();
@@ -236,6 +323,20 @@ public class ExportFolderTests
     public void A_relative_path_is_refused()
     {
         Assert.False(ExportService.IsWritableLocation("..\\..\\somewhere", out _, out var refusal));
+        Assert.NotNull(refusal);
+    }
+
+    [Theory]
+    // Probing any of these makes Windows offer the user's NTLM credentials to the
+    // host, so the folder export refuses them just as the scripts route does.
+    [InlineData(@"\\attacker.example\share\export")]
+    [InlineData(@"\\?\UNC\attacker.example\share")]
+    [InlineData(@"\\.\UNC\attacker.example\share")]
+    [InlineData("//attacker.example/share")]
+    [InlineData(@"  \\attacker.example\share")]
+    public void A_network_path_is_refused(string path)
+    {
+        Assert.False(ExportService.IsWritableLocation(path, out _, out var refusal));
         Assert.NotNull(refusal);
     }
 }

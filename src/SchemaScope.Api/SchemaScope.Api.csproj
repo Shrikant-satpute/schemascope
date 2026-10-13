@@ -25,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\SchemaScope.Core\SchemaScope.Core.csproj" />
     <ProjectReference Include="..\SchemaScope.SqlServer\SchemaScope.SqlServer.csproj" />
+    <ProjectReference Include="..\SchemaScope.Scripting\SchemaScope.Scripting.csproj" />
   </ItemGroup>
 
   <ItemGroup>

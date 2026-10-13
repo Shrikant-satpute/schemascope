@@ -1,8 +1,36 @@
-import { AlertTriangle, ChevronDown, ChevronUp, GitCompareArrows, Clock } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronUp, GitCompareArrows, Clock, FileCode } from 'lucide-react'
 import { useState } from 'react'
+import clsx from 'clsx'
 import type { CompareResult, ObjectStatus } from '../types'
 import type { DbColour } from '../dbColour'
 import { STATUS } from '../status'
+
+/** Names for the stage keys the engine reports, in the order the work happens. */
+const STAGES: [key: string, label: string][] = [
+  ['read', 'reading the databases'],
+  ['index', 'indexing'],
+  ['compare', 'comparing'],
+  ['summarise', 'summarising'],
+]
+
+/**
+ * The per-stage split, for the tooltip on the elapsed time.
+ *
+ * A slow run is almost always a slow read, and a slow read is almost always the
+ * server rather than SchemaScope - so the number that answers "why" is worth
+ * having in reach instead of buried in the payload.
+ */
+function stageBreakdown(result: CompareResult): string {
+  const timings = result.timings
+  if (!timings) return `${result.totalMs} ms in total`
+
+  const parts = STAGES.filter(([key]) => timings[key] !== undefined).map(
+    ([key, label]) => `${label}: ${timings[key]} ms`,
+  )
+
+  parts.push(`total: ${result.totalMs} ms`)
+  return parts.join('\n')
+}
 
 /**
  * Stat tiles, not donuts.
@@ -20,6 +48,7 @@ export function Dashboard({
   onFilterStatus,
   collapsed,
   onToggle,
+  onCreateScripts,
 }: {
   result: CompareResult
   sourceColour: DbColour | null
@@ -28,6 +57,12 @@ export function Dashboard({
   onFilterStatus: (index: number, status: ObjectStatus) => void
   collapsed: boolean
   onToggle: () => void
+  /**
+   * Owner only. Takes the index into `result.targets`, not the tile's place
+   * on screen (the tiles are sorted worst first). Shared links leave it out,
+   * so the button is never drawn for a viewer.
+   */
+  onCreateScripts?: (index: number) => void
 }) {
   const worstFirst = [...result.targets]
     .map((t, i) => ({ t, i }))
@@ -49,9 +84,19 @@ export function Dashboard({
             <b style={{ color: 'var(--text)' }}>{result.source.objectCount.toLocaleString()}</b> objects in{' '}
             {result.source.label}
           </span>
-          <span className="inline-flex items-center gap-1">
+          <span
+            className="inline-flex items-center gap-1"
+            title={stageBreakdown(result)}
+          >
             <Clock size={11} />
             {result.totalMs} ms
+            {/* Reading the databases is nearly always the whole cost. Saying so
+                here turns "why was that slow" into something you can see. */}
+            {result.timings?.read !== undefined && result.totalMs > 0 && (
+              <span style={{ color: 'var(--text-3)' }}>
+                ({Math.round((result.timings.read / result.totalMs) * 100)}% reading)
+              </span>
+            )}
           </span>
           {result.singleTargetDrift > 0 && (
             <span
@@ -87,6 +132,7 @@ export function Dashboard({
               colour={targetColours[i] ?? null}
               onFocus={() => onFocusTarget(i)}
               onFilterStatus={(s) => onFilterStatus(i, s)}
+              onCreateScripts={onCreateScripts}
             />
           ))}
 
@@ -112,17 +158,26 @@ export function Dashboard({
   )
 }
 
+/**
+ * One target's headline. The "Create scripts" button sits in the top-right
+ * corner as a sibling of the focus button, never inside it - a button inside a
+ * button is invalid HTML and the click would also focus the target. A tile that
+ * could not be read gets no button: there is nothing to script against.
+ */
 function TargetTile({
+  index,
   target,
   colour,
   onFocus,
   onFilterStatus,
+  onCreateScripts,
 }: {
   index: number
   target: CompareResult['targets'][number]
   colour: DbColour | null
   onFocus: () => void
   onFilterStatus: (s: ObjectStatus) => void
+  onCreateScripts?: (index: number) => void
 }) {
   if (target.failed) {
     return (
@@ -153,7 +208,7 @@ function TargetTile({
 
   return (
     <div
-      className="min-w-60 shrink-0 rounded-lg border px-3.5 py-2.5 transition-colors"
+      className="relative min-w-60 shrink-0 rounded-lg border px-3.5 py-2.5 transition-colors"
       style={{
         borderColor: colour?.line ?? 'var(--line)',
         background: colour?.tint ?? 'var(--surface-2)',
@@ -161,9 +216,21 @@ function TargetTile({
         borderLeftColor: colour?.ink,
       }}
     >
+      {onCreateScripts && (
+        <button
+          onClick={() => onCreateScripts(index)}
+          className="absolute right-2 top-2 rounded p-1 transition-colors hover:bg-[var(--raised)]"
+          style={{ color: 'var(--text-3)' }}
+          title="Create scripts that make this target look like the source"
+          aria-label={`Create scripts for ${target.label}`}
+        >
+          <FileCode size={13} />
+        </button>
+      )}
+
       <button onClick={onFocus} className="block w-full text-left" title="Show only this target's differences">
-        <div className="truncate text-[12.5px] font-semibold">{target.label}</div>
-        <div className="truncate text-[10.5px]" style={{ color: 'var(--text-3)' }}>
+        <div className={clsx('truncate text-[12.5px] font-semibold', onCreateScripts && 'pr-6')}>{target.label}</div>
+        <div className={clsx('truncate text-[10.5px]', onCreateScripts && 'pr-6')} style={{ color: 'var(--text-3)' }}>
           {target.server} / {target.database}
         </div>
 

@@ -190,6 +190,22 @@ button:focus-visible {
   box-shadow: inset 0 0 0 1px var(--match-edge);
 }
 
+/*
+  Landing on a line you clicked in the references panel. It fades rather than
+  sticking, so the marker never gets confused with a real difference.
+*/
+@keyframes ss-flash {
+  from {
+    background-color: var(--match-fill);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.monaco-editor .ss-flash-line {
+  animation: ss-flash 1.8s ease-out forwards;
+}
+
 @keyframes ss-spin {
   to {
     transform: rotate(360deg);

@@ -1,5 +1,6 @@
 using SchemaScope.Core.Comparison;
 using SchemaScope.Core.Model;
+using SchemaScope.Scripting;
 
 namespace SchemaScope.Api;
 
@@ -101,4 +102,18 @@ public sealed class ExportResult
     public string? Message { get; set; }
     public string? Path { get; set; }
     public int FileCount { get; set; }
+}
+
+/// <summary>
+/// "Create scripts" for one target of a finished compare. The databases come from the
+/// compare session, never from the request, so the scripts always describe the pair that
+/// was actually compared. The response is a <see cref="ScriptOutcome"/>.
+/// </summary>
+public sealed class ScriptRequest
+{
+    /// <summary>Index into the run's targets, the same index as TargetSummary.Id. Required: null (left out) is a 400, not target 0.</summary>
+    public int? TargetIndex { get; set; }
+    public ScriptOptions Options { get; set; } = new();
+    /// <summary>Optional id the caller makes up, to poll GET /api/scripts/progress/{id} while the run is going.</summary>
+    public string? ProgressId { get; set; }
 }

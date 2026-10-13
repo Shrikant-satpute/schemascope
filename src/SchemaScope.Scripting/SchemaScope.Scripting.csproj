@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Builds the "Create scripts" output: numbered folders of .sql files that make a
+       compare target look like its source. Reads catalogs only; never writes to a server. -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\SchemaScope.Core\SchemaScope.Core.csproj" />
+    <ProjectReference Include="..\SchemaScope.SqlServer\SchemaScope.SqlServer.csproj" />
+  </ItemGroup>
+
+</Project>

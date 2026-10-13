@@ -16,14 +16,21 @@ public sealed class LocalAuth(string token)
 {
     public const string HeaderName = "X-SchemaScope-Token";
 
-    /// <summary>EventSource cannot set headers, so SSE passes the token here instead.</summary>
+    /// <summary>
+    /// EventSource cannot set headers, so SSE passes the token here instead.
+    /// Only honoured on GET: a cross-site page can fire a "simple" POST at
+    /// loopback without a preflight, but it can never add our header to one.
+    /// </summary>
     public const string QueryName = "k";
 
+#if DEBUG
     /// <summary>
-    /// Fixed token for <c>--server</c>, where the Vite dev proxy injects the
-    /// header on every call. Never used by the packaged app.
+    /// Fixed token for <c>--server</c> in a Debug build, where the Vite dev proxy
+    /// injects the header on every call. Compiled out of Release, so the shipped
+    /// exe never accepts a token anyone could look up.
     /// </summary>
     public const string DevToken = "schemascope-dev";
+#endif
 
     public string Token { get; } = token;
 
@@ -36,14 +43,15 @@ public sealed class LocalAuth(string token)
     /// checking it is what stops a browser being used as a bridge onto here.
     /// </summary>
     public static bool IsLoopbackHost(HostString host) =>
-        host.Host is "127.0.0.1" or "localhost" or "::1" or "[::1]";
+        host.Host.ToLowerInvariant() is "127.0.0.1" or "localhost" or "::1" or "[::1]";
 
     public bool IsAuthorised(HttpRequest request)
     {
         if (request.Headers.TryGetValue(HeaderName, out var header) && Matches(header.ToString()))
             return true;
 
-        return request.Query.TryGetValue(QueryName, out var query) && Matches(query.ToString());
+        return (HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method)) &&
+               request.Query.TryGetValue(QueryName, out var query) && Matches(query.ToString());
     }
 
     /// <summary>Length-independent compare; FixedTimeEquals returns false on a length mismatch.</summary>

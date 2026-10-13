@@ -1,57 +1,65 @@
 WEBVTT
 
 1
-00:00:00.000 --> 00:00:04.000
+00:00:00.200 --> 00:00:02.346
 Is production still the same as dev?
 
 2
-00:00:02.500 --> 00:00:04.000
-Most teams can’t say for sure.
+00:00:02.346 --> 00:00:04.150
+Most teams can't say for sure.
 
 3
-00:00:04.200 --> 00:00:07.600
-Dev, QA, UAT, Prod, every client’s copy. They quietly drift apart.
+00:00:04.150 --> 00:00:07.200
+Dev, QA, staging, production, every client's copy.
 
 4
-00:00:07.800 --> 00:00:10.700
-Checking them by hand is slow, one pair at a time, and easy to miss.
+00:00:07.200 --> 00:00:11.260
+They quietly drift apart, and checking them by hand is slow.
 
 5
-00:00:11.400 --> 00:00:15.000
-SchemaScope. See how every database differs from the one you trust, in about a second.
+00:00:12.200 --> 00:00:13.917
+Meet SchemaScope.
 
 6
-00:00:15.300 --> 00:00:19.000
-Step 1: Pick the database you trust
+00:00:15.350 --> 00:00:17.524
+Pick the database you trust,
 
 7
-00:00:19.300 --> 00:00:23.000
-Step 2: Add every copy you want to check
+00:00:19.400 --> 00:00:21.845
+add every copy you want to check,
 
 8
-00:00:23.300 --> 00:00:28.000
-Step 3: Compare them all at once, in about a second
+00:00:22.850 --> 00:00:24.487
+and press Compare.
 
 9
-00:00:28.300 --> 00:00:32.000
-Step 4: See exactly what differs, and where
+00:00:25.400 --> 00:00:29.260
+In about a second, you see exactly what differs, and where.
 
 10
-00:00:32.300 --> 00:00:36.000
-Step 5: Open any object to see the changes side by side
+00:00:32.300 --> 00:00:34.892
+Open any object side by side,
 
 11
-00:00:36.300 --> 00:00:40.000
-Step 6: Generate the SQL to fix it. Checked offline. You run it.
+00:00:36.400 --> 00:00:40.350
+generate the SQL to fix it, checked before you run it,
 
 12
-00:00:40.300 --> 00:00:44.000
-Step 7: Share a read-only link with your team
+00:00:40.350 --> 00:00:43.220
+and share a read-only link with your team.
 
 13
-00:00:44.400 --> 00:00:50.000
-Fast. Free. Read-only. Runs on your PC.
+00:00:44.300 --> 00:00:47.000
+Fast. Free. Read-only.
 
 14
-00:00:50.400 --> 00:00:55.000
-Find the drift before your users do. Download free for Windows at schemascope.shadowmark.in
+00:00:47.000 --> 00:00:49.142
+And it runs on your PC.
+
+15
+00:00:50.300 --> 00:00:52.439
+Find the drift before your users do.
+
+16
+00:00:52.439 --> 00:00:55.000
+Download SchemaScope, free for Windows.

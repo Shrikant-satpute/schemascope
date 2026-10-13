@@ -68,18 +68,50 @@ interface MatchCount {
   right: number
 }
 
+export type DiffSide = 'source' | 'target'
+
+/** What was under the pointer when somebody right-clicked in the diff. */
+export interface DiffContextInfo {
+  x: number
+  y: number
+  side: DiffSide
+  /** The word under the pointer, if any. */
+  word: string
+  /** The current selection, which wins over the word when there is one. */
+  selection: string
+}
+
+export interface RevealTarget {
+  line: number
+  column?: number
+  side: DiffSide
+  /** Switch to this target tab first, when the hit is in a target. */
+  targetIndex?: number
+  /** Change this to jump again to the same place. */
+  nonce: number
+}
+
 export function DiffPanel({
   detail,
   loading,
   theme,
   sourceColour,
   targetColours,
+  onContextMenu,
+  revealTarget,
+  highlight,
 }: {
   detail: ObjectDetail | null
   loading: boolean
   theme: 'dark' | 'light'
   sourceColour: DbColour | null
   targetColours: DbColour[]
+  /** Raised on right-click; the workspace decides what the menu should offer. */
+  onContextMenu?: (info: DiffContextInfo) => void
+  /** Jump to a line, e.g. after clicking a search result. Bump the nonce to repeat. */
+  revealTarget?: RevealTarget | null
+  /** Kept lit even when nothing is selected - the term the references panel is showing. */
+  highlight?: string | null
 }) {
   const [targetIndex, setTargetIndex] = useState(0)
   const [view, setView] = useState<'text' | 'grid'>('text')
@@ -87,21 +119,38 @@ export function DiffPanel({
   const [showUnchanged, setShowUnchanged] = useState(false)
   const [copied, setCopied] = useState<'source' | 'target' | null>(null)
   const [matches, setMatches] = useState<MatchCount | null>(null)
+
+  /** Bumped when Monaco is ready, so effects that need the editor can run again. */
+  const [ready, setReady] = useState(0)
+
   const editorRef = useRef<MonacoDiffEditor | null>(null)
-  const clearHighlightsRef = useRef<(() => void) | null>(null)
+  const monacoRef = useRef<Monaco | null>(null)
+  const paintRef = useRef<((text: string) => void) | null>(null)
+  const restoreRef = useRef<(() => void) | null>(null)
+  const flashRef = useRef<MonacoApi.IEditorDecorationsCollection | null>(null)
+  const applyRevealRef = useRef<((afterModelChange?: boolean) => boolean) | null>(null)
+  const appliedNonce = useRef<number | null>(null)
+  /** Reset per object, so every object still lands on its first change. */
+  const autoJumped = useRef(false)
+  // Read inside the Monaco callbacks, which are created once and must not close
+  // over a stale prop.
+  const externalRef = useRef<string | null>(null)
+  const contextRef = useRef(onContextMenu)
+  contextRef.current = onContextMenu
 
   useEffect(() => {
     setTargetIndex(0)
+    autoJumped.current = false
     if (detail && !detail.isModule && detail.hasStructure) setView('grid')
     else setView('text')
   }, [detail?.key])
 
-  // A new object means new text on both sides - anything left over from the
-  // last one is meaningless.
+  // A new object means new text on both sides. Anything selected there is
+  // meaningless now, but a term the references panel is showing still applies.
   useEffect(() => {
-    clearHighlightsRef.current?.()
-    setMatches(null)
-  }, [detail?.key, targetIndex])
+    externalRef.current = highlight ?? null
+    restoreRef.current?.()
+  }, [highlight, detail?.key, targetIndex])
 
   /**
    * Select a word on either side and every other place it appears lights up -
@@ -133,7 +182,6 @@ export function DiffPanel({
         /* the editor is already gone - nothing left to un-highlight */
       }
     }
-    clearHighlightsRef.current = clear
 
     /** Whole-word first, so "id" does not light up every "identity". */
     const findIn = (pane: MonacoApi.ICodeEditor, text: string, wordLike: boolean) => {
@@ -167,30 +215,147 @@ export function DiffPanel({
       setMatches({ text, left: found[0], right: found[1] })
     }
 
-    const listeners = panes.map((pane) =>
-      pane.onDidChangeCursorSelection(() => {
+    /** Nothing selected falls back to whatever the references panel is showing. */
+    const restore = () => {
+      if (externalRef.current) paint(externalRef.current)
+      else {
+        clear()
+        setMatches(null)
+      }
+    }
+
+    paintRef.current = paint
+    restoreRef.current = restore
+
+    const listeners = panes.flatMap((pane, index) => {
+      const side: DiffSide = index === 0 ? 'source' : 'target'
+
+      const selectionListener = pane.onDidChangeCursorSelection(() => {
         const selection = pane.getSelection()
         const model = pane.getModel()
 
         // One line only: dragging over a whole block is a read, not a lookup.
         if (!selection || !model || selection.isEmpty() ||
             selection.startLineNumber !== selection.endLineNumber) {
-          clear()
-          setMatches(null)
+          restore()
           return
         }
 
         paint(model.getValueInRange(selection))
-      }),
-    )
+      })
+
+      // Monaco's own menu is off, so the browser event is ours to take. Asking
+      // the editor what is under the pointer beats guessing from coordinates.
+      const node = pane.getDomNode()
+      const onMenu = (event: MouseEvent) => {
+        if (!contextRef.current) return
+        event.preventDefault()
+
+        const model = pane.getModel()
+        const selection = pane.getSelection()
+        const position = pane.getTargetAtClientPoint(event.clientX, event.clientY)?.position
+
+        const selected =
+          model && selection && !selection.isEmpty() ? model.getValueInRange(selection) : ''
+        const word = model && position ? (model.getWordAtPosition(position)?.word ?? '') : ''
+
+        contextRef.current({
+          x: event.clientX,
+          y: event.clientY,
+          side,
+          word,
+          selection: selected,
+        })
+      }
+
+      node?.addEventListener('contextmenu', onMenu)
+
+      return [
+        selectionListener,
+        { dispose: () => node?.removeEventListener('contextmenu', onMenu) },
+      ]
+    })
 
     return () => {
       listeners.forEach((l) => l.dispose())
-      clearHighlightsRef.current = null
+      paintRef.current = null
+      restoreRef.current = null
     }
   }, [])
 
-  useEffect(() => () => clearHighlightsRef.current?.(), [])
+  /**
+   * Jump to a line somebody clicked in the references panel, and flash it so the
+   * eye lands in the right place on a 600 line procedure.
+   *
+   * Reassigned every render so it always reads current props, and returns whether
+   * it managed it. Three things call it, because any one of them alone misses a
+   * case: the effect below (normal path), the mount callback (the editor did not
+   * exist yet - searching from a matrix row without opening anything first), and
+   * the diff-updated event (the models had not caught up).
+   */
+  applyRevealRef.current = (afterModelChange = false) => {
+    const target = revealTarget
+    const diff = editorRef.current
+    const monaco = monacoRef.current
+
+    if (!target || !diff || !monaco) return false
+
+    // Monaco reports itself mounted before the text is in it, so an early jump
+    // gets wiped when the content lands and the scroll resets to the top. The
+    // diff-updated event is the moment the text is really there, so a jump that
+    // is still fresh is allowed to run a second time from there.
+    const settling = afterModelChange && Date.now() - target.nonce < 3000
+    if (!settling && target.nonce === appliedNonce.current) return false
+
+    // A hit in a target belongs to that tab, and lines only exist in the text view.
+    if (target.targetIndex !== undefined && target.targetIndex !== targetIndex) {
+      setTargetIndex(target.targetIndex)
+      return false
+    }
+    if (view !== 'text') {
+      setView('text')
+      return false
+    }
+
+    const pane = target.side === 'source' ? diff.getOriginalEditor() : diff.getModifiedEditor()
+    const model = pane?.getModel()
+    if (!pane || !model || model.getLineCount() < target.line) return false
+
+    // Opening a result loads a new object, and the editor's model catches up a
+    // beat later. Scrolling now would move the *previous* object to line 34 and
+    // then get reset when the text arrives - so wait until the model really is
+    // showing what we were asked to jump into.
+    const expected =
+      target.side === 'source'
+        ? detail?.sourceText
+        : detail?.targets[target.targetIndex ?? targetIndex]?.text
+    if (expected && model.getLineCount() !== expected.split('\n').length) return false
+
+    appliedNonce.current = target.nonce
+    // Monaco finishes computing the diff after this runs, and the convenience
+    // jump rides in on that event. Claim it now or it scrolls this away.
+    autoJumped.current = true
+
+    pane.revealLineNearTop(target.line)
+    pane.setPosition({ lineNumber: target.line, column: target.column ?? 1 })
+
+    flashRef.current?.clear()
+    flashRef.current = pane.createDecorationsCollection([
+      {
+        range: new monaco.Range(target.line, 1, target.line, 1),
+        options: { isWholeLine: true, className: 'ss-flash-line' },
+      },
+    ])
+    window.setTimeout(() => flashRef.current?.clear(), 1800)
+
+    return true
+  }
+
+  useEffect(() => {
+    applyRevealRef.current?.()
+  }, [revealTarget, detail?.key, targetIndex, view, ready])
+
+  useEffect(() => () => restoreRef.current?.(), [])
 
   // Keyboard: F8 / Shift+F8 walk through the changes, like a code review tool.
   useEffect(() => {
@@ -335,6 +500,9 @@ export function DiffPanel({
             targetColour={targetColours[targetIndex] ?? null}
             showUnchanged={showUnchanged}
             onToggleUnchanged={setShowUnchanged}
+            onNameContextMenu={(name, x, y) =>
+              onContextMenu?.({ x, y, side: 'source', word: name, selection: '' })
+            }
           />
         ) : (
           <DiffEditor
@@ -346,7 +514,9 @@ export function DiffPanel({
             beforeMount={defineThemes}
             onMount={(editor, monaco) => {
               editorRef.current = editor
+              monacoRef.current = monaco
               attachHighlighting(editor, monaco)
+
               // Land on the first change rather than at line 1. On a 600 line
               // procedure the difference is usually nowhere near the top.
               const jump = () => {
@@ -356,10 +526,26 @@ export function DiffPanel({
                 const line = first.modifiedStartLineNumber || first.originalStartLineNumber || 1
                 editor.getModifiedEditor()?.revealLineNearTop(Math.max(1, line - 2))
               }
-              const sub = editor.onDidUpdateDiff(() => {
+
+              // Fires whenever the models change and the diff has been recomputed -
+              // the one moment we know both sides are really loaded.
+              editor.onDidUpdateDiff(() => {
+                restoreRef.current?.()
+
+                // Somebody asked for a specific line. That always beats the
+                // convenience jump, which would otherwise scroll it away again.
+                if (applyRevealRef.current?.(true)) {
+                  autoJumped.current = true
+                  return
+                }
+                if (autoJumped.current) return
+                autoJumped.current = true
                 jump()
-                sub.dispose()
               })
+
+              // The editor exists now; anything that gave up waiting can retry.
+              setReady((r) => r + 1)
+              applyRevealRef.current?.()
             }}
             options={{
               readOnly: true,

@@ -20,11 +20,13 @@ cd web
 npm run dev
 ```
 
-`--server` mode uses a fixed API token that the Vite proxy injects on every
-forwarded request. The packaged app mints a random one instead and hands it to
-its own window. If you add a call that bypasses `web/src/api.ts`, remember it
-needs the `X-SchemaScope-Token` header, or `?k=` for anything using
-`EventSource`.
+In a Debug build `--server` mode uses a fixed API token that the Vite proxy
+injects on every forwarded request. A Release build never accepts that token:
+`--server` mints a random one and prints it, and Vite picks it up from the
+`SCHEMASCOPE_TOKEN` environment variable. The packaged app mints its own and
+hands it to its window. If you add a call that bypasses `web/src/api.ts`,
+remember it needs the `X-SchemaScope-Token` header. `?k=` is accepted on GET
+only, for `EventSource`.
 
 ## Tests
 

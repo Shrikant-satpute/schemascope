@@ -28,6 +28,12 @@ public sealed class SchemaSnapshot
     /// <summary>How long each stage took. Shown in the UI so slowness is never a mystery.</summary>
     public Dictionary<string, long> TimingsMs { get; set; } = [];
 
+    /// <summary>Module bodies taken from the cache because modify_date had not moved.</summary>
+    public int ReusedBodies { get; set; }
+
+    /// <summary>Module bodies that had to be read from the server.</summary>
+    public int FetchedBodies { get; set; }
+
     /// <summary>Objects whose body could not be read (encrypted or no permission).</summary>
     public int UnreadableCount => Objects.Count(o => o.IsEncrypted || o.DefinitionUnavailable);
 

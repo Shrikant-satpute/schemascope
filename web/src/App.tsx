@@ -1,36 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Database, History, Lock, Moon, Server, Sun, Zap } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { AlertTriangle, Database, History, Lock, Moon, Server, Share2, Sun, Zap } from 'lucide-react'
 import { api } from './api'
 import type {
   CompareHistoryEntry,
   CompareOptions,
   CompareResult,
-  CompareRow,
   ConnectionSettings,
-  ObjectDetail,
-  ObjectStatus,
   ProgressEvent,
 } from './types'
-import { dbColour, dbKey } from './dbColour'
 import { ConnectionsView } from './components/ConnectionsView'
 import { HistoryView } from './components/HistoryView'
+import { ShareView } from './components/ShareView'
 import { SetupBar, type TargetSlot } from './components/SetupBar'
-import { Dashboard } from './components/Dashboard'
-import { MatrixGrid, filterRows, type MatrixFilters } from './components/MatrixGrid'
-import { DiffPanel } from './components/DiffPanel'
-import { ResultsToolbar } from './components/ResultsToolbar'
+import { ResultsWorkspace } from './components/ResultsWorkspace'
 import { OptionsDialog, countNonDefault } from './components/OptionsDialog'
+import { ScriptDialog } from './components/ScriptDialog'
 import { Button, EmptyState, Spinner } from './components/ui'
 
-type View = 'compare' | 'connections' | 'history'
-
-const EMPTY_FILTERS: MatrixFilters = {
-  search: '',
-  differencesOnly: true,
-  types: new Set(),
-  statuses: new Set(),
-  targetIndex: null,
-}
+type View = 'compare' | 'connections' | 'history' | 'share'
 
 const THEME_KEY = 'schemascope.theme'
 
@@ -62,17 +49,17 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [hint, setHint] = useState<string | null>(null)
 
-  const [filters, setFilters] = useState<MatrixFilters>(EMPTY_FILTERS)
-  const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const [detail, setDetail] = useState<ObjectDetail | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [dashCollapsed, setDashCollapsed] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+  /** Index into `result.targets` whose "Create scripts" dialog is open, or null. */
+  const [scriptTarget, setScriptTarget] = useState<number | null>(null)
+  const closeScripts = useCallback(() => setScriptTarget(null), [])
   const [toast, setToast] = useState<string | null>(null)
 
-  const [splitPct, setSplitPct] = useState(52)
-  const dragging = useRef(false)
-  const splitRef = useRef<HTMLDivElement>(null)
+  const say = useCallback((message: string) => {
+    setToast(message)
+    setTimeout(() => setToast(null), 4000)
+  }, [])
 
   // ---------------- bootstrap ----------------
 
@@ -127,8 +114,7 @@ export default function App() {
 
       const nextSource = toSlot(entry.source)
       if (!nextSource) {
-        setToast('That source connection has been deleted, so this one cannot be loaded.')
-        setTimeout(() => setToast(null), 4000)
+        say('That source connection has been deleted, so this one cannot be loaded.')
         return
       }
 
@@ -139,20 +125,17 @@ export default function App() {
       setTargets(nextTargets)
       setOptions(entry.options)
       setResult(null)
-      setDetail(null)
-      setSelectedKey(null)
       setError(null)
       setHint(null)
       setView('compare')
 
-      setToast(
+      say(
         dropped > 0
           ? `Loaded. ${dropped} deleted connection${dropped === 1 ? '' : 's'} left out - press Compare when ready.`
           : 'Loaded - press Compare when you are ready.',
       )
-      setTimeout(() => setToast(null), 4000)
     },
-    [connections],
+    [connections, say],
   )
 
   useEffect(() => {
@@ -173,10 +156,7 @@ export default function App() {
     setError(null)
     setHint(null)
     setResult(null)
-    setDetail(null)
-    setSelectedKey(null)
     setProgress([])
-    setFilters(EMPTY_FILTERS)
 
     try {
       const { runId: id } = await api.compare.start({
@@ -222,99 +202,57 @@ export default function App() {
     setRunning(false)
   }
 
-  // ---------------- object detail ----------------
-
-  const selectRow = useCallback(
-    async (row: CompareRow) => {
-      if (!runId) return
-      setSelectedKey(row.key)
-      setDetailLoading(true)
-      try {
-        setDetail(await api.compare.object(runId, row.key))
-      } catch {
-        setDetail(null)
-      } finally {
-        setDetailLoading(false)
-      }
-    },
-    [runId],
-  )
-
-  const rows = useMemo(() => (result ? filterRows(result, filters) : []), [result, filters])
-
-  // One tint per database, worked out once and handed down, so the dashboard
-  // tile, the matrix column and the diff tab all agree on what colour a
-  // database is.
-  const sourceColour = useMemo(
-    () => (result ? dbColour(dbKey(result.source.server, result.source.database)) : null),
-    [result],
-  )
-  const targetColours = useMemo(
-    () => (result ? result.targets.map((t) => dbColour(dbKey(t.server, t.database))) : []),
-    [result],
-  )
-
-  // Arrow keys walk the matrix without leaving the keyboard.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!result || rows.length === 0) return
-      const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
-
-      e.preventDefault()
-      const i = rows.findIndex((r) => r.key === selectedKey)
-      const next = e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1)
-      if (rows[next]) void selectRow(rows[next])
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [rows, selectedKey, result, selectRow])
-
-  // ---------------- split drag ----------------
-
-  useEffect(() => {
-    const move = (e: MouseEvent) => {
-      if (!dragging.current || !splitRef.current) return
-      const box = splitRef.current.getBoundingClientRect()
-      const pct = ((e.clientY - box.top) / box.height) * 100
-      setSplitPct(Math.min(85, Math.max(15, pct)))
-    }
-    const up = () => {
-      dragging.current = false
-      document.body.style.userSelect = ''
-    }
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
-    return () => {
-      window.removeEventListener('mousemove', move)
-      window.removeEventListener('mouseup', up)
-    }
-  }, [])
-
   // ---------------- export ----------------
 
-  async function doExport(format: 'html' | 'csv' | 'md' | 'sql') {
+  async function doExport(format: 'html' | 'csv' | 'md' | 'sql', differencesOnly: boolean) {
     if (!runId) return
     setExporting(true)
     try {
       if (format === 'sql') {
         const folder = window.prompt('Folder to write the .sql files into:', 'D:\\SchemaScope-export')
         if (!folder) return
-        const res = await api.compare.exportTo(runId, 'sql', {
-          outputFolder: folder,
-          differencesOnly: filters.differencesOnly,
-        })
-        setToast(res && 'message' in res ? (res.message ?? 'Done') : 'Done')
+        const res = await api.compare.exportTo(runId, 'sql', { outputFolder: folder, differencesOnly })
+        say(res && 'message' in res ? (res.message ?? 'Done') : 'Done')
       } else {
-        await api.compare.exportTo(runId, format, { differencesOnly: filters.differencesOnly })
-        setToast('Report downloaded')
+        await api.compare.exportTo(runId, format, { differencesOnly })
+        say('Report downloaded')
       }
     } catch (e) {
-      setToast(e instanceof Error ? e.message : String(e))
+      say(e instanceof Error ? e.message : String(e))
     } finally {
       setExporting(false)
-      setTimeout(() => setToast(null), 4000)
+    }
+  }
+
+  // ---------------- share ----------------
+
+  /**
+   * Publishes the run on screen and copies the link. The whole comparison is
+   * written to disk first, so the link keeps working after this run has fallen
+   * out of memory.
+   */
+  async function doShare() {
+    if (!runId) return
+    setPublishing(true)
+    try {
+      const { share, started, error: shareError } = await api.shares.publish(runId)
+
+      if (!started) {
+        say(shareError ?? 'The comparison was published, but the listener would not start.')
+      } else if (share.urls[0]) {
+        // urls[0] is the real network card - the one most likely to work for
+        // somebody else. See ShareNetwork.Addresses.
+        await navigator.clipboard.writeText(share.urls[0].url).catch(() => undefined)
+        say('Link copied. Open the Share tab to see who is reading it.')
+      } else {
+        say('Shared. Open the Share tab for the link.')
+      }
+
+      setView('share')
+    } catch (e) {
+      say(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPublishing(false)
     }
   }
 
@@ -352,6 +290,12 @@ export default function App() {
             label="History"
             badge={history.length || undefined}
           />
+          <NavTab
+            active={view === 'share'}
+            onClick={() => setView('share')}
+            icon={<Share2 size={13} />}
+            label="Share"
+          />
         </nav>
 
         <div className="flex-1" />
@@ -382,6 +326,8 @@ export default function App() {
           onUse={useHistoryEntry}
           onChanged={() => void loadHistory().catch(() => undefined)}
         />
+      ) : view === 'share' ? (
+        <ShareView hasResult={!!result} onGoToCompare={() => setView('compare')} onToast={say} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           <SetupBar
@@ -439,65 +385,20 @@ export default function App() {
             </div>
           )}
 
-          {result && (
-            <>
-              <Dashboard
-                result={result}
-                sourceColour={sourceColour}
-                targetColours={targetColours}
-                collapsed={dashCollapsed}
-                onToggle={() => setDashCollapsed((v) => !v)}
-                onFocusTarget={(i) => setFilters((f) => ({ ...f, targetIndex: i, differencesOnly: true }))}
-                onFilterStatus={(i, s: ObjectStatus) =>
-                  setFilters((f) => ({ ...f, targetIndex: i, statuses: new Set([s]), differencesOnly: true }))
-                }
-              />
-
-              <ResultsToolbar
-                result={result}
-                filters={filters}
-                onChange={setFilters}
-                shownCount={rows.length}
-                onExport={doExport}
-                exporting={exporting}
-              />
-
-              <div ref={splitRef} className="flex min-h-0 flex-1 flex-col">
-                <div style={{ height: `${splitPct}%` }} className="min-h-0">
-                  <MatrixGrid
-                    result={result}
-                    rows={rows}
-                    targetColours={targetColours}
-                    selectedKey={selectedKey}
-                    onSelect={selectRow}
-                  />
-                </div>
-
-                <div
-                  onMouseDown={() => {
-                    dragging.current = true
-                    document.body.style.userSelect = 'none'
-                  }}
-                  className="group flex h-1.5 shrink-0 cursor-row-resize items-center justify-center"
-                  style={{ background: 'var(--line-soft)' }}
-                >
-                  <span
-                    className="h-0.5 w-10 rounded-full transition-colors group-hover:bg-[var(--accent)]"
-                    style={{ background: 'var(--line)' }}
-                  />
-                </div>
-
-                <div className="min-h-0 flex-1">
-                  <DiffPanel
-                    detail={detail}
-                    loading={detailLoading}
-                    theme={theme}
-                    sourceColour={sourceColour}
-                    targetColours={targetColours}
-                  />
-                </div>
-              </div>
-            </>
+          {result && runId && (
+            <ResultsWorkspace
+              key={runId}
+              result={result}
+              theme={theme}
+              loadObject={(key) => api.compare.object(runId, key)}
+              findReferences={(name) => api.compare.references(runId, name)}
+              findUses={(key) => api.compare.uses(runId, key)}
+              onExport={doExport}
+              exporting={exporting}
+              onShare={doShare}
+              sharing={publishing}
+              onCreateScripts={setScriptTarget}
+            />
           )}
         </div>
       )}
@@ -510,6 +411,19 @@ export default function App() {
             setOptions(o)
             setShowOptions(false)
           }}
+        />
+      )}
+
+      {/* Mounted here because App owns the runId; keyed so a different target
+          always starts from a fresh form. */}
+      {scriptTarget !== null && result && runId && result.targets[scriptTarget] && (
+        <ScriptDialog
+          key={`${runId}:${scriptTarget}`}
+          runId={runId}
+          result={result}
+          targetIndex={scriptTarget}
+          onClose={closeScripts}
+          onToast={say}
         />
       )}
 

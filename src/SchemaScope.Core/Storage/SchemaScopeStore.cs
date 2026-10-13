@@ -104,6 +104,18 @@ public sealed class SchemaScopeStore
 
             CREATE INDEX IF NOT EXISTS ix_compare_history_last_run
                 ON compare_history (last_run DESC);
+
+            CREATE TABLE IF NOT EXISTS shares (
+                token         TEXT PRIMARY KEY,
+                source_label  TEXT NOT NULL,
+                source_detail TEXT NOT NULL,
+                targets_json  TEXT NOT NULL,
+                compared      TEXT NOT NULL,
+                created       TEXT NOT NULL,
+                expires       TEXT NOT NULL,
+                object_count  INTEGER NOT NULL DEFAULT 0,
+                total_views   INTEGER NOT NULL DEFAULT 0
+            );
             """;
         cmd.ExecuteNonQuery();
     }
@@ -137,13 +149,18 @@ public sealed class SchemaScopeStore
         if (string.IsNullOrWhiteSpace(s.Id)) s.Id = Guid.NewGuid().ToString("n");
 
         // A blank password on an existing row means "leave what is saved alone",
-        // so the UI never has to round-trip the real secret.
+        // so the UI never has to round-trip the real secret. That only holds while
+        // the row still points where the secret was saved for: re-pointing a saved
+        // connection at another server or login drops the password rather than
+        // carrying it along to whoever answers there.
         byte[]? passwordEnc;
         byte[]? rawEnc;
         var existing = GetConnectionRawSecrets(s.Id);
 
         if (string.IsNullOrEmpty(s.Password) || s.Password == "********")
-            passwordEnc = existing.Password;
+            passwordEnc = GetConnection(s.Id) is { } saved && ConnectionSettings.SameDestination(s, saved)
+                ? existing.Password
+                : null;
         else
             passwordEnc = SecretProtector.Protect(s.Password);
 
@@ -439,6 +456,108 @@ public sealed class SchemaScopeStore
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM compare_history";
         cmd.ExecuteNonQuery();
+    }
+
+    // ---------------- shares ----------------
+
+    public List<ShareRecord> GetShares()
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT token, source_label, source_detail, targets_json, compared, created,
+                   expires, object_count, total_views
+            FROM shares
+            ORDER BY created DESC;
+            """;
+        using var r = cmd.ExecuteReader();
+
+        var list = new List<ShareRecord>();
+        while (r.Read())
+        {
+            list.Add(new ShareRecord
+            {
+                Token = r.GetString(0),
+                SourceLabel = r.GetString(1),
+                SourceDetail = r.GetString(2),
+                TargetLabels = JsonSerializer.Deserialize<List<string>>(r.GetString(3)) ?? [],
+                ComparedUtc = ReadUtc(r.GetString(4)),
+                CreatedUtc = ReadUtc(r.GetString(5)),
+                ExpiresUtc = ReadUtc(r.GetString(6)),
+                ObjectCount = r.GetInt32(7),
+                TotalViews = r.GetInt32(8)
+            });
+        }
+        return list;
+    }
+
+    public void SaveShare(ShareRecord share)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO shares
+                (token, source_label, source_detail, targets_json, compared, created,
+                 expires, object_count, total_views)
+            VALUES
+                ($token, $label, $detail, $targets, $compared, $created,
+                 $expires, $objects, $views)
+            ON CONFLICT(token) DO UPDATE SET
+                expires = excluded.expires,
+                total_views = excluded.total_views;
+            """;
+        cmd.Parameters.AddWithValue("$token", share.Token);
+        cmd.Parameters.AddWithValue("$label", share.SourceLabel);
+        cmd.Parameters.AddWithValue("$detail", share.SourceDetail);
+        cmd.Parameters.AddWithValue("$targets", JsonSerializer.Serialize(share.TargetLabels));
+        cmd.Parameters.AddWithValue("$compared", share.ComparedUtc.ToString("O"));
+        cmd.Parameters.AddWithValue("$created", share.CreatedUtc.ToString("O"));
+        cmd.Parameters.AddWithValue("$expires", share.ExpiresUtc.ToString("O"));
+        cmd.Parameters.AddWithValue("$objects", share.ObjectCount);
+        cmd.Parameters.AddWithValue("$views", share.TotalViews);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void DeleteShare(string token)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM shares WHERE token = $token";
+        cmd.Parameters.AddWithValue("$token", token);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void CountShareView(string token)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE shares SET total_views = total_views + 1 WHERE token = $token";
+        cmd.Parameters.AddWithValue("$token", token);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Drops shares that have run out of time. Returns their tokens so the payload files can go too.</summary>
+    public List<string> DeleteExpiredShares(DateTime nowUtc)
+    {
+        using var conn = Open();
+
+        var expired = new List<string>();
+        using (var find = conn.CreateCommand())
+        {
+            find.CommandText = "SELECT token FROM shares WHERE expires <= $now";
+            find.Parameters.AddWithValue("$now", nowUtc.ToString("O"));
+            using var r = find.ExecuteReader();
+            while (r.Read()) expired.Add(r.GetString(0));
+        }
+
+        if (expired.Count == 0) return expired;
+
+        using var del = conn.CreateCommand();
+        del.CommandText = "DELETE FROM shares WHERE expires <= $now";
+        del.Parameters.AddWithValue("$now", nowUtc.ToString("O"));
+        del.ExecuteNonQuery();
+
+        return expired;
     }
 
     // Fully qualified: System.Globalization.CompareOptions would collide with ours.

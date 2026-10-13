@@ -102,8 +102,14 @@ Console.WriteLine();
 Console.WriteLine($"source: {run.Source.Objects.Count} objects  " +
                   $"(connect {run.Source.TimingsMs.GetValueOrDefault("connect")} ms, " +
                   $"catalog {run.Source.TimingsMs.GetValueOrDefault("catalog")} ms, " +
+                  $"bodies {run.Source.TimingsMs.GetValueOrDefault("bodies")} ms, " +
                   $"model {run.Source.TimingsMs.GetValueOrDefault("assemble")} ms, " +
                   $"hash {run.Source.TimingsMs.GetValueOrDefault("hash")} ms)");
+
+foreach (var snap in run.Targets.Prepend(run.Source))
+    Console.WriteLine($"        {snap.Label}: {snap.ReusedBodies} bodies unchanged, " +
+                      $"{snap.FetchedBodies} read from the server " +
+                      $"({snap.TimingsMs.GetValueOrDefault("bodies")} ms)");
 Console.WriteLine($"        {run.Source.ProductVersion} / {run.Source.Edition}");
 
 // ---- matrix --------------------------------------------------------------

@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SchemaScope Explainer</title>
+<!--
+  SchemaScope explainer: 1920x1080 motion graphics.
+  Every pixel is a pure function of time: call window.renderAt(seconds).
+  No CSS transitions, no timers, no wall clock. System fonts only (Segoe UI, Cascadia Mono).
+-->
+<style>
+:root{
+  --page:#0d0f14; --surface:#12141b; --surface2:#171a23; --raised:#1d212c;
+  --line:#262b38; --line-soft:#1e2230;
+  --text:#e6e8ef; --text2:#9aa1b4; --text3:#6b7285;
+  --accent:#3987e5; --same:#1baf7a; --fmt:#7d8598; --diff:#c98500; --miss:#d03b3b; --extra:#9085e9;
+  --teal:#14b8a6;
+  --sans:'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+  --mono:'Cascadia Mono', ui-monospace, Consolas, monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--page);color:var(--text);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+#stage{position:absolute;inset:0;overflow:hidden;background:var(--page)}
+.abs{position:absolute}
+.scene{position:absolute;inset:0;visibility:hidden}
+.mono{font-family:var(--mono)}
+.w{display:inline-block;white-space:pre;will-change:transform,opacity}
+
+/* background */
+#bg-grid{position:absolute;inset:-200px;background-image:
+  linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+  linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+  background-size:64px 64px}
+.glow{position:absolute;border-radius:50%;filter:blur(90px);opacity:.5}
+
+/* caption */
+#cap{position:absolute;left:0;right:0;bottom:46px;display:flex;justify-content:center;pointer-events:none}
+#capbox{display:flex;align-items:center;gap:22px;padding:18px 34px 20px;border-radius:18px;
+  background:rgba(13,15,20,.86);border:1px solid #262b38;box-shadow:0 20px 60px rgba(0,0,0,.55)}
+#capnum{width:52px;height:52px;border-radius:50%;background:var(--accent);color:#fff;font-weight:700;font-size:28px;
+  display:flex;align-items:center;justify-content:center;flex:none}
+#captext{font-size:44px;font-weight:600;letter-spacing:-.6px;color:#f3f4f8;white-space:nowrap}
+#captext em{font-style:normal;color:var(--teal)}
+
+/* hook */
+.cyl{position:absolute;width:70px;height:96px}
+.cyl svg{width:70px;height:84px;display:block;overflow:visible}
+.cyl .b{fill:var(--f);stroke:var(--c);stroke-width:2}
+.cyl .r{fill:none;stroke:var(--c);stroke-width:1.5;opacity:.55}
+.cyl span{display:block;text-align:center;font-size:13px;color:var(--text3);margin-top:4px;font-family:var(--mono);white-space:nowrap;margin-left:-20px;margin-right:-20px}
+#hookText{position:absolute;left:0;right:0;top:350px;text-align:center;font-weight:700;letter-spacing:-3px;line-height:1.08}
+#hookText .l1,#hookText .l2{font-size:124px}
+#hookSub{position:absolute;left:0;right:0;top:668px;text-align:center;font-size:40px;color:var(--text2);font-weight:500}
+
+/* problem */
+.node{position:absolute;display:flex;align-items:center;gap:14px;padding:14px 22px;border-radius:14px;background:var(--surface);
+  border:1.5px solid var(--line);font-size:26px;font-weight:600;white-space:nowrap}
+.node .ic{width:34px;height:40px}
+.node small{display:block;font-size:15px;color:var(--text3);font-weight:400;font-family:var(--mono)}
+.badge{position:absolute;padding:6px 12px;border-radius:9px;font-family:var(--mono);font-size:20px;font-weight:700;white-space:nowrap}
+#clock{position:absolute;left:150px;top:170px;width:380px;padding:22px 26px;border-radius:16px;background:var(--surface);border:1px solid var(--line)}
+#clock .lbl{font-size:16px;letter-spacing:2px;color:var(--text3);font-weight:600}
+#clock .val{font-family:var(--mono);font-size:64px;font-weight:700;color:var(--diff);margin-top:6px}
+#clock .sub{font-size:19px;color:var(--text2);margin-top:4px}
+
+/* reveal */
+#logoWrap{position:absolute;left:50%;top:250px;width:240px;height:240px;margin-left:-120px}
+#wordmark{position:absolute;left:0;right:0;top:530px;text-align:center;font-size:118px;font-weight:700;letter-spacing:-3.5px}
+#promise{position:absolute;left:0;right:0;top:700px;text-align:center;font-size:42px;color:var(--text2);font-weight:500;letter-spacing:-.4px}
+#promise b{color:var(--text);font-weight:600}
+
+/* app window */
+#app{position:absolute;left:0;top:0;width:1680px;height:820px;transform-origin:0 0;border-radius:14px;overflow:hidden;
+  background:var(--page);border:1px solid #2a2f3a;box-shadow:0 40px 120px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.02)}
+#app .hdr{position:absolute;left:0;top:0;right:0;height:52px;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 18px;gap:8px;font-size:15px}
+.tab{padding:7px 14px;border-radius:8px;color:var(--text2);display:flex;gap:8px;align-items:center}
+.tab.on{background:var(--raised);color:var(--text)}
+.ro{margin-left:auto;padding:6px 12px;border-radius:7px;background:rgba(27,175,122,.14);color:var(--same);font-size:13px;font-weight:600;border:1px solid rgba(27,175,122,.3)}
+#app .setup{position:absolute;left:0;right:0;top:52px;height:76px;background:var(--surface2);border-bottom:1px solid var(--line)}
+.lbl{font-size:12px;letter-spacing:1.6px;color:var(--text3);font-weight:600}
+.srcbox{position:absolute;left:96px;top:12px;width:262px;height:52px;border-radius:9px;border:1px solid var(--line);background:var(--raised);padding:7px 14px}
+.srcbox .a{font-size:16px;font-weight:600}
+.srcbox .b{font-size:12px;color:var(--text3);font-family:var(--mono);margin-top:1px}
+.chip{position:absolute;top:22px;height:34px;border-radius:8px;padding:0 12px;display:flex;align-items:center;gap:10px;font-size:15px;font-weight:600;white-space:nowrap;border:1px solid}
+.chip i{font-style:normal;color:var(--text3);font-weight:400}
+.btn{position:absolute;height:38px;border-radius:8px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:15px;font-weight:600;border:1px solid var(--line);background:var(--raised);color:var(--text);white-space:nowrap}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.panel{position:absolute;background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.tile{position:absolute;top:174px;width:300px;height:160px;border-radius:12px;border:1.5px solid;padding:14px 16px;overflow:hidden}
+.tile .n{font-size:16px;font-weight:700}
+.tile .h{font-size:12px;color:var(--text3);font-family:var(--mono);margin-top:1px}
+.tile .pct{font-size:40px;font-weight:700;letter-spacing:-1px;margin-top:8px}
+.tile .pct small{font-size:15px;font-weight:500;color:var(--text2);letter-spacing:0;margin-left:6px}
+.meter{position:relative;height:8px;border-radius:4px;background:var(--line-soft);overflow:hidden;margin-top:8px;display:flex;gap:2px}
+.meter div{height:100%;border-radius:3px}
+.cnts{display:flex;gap:12px;font-size:12.5px;color:var(--text2);margin-top:10px;white-space:nowrap}
+.cnts b{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:1px}
+.fic{position:absolute;right:12px;top:12px;width:30px;height:30px;border-radius:7px;border:1px solid var(--line);background:var(--raised);display:flex;align-items:center;justify-content:center}
+.mrow{position:absolute;left:0;right:0;height:30px;font-size:14.5px;display:flex;align-items:center}
+.mrow .ty{position:absolute;left:20px;color:var(--text2);font-size:13.5px}
+.mrow .ob{position:absolute;left:150px;font-family:var(--mono);font-size:14.5px;font-weight:600}
+.mrow .ob i{font-style:normal;color:var(--text3);font-weight:400}
+.cell{position:absolute;top:0;width:150px;height:30px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:15px;font-weight:700}
+.code{position:absolute;font-family:var(--mono);font-size:15px;line-height:22px;white-space:pre}
+.code .ln{display:block;height:22px;padding-left:58px;position:relative}
+.code .ln u{position:absolute;left:0;width:44px;text-align:right;color:var(--text3);text-decoration:none}
+.kw{color:#569cd6}.fn{color:#dcdcaa}.str{color:#ce9178}.cm{color:#6a9955}.num{color:#b5cea8}.sys{color:#c586c0}
+.sec{position:absolute;left:28px;right:28px;height:40px;display:flex;align-items:center;font-size:16px;border-bottom:1px solid var(--line-soft)}
+.tog{width:34px;height:20px;border-radius:10px;position:relative;margin-right:16px;flex:none}
+.tog i{position:absolute;top:3px;width:14px;height:14px;border-radius:50%;background:#fff}
+.sec .no{font-family:var(--mono);color:var(--text3);width:38px}
+.sec .nm{font-weight:600}
+.sec .nt{margin-left:12px;color:var(--text3);font-size:14px}
+.sec .ct{margin-left:auto;font-family:var(--mono);color:var(--text2)}
+
+/* share browser */
+#browser{position:absolute;left:1060px;top:150px;width:800px;height:620px;border-radius:14px;overflow:hidden;background:#0d0f14;border:1px solid #2a2f3a;box-shadow:0 40px 120px rgba(0,0,0,.6)}
+#browser .bar{height:50px;background:#1a1d26;display:flex;align-items:center;padding:0 16px;gap:10px;border-bottom:1px solid var(--line)}
+#browser .dot{width:12px;height:12px;border-radius:50%}
+#browser .url{margin-left:14px;flex:1;height:32px;border-radius:16px;background:#0f1117;display:flex;align-items:center;padding:0 16px;font-family:var(--mono);font-size:15px;color:var(--text2)}
+.avatar{position:absolute;width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:20px;color:#0d0f14;border:3px solid var(--page)}
+
+/* benefits */
+.card{position:absolute;top:300px;width:390px;height:330px;border-radius:20px;background:var(--surface);border:1px solid var(--line);padding:36px 34px;overflow:hidden}
+.card .ic{width:64px;height:64px;border-radius:16px;display:flex;align-items:center;justify-content:center}
+.card .big{font-size:66px;font-weight:700;letter-spacing:-2px;margin-top:30px}
+.card .d{font-size:23px;color:var(--text2);margin-top:12px;line-height:1.35}
+
+/* cta */
+#ctaLine{position:absolute;left:0;right:0;top:420px;text-align:center;font-size:86px;font-weight:700;letter-spacing:-2.5px}
+#ctaBtn{position:absolute;left:50%;top:590px;transform-origin:50% 50%;height:96px;width:620px;margin-left:-310px;border-radius:18px;background:var(--teal);color:#06231f;
+  display:flex;align-items:center;justify-content:center;gap:18px;font-size:38px;font-weight:700;box-shadow:0 20px 70px rgba(20,184,166,.35)}
+#ctaUrl{position:absolute;left:0;right:0;top:730px;text-align:center;font-family:var(--mono);font-size:40px;color:var(--text);font-weight:600}
+#ctaFine{position:absolute;left:0;right:0;top:800px;text-align:center;font-size:24px;color:var(--text3)}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="bgwrap" class="abs" style="inset:0">
+    <div id="bg-grid"></div>
+    <div id="g1" class="glow" style="width:900px;height:900px;background:#14b8a6"></div>
+    <div id="g2" class="glow" style="width:800px;height:800px;background:#3987e5"></div>
+  </div>
+
+  <!-- ============ HOOK ============ -->
+  <div id="sHook" class="scene">
+    <div id="cyls" class="abs" style="inset:0"></div>
+    <div id="hookText">
+      <div class="l1 ws">Is <span style="color:#ff5a5a">production</span></div>
+      <div class="l2 ws">still the same as <span style="color:var(--same)">dev?</span></div>
+    </div>
+    <div id="hookSub" class="ws">Most teams can’t say for sure.</div>
+  </div>
+
+  <!-- ============ PROBLEM ============ -->
+  <div id="sProb" class="scene">
+    <svg id="probSvg" class="abs" style="inset:0" width="1920" height="1080"></svg>
+    <div id="probNodes" class="abs" style="inset:0"></div>
+    <div id="clock">
+      <div class="lbl">CHECKING BY HAND</div>
+      <div class="val" id="clockVal">00:00</div>
+      <div class="sub" id="clockSub">pair 1 of 6 · Dev ↔ QA</div>
+    </div>
+  </div>
+
+  <!-- ============ REVEAL ============ -->
+  <div id="sReveal" class="scene">
+    <div id="ring" class="abs" style="left:960px;top:370px;width:10px;height:10px"></div>
+    <div id="logoWrap">
+      <svg viewBox="0 0 64 64" width="240" height="240" style="overflow:visible">
+        <defs><linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c2029"/><stop offset="1" stop-color="#0e1015"/></linearGradient></defs>
+        <g id="lgTile"><rect x="2" y="2" width="60" height="60" rx="14" fill="url(#tile)"/><rect x="2.5" y="2.5" width="59" height="59" rx="13.5" fill="none" stroke="#2a2f3a"/></g>
+        <rect id="lgB1" x="14" y="17" width="36" height="7" rx="3.5" fill="#4b5563"/>
+        <rect id="lgB2" x="14" y="28.5" width="24" height="7" rx="3.5" fill="#14b8a6"/>
+        <rect id="lgB3" x="14" y="40" width="36" height="7" rx="3.5" fill="#4b5563"/>
+      </svg>
+    </div>
+    <div id="wordmark" class="ws">SchemaScope</div>
+    <div id="promise" class="ws">See how <b>every</b> database differs from the one you trust, <b>in about a second.</b></div>
+  </div>
+
+  <!-- ============ APP FLOW ============ -->
+  <div id="sApp" class="scene">
+    <div id="app">
+      <div class="hdr">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3987e5" stroke-width="2.2" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <span style="font-weight:700;font-size:17px;margin-right:22px">SchemaScope</span>
+        <span class="tab on">Compare</span><span class="tab">Connections <i style="font-style:normal;color:var(--text3)">5</i></span><span class="tab">History</span><span class="tab" id="tabShare">Share</span>
+        <span class="ro">● Read only</span>
+      </div>
+      <div class="setup">
+        <div class="lbl abs" style="left:24px;top:31px">SOURCE</div>
+        <div class="srcbox" id="srcbox">
+          <div class="a" id="srcA" style="color:var(--text3)">Select source…</div>
+          <div class="b" id="srcB">&nbsp;</div>
+        </div>
+        <div class="abs" style="left:378px;top:26px;color:var(--text3);font-size:20px">→</div>
+        <div class="lbl abs" style="left:410px;top:31px">COMPARE AGAINST</div>
+        <div id="chips"></div>
+        <div class="btn" id="addT" style="top:20px;width:126px;left:560px">＋ Add target</div>
+        <div class="abs mono" id="msTop" style="left:1238px;top:29px;font-size:15px;color:var(--text3)"></div>
+        <div class="btn" style="left:1340px;top:19px;width:110px">⚙ Options</div>
+        <div class="btn pri" id="cmpBtn" style="left:1466px;top:19px;width:190px">▶ Compare</div>
+      </div>
+
+      <!-- empty state -->
+      <div id="empty" class="abs" style="left:0;right:0;top:128px;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+        <svg width="74" height="74" viewBox="0 0 24 24" fill="none" stroke="#3a4152" stroke-width="1.4"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
+        <div style="font-size:30px;font-weight:600;margin-top:18px">Ready when you are</div>
+        <div style="font-size:18px;color:var(--text2);margin-top:8px">Pick a source, add targets, press Compare. A thousand objects takes about a second.</div>
+      </div>
+
+      <!-- picker -->
+      <div id="picker" class="panel" style="left:96px;top:124px;width:470px;height:316px;box-shadow:0 30px 80px rgba(0,0,0,.6);z-index:5">
+        <div style="padding:16px 18px 0;font-size:17px;font-weight:700">Select source database</div>
+        <div style="margin:12px 18px 6px;height:36px;border-radius:8px;border:1px solid var(--line);background:var(--surface2);padding:0 12px;display:flex;align-items:center;color:var(--text3);font-size:14px">Search connections…</div>
+        <div id="pickList"></div>
+        <div class="btn pri" id="useBtn" style="left:282px;top:264px;width:170px;height:36px">Use this database</div>
+        <div class="btn" style="left:18px;top:264px;width:200px;height:36px;color:var(--text2)">Connect to a database</div>
+      </div>
+
+      <!-- progress -->
+      <div id="prog" class="panel" style="left:240px;top:170px;width:1200px;height:330px;padding:24px 30px">
+        <div style="display:flex;align-items:center"><span class="lbl">COMPARING · 5 DATABASES IN PARALLEL</span><span id="progMs" class="mono" style="margin-left:auto;font-size:22px;font-weight:700;color:var(--text)"></span></div>
+        <div id="progRows"></div>
+      </div>
+
+      <!-- dashboard -->
+      <div id="dash" class="abs" style="left:0;right:0;top:0;bottom:0">
+        <div class="abs" style="left:20px;top:142px;display:flex;align-items:center;gap:14px;font-size:14px;color:var(--text2);white-space:nowrap">
+          <span class="lbl">DRIFT DASHBOARD</span>
+          <span style="padding:3px 10px;border-radius:6px;border:1px solid rgba(27,175,122,.35);background:rgba(27,175,122,.1);color:var(--text)"><b>1,189</b> objects in Dev</span>
+          <span>⏱ 806 ms <i style="font-style:normal;color:var(--text3)">(62% reading)</i></span>
+          <span style="padding:3px 10px;border-radius:6px;background:var(--raised)">17 drifted in one target only</span>
+        </div>
+        <div id="tiles"></div>
+        <div class="panel" id="otype" style="left:1276px;top:174px;width:384px;height:160px;padding:12px 16px">
+          <div class="lbl" style="margin-bottom:6px">OBJECTS BY TYPE</div>
+          <div id="otRows"></div>
+          <div style="font-size:11.5px;color:var(--text3);margin-top:4px">Amber = objects with at least one difference</div>
+        </div>
+      </div>
+
+      <!-- matrix -->
+      <div id="matrix" class="abs" style="left:0;right:0;top:0;bottom:0">
+        <div class="abs" style="left:0;right:0;top:340px;height:48px;border-top:1px solid var(--line);background:var(--surface2)"></div>
+        <div class="abs" style="left:14px;top:346px;width:250px;height:36px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--text3);font-size:14px;display:flex;align-items:center;padding:0 12px">⌕ Filter objects…</div>
+        <div class="abs" style="left:280px;top:355px;font-size:14.5px;white-space:nowrap"><span style="display:inline-block;width:15px;height:15px;border-radius:3px;background:var(--accent);vertical-align:-2px;margin-right:7px"></span>Differences only</div>
+        <div class="btn" style="left:430px;top:346px;width:86px;height:36px">Types</div>
+        <div class="btn" style="left:524px;top:346px;width:86px;height:36px">Status</div>
+        <div class="btn" style="left:618px;top:346px;width:130px;height:36px">All targets ▾</div>
+        <div class="abs" style="left:762px;top:356px;font-size:14px;color:var(--text3)">61 of 1,189</div>
+        <div class="abs" style="left:880px;top:356px;font-size:13px;white-space:nowrap;display:flex;gap:16px">
+          <span style="color:var(--same)">= Same</span><span style="color:var(--fmt)">~ Formatting</span><span style="color:var(--diff)">≠ Different</span><span style="color:var(--miss)">✕ Missing</span><span style="color:var(--extra)">+ Extra</span><span style="color:var(--text3)">? Unreadable</span></div>
+        <div class="btn" id="shareBtn" style="left:1466px;top:346px;width:92px;height:36px">⇪ Share</div>
+        <div class="btn" style="left:1566px;top:346px;width:96px;height:36px">⤓ Export</div>
+        <div class="abs" style="left:0;right:0;top:388px;height:30px;border-bottom:1px solid var(--line);font-size:12px;letter-spacing:1.4px;color:var(--text3);font-weight:600">
+          <span class="abs" style="left:20px;top:8px">TYPE</span><span class="abs" style="left:150px;top:8px">OBJECT</span>
+          <div id="colHdr"></div>
+        </div>
+        <div id="mrows"></div>
+      </div>
+
+      <!-- diff -->
+      <div id="diff" class="abs" style="left:0;right:0;top:128px;bottom:0;background:var(--page);border-top:1px solid var(--line)">
+        <div class="abs" style="left:0;right:0;top:0;height:46px;background:var(--surface2);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 18px;gap:14px;font-size:14.5px;white-space:nowrap">
+          <span class="lbl">PROCEDURE</span><span class="mono" style="font-weight:700;font-size:16px">dbo.usp_ArchiveAuditLog</span>
+          <span style="margin-left:14px;color:var(--text2)"><b style="color:#c98500">●</b> = Staging</span>
+          <span style="color:var(--text2)"><b style="color:#a3b13a">●</b> = UAT</span>
+          <span style="padding:4px 10px;border-radius:6px;background:rgba(201,133,0,.16);color:#e0a43a;font-weight:600">● ≠ Production</span>
+          <span style="color:var(--text2)"><b style="color:#3987e5">●</b> = Client A</span>
+          <span style="margin-left:auto;color:var(--diff)">Different</span><span class="mono" style="color:var(--same)" id="dPlus">+18</span><span class="mono" style="color:var(--miss)">−4</span>
+          <span class="btn" style="position:static;height:32px;padding:0 12px">◫ Split</span>
+        </div>
+        <div class="abs" style="left:0;top:46px;width:50%;height:30px;padding:6px 18px;font-size:13px;color:var(--text3);border-right:1px solid var(--line)">Left · <b style="color:var(--text)">Dev</b> (source)</div>
+        <div class="abs" style="left:50%;top:46px;width:50%;height:30px;padding:6px 18px;font-size:13px;color:var(--text3)">Right · <b style="color:var(--text)">Production</b></div>
+        <div id="codeL" class="code" style="left:0;top:80px;width:840px;height:600px;overflow:hidden;border-right:1px solid var(--line)"></div>
+        <div id="codeR" class="code" style="left:840px;top:80px;width:840px;height:600px;overflow:hidden"></div>
+        <div id="wordHi" class="abs mono" style="right:18px;bottom:14px;padding:6px 12px;border-radius:7px;background:rgba(240,160,50,.18);border:1px solid rgba(190,115,10,.75);font-size:13px;color:#f0c070">@OlderThanDays · 2 left / 2 right</div>
+      </div>
+
+      <!-- scripts dialog -->
+      <div id="dim" class="abs" style="inset:0;background:rgba(5,6,9,.62)"></div>
+      <div id="dlg" class="panel" style="left:400px;top:170px;width:880px;height:600px;box-shadow:0 40px 120px rgba(0,0,0,.7);overflow:hidden">
+        <div style="padding:22px 28px 0;display:flex;align-items:baseline;gap:14px"><span style="font-size:24px;font-weight:700">Create scripts</span><span style="font-size:16px;color:var(--text2)">Make <b style="color:var(--text)">Production</b> look like <b style="color:var(--text)">Dev</b></span></div>
+        <div id="secs" class="abs" style="left:0;right:0;top:70px;height:420px"></div>
+        <div id="result" class="abs" style="left:0;right:0;top:66px;bottom:0;padding:6px 28px">
+          <div style="font-size:15px;color:var(--text2)">Written to</div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:6px"><div class="mono" style="flex:1;height:38px;border-radius:8px;background:var(--surface2);border:1px solid var(--line);padding:9px 12px;font-size:14.5px">C:\Users\you\SchemaScope\scripts\Production</div><span class="btn" style="position:static;width:76px">Copy</span><span class="btn" style="position:static;width:120px">Open folder</span></div>
+          <div style="font-size:15.5px;color:var(--text2);margin-top:12px">142 files in 1.4 s. Read README.md first, and run on a rehearsal copy before the real one.</div>
+          <div id="okBanner" style="margin-top:14px;padding:14px 16px;border-radius:10px;background:rgba(27,175,122,.13);border:1px solid rgba(27,175,122,.45);color:#7fe0b8;font-size:16.5px;font-weight:600">✓ Checked offline: 214 batches parse, and 37 of 37 code bodies match the source exactly.</div>
+          <div id="fold" style="margin-top:14px;font-size:14.5px"></div>
+          <div style="margin-top:12px;padding:10px 14px;border-radius:9px;background:rgba(201,133,0,.1);border:1px solid rgba(201,133,0,.35);font-size:14.5px;color:#e0b060">Held back for review · <span class="mono">99_review</span> · 2 changes existing data would break</div>
+        </div>
+        <div id="dlgFoot" class="abs" style="left:0;right:0;bottom:0;height:96px;border-top:1px solid var(--line);background:var(--surface2)">
+          <div class="abs" style="left:28px;top:16px;font-size:13px;color:var(--text3)">Output folder</div>
+          <div class="abs mono" style="left:28px;top:40px;width:480px;height:36px;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:8px 12px;font-size:14px;color:var(--text2)">C:\Users\you\SchemaScope\scripts</div>
+          <div id="genBar" class="abs" style="left:530px;top:52px;width:150px;height:8px;border-radius:4px;background:var(--line-soft);overflow:hidden"><div id="genFill" style="height:100%;width:0;background:var(--accent)"></div></div>
+          <div id="genTxt" class="abs" style="left:530px;top:26px;font-size:14px;color:var(--text2);white-space:nowrap"></div>
+          <div class="btn pri" id="genBtn" style="left:700px;top:38px;width:152px">Generate</div>
+        </div>
+      </div>
+
+      <!-- toast -->
+      <div id="toast" class="abs" style="left:1236px;top:396px;width:420px;padding:14px 16px;border-radius:12px;background:var(--raised);border:1px solid var(--line);box-shadow:0 20px 60px rgba(0,0,0,.6);z-index:9">
+        <div style="font-size:16px;font-weight:700">✓ Read-only link copied</div>
+        <div class="mono" style="font-size:13.5px;color:var(--text2);margin-top:6px">http://192.168.1.24:5280/s/k7QmX2…</div>
+        <div style="font-size:13px;color:var(--text3);margin-top:6px">Expires in 7 days, or when you stop sharing.</div>
+      </div>
+
+      <!-- cursor -->
+      <div id="cur" class="abs" style="left:0;top:0;z-index:20;width:30px;height:30px">
+        <div id="ripple" class="abs" style="left:-26px;top:-26px;width:52px;height:52px;border-radius:50%;border:3px solid #7fb4f5"></div>
+        <svg width="30" height="34" viewBox="0 0 24 28" style="position:absolute;left:-3px;top:-2px;filter:drop-shadow(0 3px 6px rgba(0,0,0,.6))"><path d="M2 2 L2 22 L7.5 17 L11 25 L14.5 23.5 L11 15.5 L18.5 15.5 Z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg>
+      </div>
+    </div>
+
+    <!-- share: browser + link -->
+    <svg id="shareSvg" class="abs" style="inset:0;pointer-events:none" width="1920" height="1080">
+      <defs><linearGradient id="lg1" x1="0" x2="1"><stop offset="0" stop-color="#3987e5"/><stop offset="1" stop-color="#14b8a6"/></linearGradient>
+      <filter id="blur6"><feGaussianBlur stdDeviation="6"/></filter></defs>
+      <path id="shareLineG" d="" stroke="url(#lg1)" stroke-width="10" fill="none" filter="url(#blur6)" opacity=".7"/>
+      <path id="shareLine" d="" stroke="url(#lg1)" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+      <circle id="sharePkt" r="7" fill="#fff"/>
+    </svg>
+    <div id="browser">
+      <div class="bar"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span>
+        <div class="url">🔒︎ 192.168.1.24:5280/s/k7QmX2…</div></div>
+      <div style="padding:16px 20px">
+        <div style="display:flex;align-items:center;gap:12px;font-size:15px;white-space:nowrap"><span style="padding:5px 12px;border-radius:7px;background:rgba(57,135,229,.16);color:#8dbcf5;font-weight:700">Shared view · read only</span><span style="color:var(--text2)">Compared 13 Oct 2026 on DEV-PC</span></div>
+        <div id="bTiles" style="position:relative;height:120px;margin-top:16px"></div>
+        <div id="bRows" style="position:relative;margin-top:12px"></div>
+      </div>
+    </div>
+    <div id="avatars" class="abs" style="left:1080px;top:800px;width:800px;height:70px">
+      <div class="avatar" style="left:0;background:#9085e9">AK</div>
+      <div class="avatar" style="left:42px;background:#1baf7a">RS</div>
+      <div class="avatar" style="left:84px;background:#c98500">MJ</div>
+      <div class="abs" style="left:160px;top:14px;font-size:24px;font-weight:600;white-space:nowrap"><span style="color:var(--same)">●</span> 3 reading now <span style="color:var(--text3);font-weight:400;font-size:20px">· nothing to install</span></div>
+    </div>
+  </div>
+
+  <!-- ============ BENEFITS ============ -->
+  <div id="sBen" class="scene">
+    <div class="card" style="left:120px" id="c1">
+      <div class="ic" style="background:rgba(57,135,229,.16)"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#3987e5" stroke-width="2.2" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+      <div class="big" id="b1v">806 ms</div><div class="d">1,189 objects against 990, read and compared.</div></div>
+    <div class="card" style="left:540px" id="c2">
+      <div class="ic" style="background:rgba(20,184,166,.16)"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#14b8a6" stroke-width="2.2"><path d="M8 4 3 12l5 8M16 4l5 8-5 8"/></svg></div>
+      <div class="big">Free</div><div class="d">Open source under Apache-2.0. No account, no telemetry.</div></div>
+    <div class="card" style="left:960px" id="c3">
+      <div class="ic" style="background:rgba(27,175,122,.16)"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#1baf7a" stroke-width="2.2"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+      <div class="big">Read-only</div><div class="d">It never changes a database. You review and run the scripts.</div></div>
+    <div class="card" style="left:1380px" id="c4">
+      <div class="ic" style="background:rgba(144,133,233,.16)"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#9085e9" stroke-width="2.2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+      <div class="big">Local</div><div class="d">Runs on your PC. Passwords stay encrypted on your machine.</div></div>
+  </div>
+
+  <!-- ============ CTA ============ -->
+  <div id="sCta" class="scene">
+    <div id="ctaLogo" class="abs" style="left:50%;top:150px;width:200px;margin-left:-100px;text-align:center">
+      <svg viewBox="0 0 64 64" width="150" height="150"><rect x="2" y="2" width="60" height="60" rx="14" fill="url(#tile)"/><rect x="2.5" y="2.5" width="59" height="59" rx="13.5" fill="none" stroke="#2a2f3a"/><rect x="14" y="17" width="36" height="7" rx="3.5" fill="#4b5563"/><rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#14b8a6"/><rect x="14" y="40" width="36" height="7" rx="3.5" fill="#4b5563"/></svg>
+      <div style="font-size:40px;font-weight:700;letter-spacing:-1px;margin-top:10px;margin-left:-100px;margin-right:-100px">SchemaScope</div>
+    </div>
+    <div id="ctaLine" class="ws">Find the drift before your users do.</div>
+    <div id="ctaBtn"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#06231f" stroke-width="2.6" stroke-linecap="round"><path d="M12 3v12M6 10l6 6 6-6M4 21h16"/></svg>Download free for Windows</div>
+    <div id="ctaUrl">schemascope.shadowmark.in</div>
+    <div id="ctaFine">Windows 10 &amp; 11 · Free and open source (Apache-2.0) · github.com/Shrikant-satpute/schemascope</div>
+  </div>
+
+  <div id="cap"><div id="capbox"><div id="capnum">1</div><div id="captext"></div></div></div>
+  <div id="fade" class="abs" style="inset:0;background:#0d0f14;pointer-events:none;opacity:0"></div>
+</div>
+
+<script>
+// ---------------------------------------------------------------- helpers
+const $ = id => document.getElementById(id);
+const clamp = (x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const P = (t,a,b)=>clamp((t-a)/(b-a));
+const lerp=(a,b,x)=>a+(b-a)*x;
+const eo = x=>1-Math.pow(1-x,3);
+const eo5 = x=>1-Math.pow(1-x,5);
+const eio = x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+const eback = x=>{const c1=1.5,c3=c1+1;return 1+c3*Math.pow(x-1,3)+c1*Math.pow(x-1,2)};
+const ein = x=>x*x*x;
+function vis(t,a,b,fi=.45,fo=.45){ if(t<a||t>b) return 0; return Math.min(fi?eo(P(t,a,a+fi)):1, fo?1-eio(P(t,b-fo,b)):1); }
+function S(el,o,x=0,y=0,s=1,extra=''){ el.style.opacity=o.toFixed(4); el.style.visibility=o<=0.002?'hidden':'visible';
+  el.style.transform=`translate(${x.toFixed(2)}px,${y.toFixed(2)}px) scale(${s.toFixed(4)}) ${extra}`; }
+function hex(c){c=c.replace('#','');return [0,2,4].map(i=>parseInt(c.substr(i,2),16))}
+function mix(a,b,x){const A=hex(a),B=hex(b);return `rgb(${A.map((v,i)=>Math.round(lerp(v,B[i],x))).join(',')})`}
+function rgba(c,a){const A=hex(c);return `rgba(${A.join(',')},${a})`}
+function fmtInt(n){return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g,',')}
+function rnd(seed){let s=seed;return ()=>{s=(s*16807)%2147483647;return (s-1)/2147483646}}
+const C={same:'#1baf7a',fmt:'#7d8598',diff:'#c98500',miss:'#d03b3b',extra:'#9085e9',unr:'#6b7285',accent:'#3987e5',teal:'#14b8a6',line:'#262b38',text3:'#6b7285'};
+
+// split .ws text into word spans (keeps inner coloured spans)
+function splitWords(root){
+  const out=[];
+  (function walk(node,parent){
+    [...node.childNodes].forEach(ch=>{
+      if(ch.nodeType===3){
+        const parts=ch.textContent.split(/(\s+)/);const frag=document.createDocumentFragment();
+        parts.forEach(p=>{ if(!p) return; if(/^\s+$/.test(p)){frag.appendChild(document.createTextNode(p));return}
+          const s=document.createElement('span');s.className='w';s.textContent=p;frag.appendChild(s);out.push(s)});
+        ch.replaceWith(frag);
+      } else if(ch.nodeType===1 && !ch.classList.contains('w')) walk(ch);
+    });
+  })(root);
+  return out;
+}
+const WS={};document.querySelectorAll('.ws').forEach((el,i)=>{WS[el.id||('ws'+i)]=splitWords(el)});
+const hookWords=[...WS.ws0||[],...WS.ws1||[]];
+function words(list,t,start,step,dur=.5,dy=40,blur=10){
+  list.forEach((w,i)=>{const k=eo5(P(t,start+i*step,start+i*step+dur));
+    w.style.opacity=k.toFixed(3); w.style.transform=`translateY(${((1-k)*dy).toFixed(1)}px)`; w.style.filter=k<1?`blur(${((1-k)*blur).toFixed(1)}px)`:'none'});
+}
+
+// ---------------------------------------------------------------- HOOK build
+const names=['dev','qa','uat','prod','staging','client-a','client-b','eu-prod','us-prod','demo','training','dr-site','perf','qa-2','uat-2','hotfix','prod-ro','reporting','client-c','sandbox','archive','pre-prod','client-d','ci'];
+const cyls=[];(()=>{const R=rnd(7);let k=0;
+  for(let r=0;r<5;r++)for(let c=0;c<11;c++){
+    const x=60+c*172+(r%2)*80+R()*30, y=40+r*205+R()*30;
+    if(y>260&&y<760&&x>170&&x<1700) continue;
+    if(x>1830) continue;
+    const d=document.createElement('div');d.className='cyl';d.style.left=x+'px';d.style.top=y+'px';
+    d.innerHTML=`<svg viewBox="0 0 70 84"><path class="b" d="M5 14 v56 a30 10 0 0 0 60 0 v-56"/><ellipse class="b" cx="35" cy="14" rx="30" ry="10"/><path class="r" d="M5 34 a30 10 0 0 0 60 0 M5 52 a30 10 0 0 0 60 0"/></svg><span>${names[k%names.length]}</span>`;
+    $('cyls').appendChild(d);cyls.push({el:d,x,y,turn:0.35+R()*2.6,red:R()<.72||names[k%names.length]==='dev',ph:R()*6});k++;
+  }})();
+
+// ---------------------------------------------------------------- PROBLEM build
+const targets=[['QA','sql-qa01 / Shop'],['UAT','sql-uat / ShopUAT'],['Staging','sql-stg01 / ShopStaging'],['Production','sql-prod01 / ShopProd'],['Client A','clienta.database…'],['Client B','clientb-sql / Shop']];
+const badges=[['≠ 12',C.diff],['✕ 3',C.miss],['≠ 7',C.diff],['≠ 22',C.diff],['+ 4',C.extra],['✕ 9',C.miss]];
+const cylIcon=c=>`<svg class="ic" viewBox="0 0 70 84"><path d="M5 14 v56 a30 10 0 0 0 60 0 v-56" fill="#171a23" stroke="${c}" stroke-width="5"/><ellipse cx="35" cy="14" rx="30" ry="10" fill="#1d212c" stroke="${c}" stroke-width="5"/></svg>`;
+const prob={tn:[],paths:[],glows:[],bd:[]};(()=>{
+  const svg=$('probSvg');
+  svg.innerHTML=`<defs><filter id="pb"><feGaussianBlur stdDeviation="5"/></filter></defs>`;
+  const dev=document.createElement('div');dev.className='node';dev.style.left='560px';dev.style.top='488px';
+  dev.innerHTML=cylIcon(C.same)+`<div>Dev<small>the one you trust</small></div>`;dev.style.borderColor=rgba(C.same,.6);
+  $('probNodes').appendChild(dev);prob.dev=dev;
+  targets.forEach((tg,i)=>{
+    const y=150+i*124, x=1320;
+    const n=document.createElement('div');n.className='node';n.style.left=x+'px';n.style.top=y+'px';n.style.width='400px';
+    n.innerHTML=cylIcon('#4b5563')+`<div>${tg[0]}<small>${tg[1]}</small></div>`;
+    $('probNodes').appendChild(n);prob.tn.push(n);
+    const b=document.createElement('div');b.className='badge';b.textContent=badges[i][0];b.style.left=(x+300)+'px';b.style.top=(y+20)+'px';
+    b.style.color=badges[i][1];b.style.background=rgba(badges[i][1],.15);b.style.border='1px solid '+rgba(badges[i][1],.5);
+    $('probNodes').appendChild(b);prob.bd.push(b);
+    const d=`M 800 ${530} C 1040 530, 1080 ${y+40}, 1316 ${y+40}`;
+    const ns='http://www.w3.org/2000/svg';
+    const g=document.createElementNS(ns,'path');g.setAttribute('d',d);g.setAttribute('stroke-width','9');g.setAttribute('fill','none');g.setAttribute('filter','url(#pb)');
+    const p=document.createElementNS(ns,'path');p.setAttribute('d',d);p.setAttribute('stroke-width','3');p.setAttribute('fill','none');p.setAttribute('stroke-linecap','round');
+    svg.appendChild(g);svg.appendChild(p);prob.paths.push(p);prob.glows.push(g);
+  });
+  prob.len=prob.paths[0].getTotalLength();
+})();
+
+// ---------------------------------------------------------------- APP build
+const DB={Dev:'#1baf7a',Staging:'#c98500',UAT:'#a3b13a',Production:'#2fbf71',ClientA:'#3987e5'};
+const chipDefs=[['Staging','#c98500',118],['UAT','#a3b13a',90],['Production','#2fbf71',136],['Client A','#3987e5',122]];
+const chips=[];let cx=560;chipDefs.forEach(cd=>{const d=document.createElement('div');d.className='chip';d.style.left=cx+'px';d.style.width=cd[2]+'px';
+  d.style.borderColor=rgba(cd[1],.55);d.style.background=rgba(cd[1],.13);d.innerHTML=`${cd[0]}<i>✕</i>`;$('chips').appendChild(d);chips.push({el:d,x:cx});cx+=cd[2]+10});
+const addX=[560,...chips.map((c,i)=>c.x+chipDefs[i][2]+10)];
+const conns=[['Dev','localhost / ShopDev',DB.Dev],['Staging','sql-stg01 / ShopStaging','#c98500'],['UAT','sql-uat / ShopUAT','#a3b13a'],['Production','sql-prod01 / ShopProd','#2fbf71']];
+conns.forEach((c,i)=>{const d=document.createElement('div');d.className='abs';d.id='pk'+i;d.style.cssText=`left:10px;right:10px;top:${100+i*40}px;height:38px;border-radius:8px;display:flex;align-items:center;gap:12px;padding:0 12px;font-size:15px`;
+  d.innerHTML=`<b style="width:10px;height:10px;border-radius:50%;background:${c[2]}"></b><span style="font-weight:600;width:96px">${c[0]}</span><span class="mono" style="color:var(--text3);font-size:13px">${c[1]}</span>`;$('pickList').appendChild(d)});
+// progress rows
+const progDb=[['Dev','#1baf7a',.55],['Staging','#c98500',.62],['UAT','#a3b13a',.5],['Production','#2fbf71',.78],['Client A','#3987e5',.68]];
+const progEls=progDb.map((pd,i)=>{const r=document.createElement('div');r.className='abs';r.style.cssText=`left:30px;right:30px;top:${72+i*50}px;height:40px`;
+  r.innerHTML=`<div class="abs" style="left:0;top:9px;font-size:17px;font-weight:600;width:130px;display:flex;align-items:center;gap:10px"><b style="width:10px;height:10px;border-radius:50%;background:${pd[1]}"></b>${pd[0]}</div>
+  <div class="abs" style="left:150px;top:15px;width:760px;height:10px;border-radius:5px;background:var(--line-soft);overflow:hidden"><div style="height:100%;width:0;border-radius:5px;background:${pd[1]}"></div></div>
+  <div class="abs mono" style="left:940px;top:9px;font-size:15px;color:var(--text2);width:120px"></div><div class="abs mono" style="right:0;top:9px;font-size:15px;color:var(--text3)"></div>`;
+  $('progRows').appendChild(r);return {fill:r.children[1].firstChild,stage:r.children[2],ms:r.children[3],dur:pd[2]}});
+// tiles
+const tileDefs=[['Production','sql-prod01 / ShopProd',89.1,'#2fbf71',[[C.same,89.1],[C.fmt,2.2],[C.diff,4.7],[C.miss,1.8],[C.extra,1.6],[C.unr,.6]],[['formatting',C.fmt,26],['different',C.diff,56],['missing',C.miss,21],['extra',C.extra,19]]],
+ ['Client A','clienta.database.windows.net',90.4,'#3987e5',[[C.same,90.4],[C.fmt,2.6],[C.diff,3.9],[C.miss,2.1],[C.extra,1]],[['formatting',C.fmt,31],['different',C.diff,46],['missing',C.miss,25],['extra',C.extra,12]]],
+ ['UAT','sql-uat / ShopUAT',91.3,'#a3b13a',[[C.same,91.3],[C.fmt,1.9],[C.diff,4.1],[C.miss,1.5],[C.extra,1.2]],[['formatting',C.fmt,23],['different',C.diff,49],['missing',C.miss,18],['extra',C.extra,14]]],
+ ['Staging','sql-stg01 / ShopStaging',91.7,'#c98500',[[C.same,91.7],[C.fmt,2.4],[C.diff,3.6],[C.miss,2.3]],[['formatting',C.fmt,29],['different',C.diff,43],['missing',C.miss,27]]]];
+const tiles=tileDefs.map((td,i)=>{const d=document.createElement('div');d.className='tile';d.style.left=(20+i*314)+'px';
+  d.style.borderColor=rgba(td[3],.55);d.style.background=`linear-gradient(180deg,${rgba(td[3],.16)},${rgba(td[3],.05)})`;
+  d.innerHTML=`<div class="n">${td[0]}</div><div class="h">${td[1]}</div><div class="pct"><span>0.0</span>%<small>matches source</small></div>
+   <div class="meter">${td[4].map(m=>`<div style="background:${m[0]};width:0"></div>`).join('')}</div>
+   <div class="cnts">${td[5].slice(0,3).map(c=>`<span><b style="background:${c[1]}"></b>${c[2]} ${c[0]}</span>`).join('')}</div>
+   <div class="fic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9aa1b4" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M10 13l-2 2 2 2M14 13l2 2-2 2"/></svg></div>`;
+  $('tiles').appendChild(d);return {el:d,pct:d.querySelector('.pct span'),segs:[...d.querySelectorAll('.meter div')],def:td,fic:d.querySelector('.fic')}});
+const otDefs=[['Table',.21,'42/198'],['Procedure',.38,'61/402'],['View',.25,'19/141'],['Function',.12,'9/87']];
+const otEls=otDefs.map(o=>{const r=document.createElement('div');r.style.cssText='display:flex;align-items:center;font-size:13px;height:23px';
+  r.innerHTML=`<span style="width:100px">${o[0]}</span><span style="width:150px;height:7px;border-radius:4px;background:var(--line-soft);overflow:hidden"><i style="display:block;height:100%;width:0;background:${C.diff}"></i></span><span class="mono" style="margin-left:auto;color:var(--text2);font-size:12.5px">${o[2]}</span>`;
+  $('otRows').appendChild(r);return {bar:r.querySelector('i'),w:o[1]}});
+// matrix
+const colX=[1040,1200,1360,1520];
+['STAGING','UAT','PRODUCTION','CLIENT A'].forEach((h,i)=>{const d=document.createElement('div');d.className='abs';d.style.cssText=`left:${colX[i]}px;top:0;width:150px;height:30px;text-align:center;padding-top:8px;background:${rgba(chipDefs[i][1],.16)};color:${chipDefs[i][1]};border-top:2px solid ${rgba(chipDefs[i][1],.7)}`;d.textContent=h;$('colHdr').appendChild(d)});
+const SYM={s:['=',C.same],f:['~',C.fmt],d:['≠',C.diff],m:['✕',C.miss],e:['+',C.extra],u:['?',C.unr]};
+const rowsDef=[['Table','dbo.','LegacyOrderImport','s s e s'],['','dbo.','Product','s d8 s s'],['','dbo.','Shipment','s m s d3'],['','dbo.','Customer','s s s m'],
+ ['View','dbo.','vw_CustomerLifetimeValue','s s d7 s'],['','dbo.','vw_DailySales','d3 s s s'],['','dbo.','vw_LowStock','s s m f'],
+ ['Procedure','dbo.','usp_ApplyDiscount','f s s s'],['','dbo.','usp_ArchiveAuditLog','s s d22 s'],['','dbo.','usp_CreateOrder','s d7 s e'],['','dbo.','usp_GenerateInvoice','m s s s'],['','dbo.','usp_PurgeCancelledOrders','s s u s']];
+const mrows=rowsDef.map((rd,ri)=>{const r=document.createElement('div');r.className='mrow';r.style.top=(418+ri*30)+'px';
+  r.innerHTML=`<span class="ty">${rd[0]}</span><span class="ob"><i>${rd[1]}</i>${rd[2]}</span>`;
+  const cells=rd[3].split(' ').map((code,ci)=>{const st=code[0],n=code.slice(1);const c=document.createElement('div');c.className='cell';c.style.left=colX[ci]+'px';
+    c.style.background=rgba(chipDefs[ci][1],.06);c.innerHTML=`<span style="color:${SYM[st][1]}">${SYM[st][0]}${n?' '+n:''}</span>`;r.appendChild(c);return {el:c.firstChild,bg:c,st}});
+  $('mrows').appendChild(r);return {el:r,cells}});
+// code
+const L=[
+ ['<span class="kw">CREATE PROCEDURE</span> dbo.usp_ArchiveAuditLog',''],['    @OlderThanDays <span class="kw">INT</span> = <span class="num">90</span>',''],['<span class="kw">AS</span>',''],['<span class="kw">BEGIN</span>',''],
+ [null,''],[null,''],['    <span class="kw">SET NOCOUNT ON</span>;',''],['',''],
+ ['    <span class="kw">DELETE FROM</span> dbo.AuditLog','del'],['    <span class="kw">WHERE</span> OccurredUtc &lt; <span class="sys">DATEADD</span>(<span class="kw">DAY</span>, -@OlderThanDays, <span class="sys">SYSUTCDATETIME</span>());','del'],
+ [null,''],[null,''],[null,''],[null,''],[null,''],[null,''],[null,''],['    <span class="kw">RETURN</span> <span class="sys">@@ROWCOUNT</span>;','del'],['<span class="kw">END</span>','']];
+const R_=[
+ ['<span class="kw">CREATE PROCEDURE</span> dbo.usp_ArchiveAuditLog',''],['    @OlderThanDays <span class="kw">INT</span> = <span class="num">90</span>',''],['<span class="kw">AS</span>',''],['<span class="kw">BEGIN</span>',''],
+ ['    <span class="cm">-- HOTFIX INC-4471: single DELETE escalated to a table lock.</span>','add'],['    <span class="cm">-- Delete in batches so writers get through.</span>','add'],['    <span class="kw">SET NOCOUNT ON</span>;',''],['',''],
+ ['    <span class="kw">DECLARE</span> @Cutoff <span class="kw">DATETIME2</span>(<span class="num">3</span>) = <span class="sys">DATEADD</span>(<span class="kw">DAY</span>, -@OlderThanDays, <span class="sys">SYSUTCDATETIME</span>());','add'],
+ ['    <span class="kw">DECLARE</span> @Batch <span class="kw">INT</span> = <span class="num">5000</span>, @Deleted <span class="kw">INT</span> = <span class="num">1</span>;','add'],
+ ['    <span class="kw">WHILE</span> @Deleted &gt; <span class="num">0</span>','add'],['    <span class="kw">BEGIN</span>','add'],['        <span class="kw">DELETE TOP</span> (@Batch) <span class="kw">FROM</span> dbo.AuditLog','add'],['        <span class="kw">WHERE</span> OccurredUtc &lt; @Cutoff;','add'],
+ ['        <span class="kw">SET</span> @Deleted = <span class="sys">@@ROWCOUNT</span>;','add'],['        <span class="kw">WAITFOR DELAY</span> <span class="str">\'00:00:00.200\'</span>;','add'],['    <span class="kw">END</span>','add'],[null,''],['<span class="kw">END</span>','']];
+function codeLines(host,arr){let n=0;return arr.map(a=>{const d=document.createElement('span');d.className='ln';
+  if(a[0]===null){d.style.background='repeating-linear-gradient(135deg,#171a23 0 6px,#12141b 6px 12px)';d.innerHTML='&nbsp;'}
+  else{n++;d.innerHTML=`<u>${n}</u>${a[0]||'&nbsp;'}`;if(a[1]==='del')d.style.background='rgba(208,59,59,.20)';if(a[1]==='add')d.style.background='rgba(27,175,122,.18)'}
+  host.appendChild(d);return d})}
+const cL=codeLines($('codeL'),L),cR=codeLines($('codeR'),R_);
+// script sections
+const secDefs=[['01','New columns','',true,'6'],['02','Table types','off · can break the running app',false,'2'],['03','Missing objects','',true,'21'],['04','Column types','never narrows a column',true,'4'],['05','Constraints','',true,'9'],
+ ['06','Indexes','',true,'11'],['07','Triggers','off',false,'1'],['08–09','Formatting','',true,'26'],['10','Different code','off · comes with a rollback folder',false,'37']];
+const secEls=secDefs.map((s,i)=>{const d=document.createElement('div');d.className='sec';d.style.top=(i*44)+'px';
+  d.innerHTML=`<span class="tog" style="background:${s[3]?C.accent:'#2d3240'}"><i style="left:${s[3]?17:3}px"></i></span><span class="no">${s[0]}</span><span class="nm" style="color:${s[3]?'var(--text)':'var(--text2)'}">${s[1]}</span><span class="nt">${s[2]}</span><span class="ct">${s[4]}</span>`;
+  $('secs').appendChild(d);return d});
+$('fold').innerHTML=`<div style="display:flex;color:var(--text3);font-size:12.5px;letter-spacing:1px;font-weight:600;padding:4px 0;border-bottom:1px solid var(--line)"><span style="width:300px">FOLDER</span><span style="width:110px">FILES</span><span style="width:130px">IN RUN.PS1</span><span>UNDO SCRIPTS</span></div>`+
+ [['01_new_columns','6','yes','6'],['03_missing_objects','21','yes','21'],['05_constraints','9','yes','9'],['06_indexes','11','yes','11']].map(r=>`<div class="mono" style="display:flex;padding:5px 0;border-bottom:1px solid var(--line-soft);font-size:14px"><span style="width:300px">${r[0]}</span><span style="width:110px">${r[1]}</span><span style="width:130px;color:var(--same)">${r[2]}</span><span>${r[3]}</span></div>`).join('');
+// browser contents
+(()=>{const bt=$('bTiles');tileDefs.forEach((td,i)=>{const d=document.createElement('div');d.className='abs';d.style.cssText=`left:${i*190}px;top:0;width:180px;height:116px;border-radius:10px;border:1.5px solid ${rgba(td[3],.55)};background:linear-gradient(180deg,${rgba(td[3],.16)},${rgba(td[3],.05)});padding:12px`;
+  d.innerHTML=`<div style="font-size:14px;font-weight:700">${td[0]}</div><div style="font-size:30px;font-weight:700;margin-top:8px;letter-spacing:-1px">${td[2].toFixed(1)}<span style="font-size:14px">%</span></div><div class="meter" style="height:6px">${td[4].map(m=>`<div style="background:${m[0]};width:${m[1]}%"></div>`).join('')}</div>`;bt.appendChild(d)});
+ const br=$('bRows');rowsDef.slice(0,9).forEach((rd,ri)=>{const d=document.createElement('div');d.style.cssText='display:flex;align-items:center;height:30px;border-bottom:1px solid var(--line-soft);font-size:13.5px';
+  d.innerHTML=`<span class="mono" style="width:420px;font-weight:600"><i style="font-style:normal;color:var(--text3);font-weight:400">${rd[1]}</i>${rd[2]}</span>`+rd[3].split(' ').map(code=>{const s=SYM[code[0]];return `<span class="mono" style="width:95px;text-align:center;color:${s[1]};font-weight:700">${s[0]}</span>`}).join('');br.appendChild(d)})})();
+
+// ---------------------------------------------------------------- captions (also exported to VTT)
+const CAPTIONS=[
+ {a:0.0,b:4.0,text:'Is production still the same as dev?',onscreen:true},
+ {a:2.5,b:4.0,text:'Most teams can’t say for sure.',onscreen:true},
+ {a:4.2,b:7.6,text:'Dev, QA, UAT, Prod, every client’s copy. They quietly drift apart.'},
+ {a:7.8,b:10.7,text:'Checking them by hand is slow, one pair at a time, and easy to miss.'},
+ {a:11.4,b:15.0,text:'SchemaScope. See how every database differs from the one you trust, in about a second.',onscreen:true},
+ {a:15.3,b:19.0,n:1,text:'Pick the database you trust'},
+ {a:19.3,b:23.0,n:2,text:'Add every copy you want to check'},
+ {a:23.3,b:28.0,n:3,text:'Compare them all at once, in about a second'},
+ {a:28.3,b:32.0,n:4,text:'See exactly what differs, and where'},
+ {a:32.3,b:36.0,n:5,text:'Open any object to see the changes side by side'},
+ {a:36.3,b:40.0,n:6,text:'Generate the SQL to fix it. Checked offline. You run it.'},
+ {a:40.3,b:44.0,n:7,text:'Share a read-only link with your team'},
+ {a:44.4,b:50.0,text:'Fast. Free. Read-only. Runs on your PC.'},
+ {a:50.4,b:55.0,text:'Find the drift before your users do. Download free for Windows at schemascope.shadowmark.in',onscreen:true},
+];
+window.CAPTIONS=CAPTIONS;
+window.DURATION=55;
+
+// ---------------------------------------------------------------- camera & cursor keyframes for the app
+// [t, focusX, focusY, scale] in app coordinates; focus lands at screen (960,470)
+const CAM=[[15.0,840,410,.86],[15.9,840,410,1],[16.6,370,300,1.45],[18.6,370,300,1.45],[19.4,880,330,1.22],[22.7,880,330,1.22],[23.5,840,330,1.0],
+  [25.2,840,330,1.0],[26.0,840,300,1.1],[26.8,840,300,1.1],[27.8,840,470,1.04],[28.6,840,560,1.12],[31.6,840,560,1.12],[32.4,840,420,1.04],[35.6,840,420,1.04],[36.4,840,440,1.0],[39.9,840,440,1.0],[40.9,1636,410,.55],[44.0,1636,410,.55]];
+function camAt(t){let k=CAM[0];if(t<=k[0])return k.slice(1);for(let i=1;i<CAM.length;i++){const a=CAM[i-1],b=CAM[i];if(t<=b[0]){const x=eio(P(t,a[0],b[0]));return [lerp(a[1],b[1],x),lerp(a[2],b[2],x),lerp(a[3],b[3],x)]}}return CAM[CAM.length-1].slice(1)}
+// cursor: [t, x, y, click?]
+const CUR=[[15.2,760,520],[16.1,230,92,1],[16.8,300,240],[17.2,300,248,1],[17.7,440,404],[18.0,444,408,1],[18.8,560,300],
+  [19.5,620,92,1],[20.15,748,92,1],[20.8,846,92,1],[21.45,994,92,1],[22.4,1110,140],[23.4,1560,90,1],[24.6,1300,300],
+  [29.2,700,690],[29.9,600,670,1],[31.4,640,600],[35.8,960,240],[36.3,1250,205,1],[37.0,1000,560],[37.55,776,734,1],[39.4,900,600],[40.2,1512,364,1],[42.5,1400,450]];
+function curAt(t){let x=CUR[0][1],y=CUR[0][2];for(let i=1;i<CUR.length;i++){const a=CUR[i-1],b=CUR[i];if(t<=b[0]){const k=eio(P(t,a[0]+0.0,b[0]));x=lerp(a[1],b[1],k);y=lerp(a[2],b[2],k);break} x=b[1];y=b[2]}
+  let ck=0;CUR.forEach(c=>{if(c[3]&&t>=c[0]&&t<c[0]+.5)ck=1-(t-c[0])/.5});return [x,y,ck]}
+
+// ---------------------------------------------------------------- render
+function renderAt(t){
+  // background drift
+  $('g1').style.transform=`translate(${(-200+Math.sin(t*.21)*120).toFixed(1)}px,${(-260+Math.cos(t*.17)*90).toFixed(1)}px)`;
+  $('g1').style.opacity=(0.10+0.04*Math.sin(t*.4)).toFixed(3);
+  $('g2').style.transform=`translate(${(1300+Math.cos(t*.19)*140).toFixed(1)}px,${(500+Math.sin(t*.23)*110).toFixed(1)}px)`;
+  $('g2').style.opacity=(0.10+0.04*Math.cos(t*.3)).toFixed(3);
+  $('bg-grid').style.transform=`translate(${(-(t*6)%64).toFixed(2)}px,${(-(t*4)%64).toFixed(2)}px)`;
+
+  // ---------- HOOK 0-4
+  { const v=vis(t,0,4.05,.3,.45); const s=$('sHook'); S(s,v,0,0,1+t*.012);
+    if(v>0){ words(hookWords,t,0.12,0.11,.55,46,14); words(WS.hookSub,t,2.45,.07,.5,24,8);
+      cyls.forEach((c,i)=>{const appear=eo(P(t,0.0+i*.012,0.5+i*.012));const turn=P(t,c.turn,c.turn+.35);
+        const isDev=c.el.textContent==='dev'; const col=isDev?mix('#3a4152',C.same,turn):c.red?mix('#3a4152',i%3?C.miss:C.diff,turn):'#3a4152'; c.el.style.setProperty('--c',col);
+        c.el.style.setProperty('--f',c.red?mix('#151820',isDev?'#0f2a20':'#2a1416',turn*.9):'#151820');
+        const fl=c.red&&turn>0&&turn<1?Math.sin(turn*Math.PI):0;
+        c.el.style.filter=c.red&&turn>0?`drop-shadow(0 0 ${(6+fl*20).toFixed(1)}px ${rgba(isDev?C.same:(i%3?C.miss:C.diff),.55)})`:'none';
+        S(c.el,appear*(.55+.45*turn*(c.red?1:0)+(c.red?0:.0)),0,Math.sin(t*1.3+c.ph)*4+(1-appear)*20,1+fl*.08);
+      });}
+  }
+  // ---------- PROBLEM 4-11
+  { const v=vis(t,3.85,11.05,.5,.5); const s=$('sProb'); S(s,v,0,0,1.04-.04*eo(P(t,3.85,5)));
+    if(v>0){ S(prob.dev,eo(P(t,4.0,4.5)),(1-eo(P(t,4,4.6)))*-40);
+      prob.tn.forEach((n,i)=>{const k=eback(P(t,4.25+i*.09,4.85+i*.09));S(n,clamp(k),(1-k)*60);});
+      const manual=P(t,7.6,8.0);
+      prob.paths.forEach((p,i)=>{const draw=eo(P(t,4.4+i*.08,5.4+i*.08)); const drift=P(t,5.4+i*.28,5.8+i*.28);
+        const col=mix(C.same,badges[i][1],drift);
+        let op=1, dash=prob.len*(1-draw);
+        // in manual phase: sequential slow traversal
+        if(manual>0){const seg=(t-8.0)/0.9;const active=Math.floor(seg);const fr=seg-active;
+          op=lerp(1,i===active?1:(i<active?.55:.18),manual);
+        }
+        p.setAttribute('stroke',col);p.style.strokeDasharray=prob.len;p.style.strokeDashoffset=dash;p.style.opacity=op;
+        prob.glows[i].setAttribute('stroke',col);prob.glows[i].style.strokeDasharray=prob.len;prob.glows[i].style.strokeDashoffset=dash;prob.glows[i].style.opacity=op*.55;
+        const b=prob.bd[i];const bk=eback(P(t,5.4+i*.28,5.8+i*.28));S(b,clamp(bk)*lerp(1,i<Math.floor((t-8)/0.9)+1||manual===0?1:.35,manual),0,0,.6+.4*bk);
+        prob.tn[i].style.borderColor=drift>0?rgba(badges[i][1],.25+.35*drift):'#262b38';
+      });
+      const ck=eo(P(t,7.7,8.2)); S($('clock'),ck,0,(1-ck)*30);
+      const secs=Math.max(0,(t-7.9))*400; const mm=Math.floor(secs/60),ss=Math.floor(secs%60);
+      $('clockVal').textContent=`${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+      const pair=clamp(Math.floor((t-8)/0.9)+1,1,6); $('clockSub').textContent=`pair ${pair} of 6 · Dev ↔ ${targets[pair-1][0]}`;
+    }
+  }
+  // ---------- REVEAL 11-15
+  { const v=vis(t,11.0,15.05,.2,.45); const s=$('sReveal'); S(s,v,0,0,1+.03*P(t,11,15));
+    if(v>0){ const k=eback(P(t,11.0,11.7)); S($('logoWrap'),clamp(k*1.2),0,(1-eo(P(t,11,11.7)))*40,.6+.4*k,`rotate(${((1-eo(P(t,11,11.8)))*-8).toFixed(2)}deg)`);
+      const b1=eo(P(t,11.35,11.8)),b2=eo(P(t,11.55,12.1)),b3=eo(P(t,11.45,11.9));
+      $('lgB1').setAttribute('width',(36*b1).toFixed(2));$('lgB3').setAttribute('width',(36*b3).toFixed(2));
+      // middle bar: starts full, then "drifts" short and turns teal
+      const drift=eio(P(t,12.0,12.5));$('lgB2').setAttribute('width',(36*b2-12*drift).toFixed(2));$('lgB2').setAttribute('fill',mix('#4b5563','#14b8a6',drift));
+      // ring pulse
+      const rg=P(t,12.0,13.2); const r=$('ring'); r.style.boxShadow=`0 0 0 ${(rg*360).toFixed(1)}px ${rgba('#14b8a6',(.12*(1-rg)).toFixed(3))}`;r.style.borderRadius='50%';
+      r.style.opacity=rg>0&&rg<1?1:0;
+      words(WS.wordmark,t,12.25,.0,.6,40,12);
+      const wm=$('wordmark');wm.style.letterSpacing=lerp(10,-3.5,eo5(P(t,12.25,13.0))).toFixed(2)+'px';
+      words(WS.promise,t,12.9,.07,.5,26,8);
+    }
+  }
+  // ---------- APP 15-44
+  { const v=vis(t,14.85,44.2,.5,.45); const s=$('sApp'); S(s,v);
+    if(v>0){ const [fx,fy,sc]=camAt(t); const app=$('app'); app.style.transform=`translate(${(960-fx*sc).toFixed(2)}px,${(470-fy*sc).toFixed(2)}px) scale(${sc.toFixed(4)})`;
+      // source selection
+      const pick=vis(t,16.2,18.15,.25,.2); S($('picker'),pick,0,(1-eo(P(t,16.2,16.5)))*-10,.98+.02*eo(P(t,16.2,16.5)));
+      for(let i=0;i<4;i++){$('pk'+i).style.background=(i===0&&t>17.2)?'rgba(57,135,229,.18)':(i===0&&t>16.8?'rgba(255,255,255,.04)':'transparent')}
+      const chosen=t>=18.05; $('srcA').textContent=chosen?'Dev':'Select source…';$('srcA').style.color=chosen?'var(--text)':'var(--text3)';$('srcB').textContent=chosen?'localhost / ShopDev':'\u00a0';
+      const sb=$('srcbox'); const sp=P(t,18.05,18.6); sb.style.borderColor=chosen?rgba(C.same,.6):'#262b38'; sb.style.background=chosen?rgba(C.same,.12):'#1d212c';
+      sb.style.boxShadow=chosen?`0 0 0 ${(6*(1-sp)).toFixed(1)}px ${rgba(C.same,(.4*(1-sp)).toFixed(2))}`:'none';
+      // chips
+      const chipT=[19.5,20.15,20.8,21.45]; let nAdded=0;
+      chips.forEach((c,i)=>{const k=eback(P(t,chipT[i],chipT[i]+.4)); if(t>=chipT[i])nAdded=i+1; S(c.el,clamp(k*1.5),0,(1-clamp(k))*-14,.7+.3*k)});
+      const ax=nAdded===0?560:lerp(addX[nAdded-1],addX[nAdded],eo(P(t,chipT[nAdded-1],chipT[nAdded-1]+.35))); $('addT').style.left=ax.toFixed(1)+'px';
+      // compare press
+      const press=P(t,23.4,23.6); $('cmpBtn').style.transform=`scale(${(1-.06*Math.sin(press*Math.PI)).toFixed(3)})`;
+      const running=t>=23.45&&t<25.2; $('cmpBtn').textContent=running?'■ Stop':'▶ Compare'; $('cmpBtn').style.background=running?'#b8333a':'#3987e5';$('cmpBtn').style.borderColor=running?'#b8333a':'#3987e5';
+      // empty state
+      S($('empty'),vis(t,14,23.6,0,.3)*(1-clamp((sc-1.25)/.15)));
+      // progress
+      const pv=vis(t,23.5,25.7,.25,.35); S($('prog'),pv,0,(1-eo(P(t,23.5,23.8)))*16);
+      const pt=(t-23.6); const totalMs=clamp(pt/1.4)*806; $('progMs').textContent=fmtInt(totalMs)+' ms';
+      $('msTop').textContent=t>=23.5?fmtInt(totalMs)+' ms':'';
+      progEls.forEach((pe,i)=>{const k=clamp(pt/(pe.dur*1.6));const kk=eio(k);pe.fill.style.width=(kk*100).toFixed(1)+'%';
+        pe.stage.textContent=k<=0?'':k<.55?'reading…':k<.8?'indexing…':k<1?'comparing…':'done ✓'; pe.stage.style.color=k>=1?C.same:'#9aa1b4';
+        pe.ms.textContent=fmtInt(k*pe.dur*1.6*806/1.4/1.0>806?806:Math.min(806,k*pe.dur*1.6*576))+' ms'});
+      // dashboard
+      const dv=t>=25.3&&t<44.5?1:0; $('dash').style.visibility=dv?'visible':'hidden';
+      if(dv){ const hk=eo(P(t,25.3,25.7)); $('dash').firstElementChild.style.opacity=hk;
+        tiles.forEach((tl,i)=>{const k=eo5(P(t,25.4+i*.12,26.1+i*.12)); S(tl.el,clamp(k*1.3),0,(1-k)*40,.94+.06*k);
+          const n=eo(P(t,25.5+i*.12,26.9+i*.12)); tl.pct.textContent=(tl.def[2]*n).toFixed(1);
+          let acc=0; tl.segs.forEach((sg,j)=>{const w=tl.def[4][j][1]; const f=clamp(n*100-acc)/1; sg.style.width=Math.max(0,Math.min(w,n*100-acc)).toFixed(2)+'%'; acc+=w});
+          // highlight production tile icon for scripts click
+          tl.fic.style.borderColor=(i===0&&t>35.9&&t<36.6)?'#3987e5':'#262b38';tl.fic.style.background=(i===0&&t>35.9&&t<36.6)?'rgba(57,135,229,.25)':'#1d212c';
+        });
+        const ok=eo5(P(t,25.9,26.5)); S($('otype'),ok,0,(1-ok)*40);
+        otEls.forEach((o,i)=>{o.bar.style.width=(o.w*100*eo(P(t,26.2+i*.1,27.2+i*.1))).toFixed(1)+'%'});
+      }
+      // matrix
+      const mv=t>=26.6&&t<44.5; $('matrix').style.visibility=mv?'visible':'hidden';
+      if(mv){ const mk=eo(P(t,26.6,27.1)); $('matrix').style.opacity=mk;
+        mrows.forEach((r,ri)=>{const rk=eo(P(t,26.8+ri*.05,27.3+ri*.05)); S(r.el,rk,(1-rk)*-20);
+          r.cells.forEach((c,ci)=>{const at=27.5+ri*.07+ci*.11; const k=P(t,at,at+.3);
+            c.el.style.opacity=k; c.el.style.display='inline-block'; c.el.style.transform=`scale(${(1.6-.6*eo(k)).toFixed(3)})`;
+            const flash=c.st!=='s'&&k>0?Math.max(0,1-(t-at)/.8):0; const base=rgba(chipDefs[ci][1],.06);
+            c.bg.style.background=flash>0?rgba(SYM[c.st][1],(.35*flash+.06).toFixed(3)):base;
+          });
+          const sel=ri===8&&t>=29.9; r.el.style.background=sel?'rgba(57,135,229,.14)':'transparent'; r.el.style.boxShadow=sel?'inset 3px 0 0 #3987e5':'none';
+        });
+      }
+      // diff
+      const dvv=vis(t,30.3,36.05,.0,.35); const dk=eo5(P(t,30.3,30.85));
+      S($('diff'),dvv>0?Math.min(1,dvv+.0):0,0,(1-dk)*700);
+      if(dvv>0){ cL.forEach((l,i)=>{const k=eo(P(t,30.7+i*.06,31.1+i*.06));l.style.opacity=k});
+        cR.forEach((l,i)=>{const k=eo(P(t,30.7+i*.06,31.1+i*.06));l.style.opacity=k;l.style.transform=`translateX(${((1-k)*24).toFixed(1)}px)`});
+        $('dPlus').textContent='+'+Math.round(18*eo(P(t,31,32.5)));
+        const wh=eo(P(t,33.6,34.0)); S($('wordHi'),wh,0,(1-wh)*10);
+      }
+      // dialog
+      const dlg=vis(t,36.4,40.0,.3,.35); S($('dim'),dlg); S($('dlg'),dlg,0,(1-eo5(P(t,36.4,36.8)))*30,.95+.05*eo5(P(t,36.4,36.8)));
+      if(dlg>0){ const gen=P(t,37.6,38.5); const done=t>=38.55;
+        secEls.forEach((e,i)=>{const k=eo(P(t,36.55+i*.05,36.95+i*.05)); S(e,done?1-eo(P(t,38.55,38.75)):k,(1-k)*-16)});
+        $('genFill').style.width=(gen*100).toFixed(1)+'%'; $('genTxt').textContent=gen>0&&!done?`Writing scripts… ${Math.round(gen*100)}%`:(done?'Done · 1.4 s':'');
+        $('genBtn').style.transform=`scale(${(1-.06*Math.sin(P(t,37.55,37.75)*Math.PI)).toFixed(3)})`;
+        const rk=eo(P(t,38.65,39.0)); S($('result'),rk,0,(1-rk)*16);
+        const bk=eback(P(t,38.85,39.25)); S($('okBanner'),clamp(bk),0,0,.92+.08*bk);
+        $('genBar').style.opacity=done?0:1; S($('genTxt'),1);
+      }
+      // share
+      const shareBtnHot=t>40.1&&t<40.7; $('shareBtn').style.borderColor=shareBtnHot?'#3987e5':'#262b38';$('shareBtn').style.background=shareBtnHot?'rgba(57,135,229,.25)':'#1d212c';
+      $('tabShare').className=t>40.3?'tab on':'tab'; if(t>40.3)$('app').querySelector('.tab').className='tab'; else $('app').querySelector('.tab').className='tab on';
+      const tk=vis(t,40.35,44.3,.3,0); S($('toast'),tk,0,(1-eo(P(t,40.35,40.65)))*-12);
+      const bw=eo5(P(t,40.9,41.6)); S($('browser'),bw,(1-bw)*260,0,.92+.08*bw);
+      // share line from share button (app coords) to browser
+      const sx=960-fx*sc+1558*sc, sy=470-fy*sc+364*sc; const ex=1060, ey=330;
+      const lk=eo(P(t,41.2,41.9)); const d=`M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${(sx+120).toFixed(1)} ${(sy-140).toFixed(1)}, ${(ex-160).toFixed(1)} ${ey}, ${ex} ${ey}`;
+      const ln=$('shareLine'),lg=$('shareLineG'); ln.setAttribute('d',d);lg.setAttribute('d',d); const L0=ln.getTotalLength();
+      [ln,lg].forEach(e=>{e.style.strokeDasharray=L0;e.style.strokeDashoffset=L0*(1-lk);e.style.opacity=t>41.2?(e===lg?.7:1):0});
+      const pk=$('sharePkt'); const pp=((t-41.9)/1.0)%1; if(t>41.9){const pt2=ln.getPointAtLength(L0*eio(pp));pk.setAttribute('cx',pt2.x);pk.setAttribute('cy',pt2.y);pk.style.opacity=Math.sin(pp*Math.PI)}else pk.style.opacity=0;
+      $('bRows').childNodes.forEach((r,i)=>{r.style.opacity=eo(P(t,41.4+i*.05,41.8+i*.05))});
+      const av=$('avatars'); const ak=eo(P(t,42.2,42.7)); S(av,ak,0,(1-ak)*20);
+      [...av.querySelectorAll('.avatar')].forEach((a,i)=>{const k=eback(P(t,42.2+i*.18,42.6+i*.18));S(a,clamp(k),0,0,.4+.6*k)});
+      // cursor
+      const [cxp,cyp,ck]=curAt(t); const cur=$('cur'); cur.style.transform=`translate(${cxp.toFixed(1)}px,${cyp.toFixed(1)}px) scale(${(1/Math.max(.8,Math.min(1.2,sc))).toFixed(3)})`;
+      cur.style.opacity=(t>15.15&&t<43.2)?Math.min(eo(P(t,15.15,15.5)),1-P(t,42.8,43.2)):0;
+      const rp=$('ripple'); rp.style.opacity=(ck*.9).toFixed(3); rp.style.transform=`scale(${(0.3+(1-ck)*1.1).toFixed(3)})`;
+    }
+  }
+  // ---------- BENEFITS 44-50
+  { const v=vis(t,44.0,50.1,.3,.45); S($('sBen'),v,0,0,1+.02*P(t,44,50));
+    if(v>0){ ['c1','c2','c3','c4'].forEach((id,i)=>{const k=eo5(P(t,44.2+i*.22,45.0+i*.22));S($(id),clamp(k*1.2),0,(1-k)*90,.92+.08*k)});
+      $('b1v').textContent=fmtInt(806*eo(P(t,44.3,45.6)))+' ms';
+    }
+  }
+  // ---------- CTA 50-55
+  { const v=vis(t,50.0,55.5,.4,0); S($('sCta'),v);
+    if(v>0){ const lk=eback(P(t,50.1,50.8)); S($('ctaLogo'),clamp(lk),0,(1-eo(P(t,50.1,50.8)))*-30,.7+.3*lk);
+      words(WS.ctaLine,t,50.45,.08,.5,40,10);
+      const bk=eback(P(t,51.4,51.9)); const pulse=t>52.2?1+.02*Math.sin((t-52.2)*4):1; S($('ctaBtn'),clamp(bk),0,(1-clamp(bk))*30,(.8+.2*bk)*pulse);
+      $('ctaBtn').style.boxShadow=`0 20px ${(70+30*Math.sin(Math.max(0,t-52.2)*4)).toFixed(0)}px rgba(20,184,166,${(.3+.12*Math.sin(Math.max(0,t-52.2)*4)).toFixed(3)})`;
+      const uk=eo(P(t,51.9,52.4)); S($('ctaUrl'),uk,0,(1-uk)*20); const fk=eo(P(t,52.3,52.8)); S($('ctaFine'),fk);
+    }
+  }
+  // ---------- caption track (non on-screen ones)
+  let cur=null; for(const c of CAPTIONS){ if(!c.onscreen && t>=c.a && t<c.b) cur=c }
+  const cap=$('cap');
+  if(cur){ const k=Math.min(eo(P(t,cur.a,cur.a+.35)),1-eio(P(t,cur.b-.3,cur.b))); S(cap,k,0,(1-k)*18);
+    $('capnum').style.display=cur.n?'flex':'none'; $('capnum').textContent=cur.n||''; if($('captext').dataset.t!==cur.text){$('captext').textContent=cur.text;$('captext').dataset.t=cur.text}
+  } else S(cap,0);
+  $('fade').style.opacity=0;
+}
+window.renderAt=renderAt;
+renderAt(0);
+</script>
+</body>
+</html>

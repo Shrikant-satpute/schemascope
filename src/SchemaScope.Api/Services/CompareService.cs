@@ -22,6 +22,9 @@ public sealed class CompareService(
 
         var session = sessions.Create();
         session.Options = options;
+        // Copies, so nothing the runner does to its own list can shift the index alignment.
+        session.SourceConnection = source;
+        session.TargetConnections = [.. targets];
 
         session.Publish(new ProgressEvent
         {
@@ -204,10 +207,9 @@ public sealed class CompareService(
     {
         if (session.Result is null || session.Source is null) return null;
 
-        var row = session.Result.Rows.FirstOrDefault(r => r.Key == key);
-        if (row is null) return null;
+        if (!session.RowIndex.TryGetValue(key, out var row)) return null;
 
-        var sourceObj = session.Source.Objects.FirstOrDefault(o => o.Key == key);
+        session.SourceIndex.TryGetValue(key, out var sourceObj);
 
         var detail = new ObjectDetail
         {
@@ -226,8 +228,7 @@ public sealed class CompareService(
 
         for (var i = 0; i < session.Targets.Count; i++)
         {
-            var snapshot = session.Targets[i];
-            var targetObj = snapshot.Objects.FirstOrDefault(o => o.Key == key);
+            session.TargetIndexes[i].TryGetValue(key, out var targetObj);
             var cell = i < row.Cells.Count ? row.Cells[i] : new TargetCell();
 
             detail.Targets.Add(new TargetObjectDetail

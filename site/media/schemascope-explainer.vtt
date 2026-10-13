@@ -1,0 +1,65 @@
+WEBVTT
+
+1
+00:00:00.200 --> 00:00:02.346
+Is production still the same as dev?
+
+2
+00:00:02.346 --> 00:00:04.150
+Most teams can't say for sure.
+
+3
+00:00:04.150 --> 00:00:07.200
+Dev, QA, staging, production, every client's copy.
+
+4
+00:00:07.200 --> 00:00:11.260
+They quietly drift apart, and checking them by hand is slow.
+
+5
+00:00:12.200 --> 00:00:13.917
+Meet SchemaScope.
+
+6
+00:00:15.350 --> 00:00:17.524
+Pick the database you trust,
+
+7
+00:00:19.400 --> 00:00:21.845
+add every copy you want to check,
+
+8
+00:00:22.850 --> 00:00:24.487
+and press Compare.
+
+9
+00:00:25.400 --> 00:00:29.260
+In about a second, you see exactly what differs, and where.
+
+10
+00:00:32.300 --> 00:00:34.892
+Open any object side by side,
+
+11
+00:00:36.400 --> 00:00:40.350
+generate the SQL to fix it, checked before you run it,
+
+12
+00:00:40.350 --> 00:00:43.220
+and share a read-only link with your team.
+
+13
+00:00:44.300 --> 00:00:47.000
+Fast. Free. Read-only.
+
+14
+00:00:47.000 --> 00:00:49.142
+And it runs on your PC.
+
+15
+00:00:50.300 --> 00:00:52.439
+Find the drift before your users do.
+
+16
+00:00:52.439 --> 00:00:55.000
+Download SchemaScope, free for Windows.

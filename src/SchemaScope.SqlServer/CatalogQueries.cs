@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace SchemaScope.SqlServer;
@@ -6,6 +7,12 @@ namespace SchemaScope.SqlServer;
 /// The whole schema is read with two round trips: one tiny version probe, then
 /// one batch that returns every result set below. Reading per object - which is
 /// what makes other tools slow - never happens.
+///
+/// Module bodies are the one exception, and they are deliberately not in the
+/// batch. They are the only thing here that touches LOB pages, so they are the
+/// only thing worth not re-reading: <see cref="ModuleBodies"/> asks for just the
+/// ones whose modify_date has moved since the last run, and is skipped entirely
+/// when nothing has changed.
 /// </summary>
 internal static class CatalogQueries
 {
@@ -14,7 +21,6 @@ internal static class CatalogQueries
     {
         Schemas = 0,
         Objects,
-        Modules,
         Columns,
         Indexes,
         IndexColumns,
@@ -74,18 +80,7 @@ internal static class CatalogQueries
             WHERE o.type IN ({ComparedObjectTypes});
             """);
 
-        // 2 - module bodies
-        sb.AppendLine($"""
-            SELECT o.object_id,
-                   m.definition,
-                   CAST(CASE WHEN m.object_id IS NULL THEN 1 ELSE 0 END AS bit) AS body_missing,
-                   CAST(ISNULL(OBJECTPROPERTY(o.object_id, 'IsEncrypted'), 0) AS bit) AS is_encrypted
-            FROM sys.objects o
-            LEFT JOIN sys.sql_modules m ON m.object_id = o.object_id
-            WHERE o.type IN ({ModuleTypes});
-            """);
-
-        // 3 - columns
+        // 2 - columns
         sb.AppendLine($"""
             SELECT c.object_id,
                    c.column_id,
@@ -114,7 +109,7 @@ internal static class CatalogQueries
             ORDER BY c.object_id, c.column_id;
             """);
 
-        // 4 - indexes
+        // 3 - indexes
         sb.AppendLine($"""
             SELECT i.object_id,
                    i.index_id,
@@ -135,7 +130,7 @@ internal static class CatalogQueries
             WHERE i.type <> 0 AND i.name IS NOT NULL;
             """);
 
-        // 5 - index columns
+        // 4 - index columns
         sb.AppendLine($"""
             SELECT ic.object_id,
                    ic.index_id,
@@ -149,7 +144,7 @@ internal static class CatalogQueries
             ORDER BY ic.object_id, ic.index_id, ic.is_included_column, ic.key_ordinal, c.name;
             """);
 
-        // 6 - foreign keys
+        // 5 - foreign keys
         sb.AppendLine("""
             SELECT fk.object_id,
                    fk.name AS fk_name,
@@ -164,7 +159,7 @@ internal static class CatalogQueries
             JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id;
             """);
 
-        // 7 - foreign key columns
+        // 6 - foreign key columns
         sb.AppendLine("""
             SELECT fkc.constraint_object_id,
                    fkc.constraint_column_id,
@@ -176,7 +171,7 @@ internal static class CatalogQueries
             ORDER BY fkc.constraint_object_id, fkc.constraint_column_id;
             """);
 
-        // 8 - check constraints
+        // 7 - check constraints
         sb.AppendLine("""
             SELECT cc.parent_object_id,
                    cc.name AS constraint_name,
@@ -187,7 +182,7 @@ internal static class CatalogQueries
             FROM sys.check_constraints cc;
             """);
 
-        // 9 - default constraints
+        // 8 - default constraints
         sb.AppendLine("""
             SELECT dc.parent_object_id,
                    dc.name AS constraint_name,
@@ -198,7 +193,7 @@ internal static class CatalogQueries
             JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id;
             """);
 
-        // 10 - parameters
+        // 9 - parameters
         sb.AppendLine("""
             SELECT p.object_id,
                    p.parameter_id,
@@ -219,7 +214,7 @@ internal static class CatalogQueries
             ORDER BY p.object_id, p.parameter_id;
             """);
 
-        // 11 - synonyms
+        // 10 - synonyms
         sb.AppendLine("""
             SELECT SCHEMA_NAME(sn.schema_id) AS schema_name,
                    sn.name,
@@ -228,7 +223,7 @@ internal static class CatalogQueries
             FROM sys.synonyms sn;
             """);
 
-        // 12 - user defined scalar types
+        // 11 - user defined scalar types
         sb.AppendLine("""
             SELECT SCHEMA_NAME(t.schema_id) AS schema_name,
                    t.name,
@@ -242,7 +237,7 @@ internal static class CatalogQueries
             WHERE t.is_user_defined = 1 AND t.is_table_type = 0;
             """);
 
-        // 13 - table types
+        // 12 - table types
         sb.AppendLine("""
             SELECT SCHEMA_NAME(tt.schema_id) AS schema_name,
                    tt.name,
@@ -251,7 +246,7 @@ internal static class CatalogQueries
             WHERE tt.is_user_defined = 1;
             """);
 
-        // 14 - sequences (SQL Server 2012 and later only)
+        // 13 - sequences (SQL Server 2012 and later only)
         if (majorVersion >= 11)
         {
             sb.AppendLine("""
@@ -270,6 +265,63 @@ internal static class CatalogQueries
                 """);
         }
 
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The bodies of exactly the modules asked for, or of every module when
+    /// <paramref name="objectIds"/> is null.
+    ///
+    /// This is the expensive read - the only one that touches LOB pages - so it
+    /// is worth asking for as little of it as possible. The ids are object_ids
+    /// that came out of the catalog moments ago, never anything a user typed, so
+    /// they are written into the text rather than parameterised.
+    /// </summary>
+    public static string ModuleBodies(IReadOnlyList<int>? objectIds)
+    {
+        var sb = new StringBuilder(1024);
+
+        sb.AppendLine("SET NOCOUNT ON;");
+        sb.AppendLine("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;");
+        sb.Append($"""
+            SELECT o.object_id,
+                   m.definition,
+                   CAST(CASE WHEN m.object_id IS NULL THEN 1 ELSE 0 END AS bit) AS body_missing,
+                   CAST(ISNULL(OBJECTPROPERTY(o.object_id, 'IsEncrypted'), 0) AS bit) AS is_encrypted
+            FROM sys.objects o
+            LEFT JOIN sys.sql_modules m ON m.object_id = o.object_id
+            WHERE o.type IN ({ModuleTypes})
+            """);
+
+        if (objectIds is not null)
+        {
+            sb.AppendLine();
+            sb.Append("  AND (");
+
+            // One IN list can only hold so many expressions before the parser
+            // complains, so the ids go in blocks that are OR'd together.
+            const int block = 1000;
+            for (var i = 0; i < objectIds.Count; i += block)
+            {
+                if (i > 0) sb.Append(" OR ");
+                sb.Append("o.object_id IN (");
+
+                var end = Math.Min(i + block, objectIds.Count);
+                for (var j = i; j < end; j++)
+                {
+                    if (j > i) sb.Append(',');
+                    // Invariant: a system object's id is negative, and a culture
+                    // with its own minus sign would write SQL that will not parse.
+                    sb.Append(objectIds[j].ToString(CultureInfo.InvariantCulture));
+                }
+
+                sb.Append(')');
+            }
+
+            sb.Append(')');
+        }
+
+        sb.AppendLine(";");
         return sb.ToString();
     }
 

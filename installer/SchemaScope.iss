@@ -60,10 +60,19 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\SchemaScope.exe"; Tasks: desk
 [Run]
 Filename: "{app}\SchemaScope.exe"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
 
+; No [UninstallRun] for the Share tab's firewall rule. Deleting a rule needs
+; admin rights and this per-user uninstaller has none, so it could never work.
+; The Share tab has "Remove firewall rule" for that (it asks for UAC itself);
+; SECURITY.md says to use it before uninstalling.
+
 [UninstallDelete]
-; The WebView2 cache we created beside our own data. Saved connections in
-; schemascope.db are deliberately left alone - reinstalling should not lose them.
+; The WebView2 cache we created beside our own data, the shared-link snapshots
+; and the definition cache. Both of those hold full object text, and both are
+; disposable. Saved connections in schemascope.db are deliberately left alone -
+; reinstalling should not lose them.
 Type: filesandordirs; Name: "{localappdata}\SchemaScope\WebView2"
+Type: filesandordirs; Name: "{localappdata}\SchemaScope\shares"
+Type: filesandordirs; Name: "{localappdata}\SchemaScope\cache"
 
 [Messages]
 ; Shown on the "ready to install" page.

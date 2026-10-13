@@ -9,3 +9,9 @@ src/SchemaScope.Api/wwwroot/
 *.user
 .vs/
 .DS_Store
+
+# Explainer narration: Kokoro model files and working audio (see assets/video/README.md)
+assets/video/kokoro-*.onnx
+assets/video/voices-*.bin
+assets/video/venv/
+assets/video/snd/

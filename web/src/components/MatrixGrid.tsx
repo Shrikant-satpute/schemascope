@@ -14,8 +14,32 @@ export interface MatrixFilters {
   targetIndex: number | null
 }
 
+/**
+ * The search box works like SQL's LIKE '%...%': part of a name is enough.
+ * Words split by spaces must all appear, in any order ("live param").
+ * % or * stands for any run of characters ("EY%Logs"), ? for one character.
+ * _ stays a plain underscore - object names are full of them.
+ * Brackets are ignored, so a name pasted from SSMS ([dbo].[X]) still matches.
+ */
+function searchMatcher(search: string): ((hay: string) => boolean) | null {
+  const words = search.toLowerCase().replace(/[[\]]/g, '').split(/\s+/).filter(Boolean)
+  if (words.length === 0) return null
+
+  const tests = words.map((word) => {
+    if (!/[%*?]/.test(word)) return (hay: string) => hay.includes(word)
+    const pattern = word
+      .replace(/[%*]+/g, '%')
+      .split('')
+      .map((c) => (c === '%' ? '.*' : c === '?' ? '.' : c.replace(/[.+^${}()|\\/]/g, '\\$&')))
+      .join('')
+    const rx = new RegExp(pattern)
+    return (hay: string) => rx.test(hay)
+  })
+  return (hay) => tests.every((test) => test(hay))
+}
+
 export function filterRows(result: CompareResult, f: MatrixFilters): CompareRow[] {
-  const needle = f.search.trim().toLowerCase()
+  const matches = searchMatcher(f.search)
 
   return result.rows.filter((row) => {
     if (f.differencesOnly && !row.hasDifference) return false
@@ -36,10 +60,7 @@ export function filterRows(result: CompareResult, f: MatrixFilters): CompareRow[
       if (!cells.some((c) => c && f.statuses.has(c.status))) return false
     }
 
-    if (needle) {
-      const hay = `${row.schema}.${row.name} ${row.typeLabel}`.toLowerCase()
-      if (!hay.includes(needle)) return false
-    }
+    if (matches && !matches(`${row.schema}.${row.name} ${row.typeLabel}`.toLowerCase())) return false
 
     return true
   })
@@ -53,12 +74,15 @@ export function MatrixGrid({
   targetColours,
   selectedKey,
   onSelect,
+  onRowContextMenu,
 }: {
   result: CompareResult
   rows: CompareRow[]
   targetColours: DbColour[]
   selectedKey: string | null
   onSelect: (row: CompareRow) => void
+  /** Right-click a row to ask about it without opening it first. */
+  onRowContextMenu?: (row: CompareRow, x: number, y: number) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -142,6 +166,11 @@ export function MatrixGrid({
               <div
                 key={row.key}
                 onClick={() => onSelect(row)}
+                onContextMenu={(e) => {
+                  if (!onRowContextMenu) return
+                  e.preventDefault()
+                  onRowContextMenu(row, e.clientX, e.clientY)
+                }}
                 className="absolute left-0 flex w-full cursor-pointer items-center text-[12.5px]"
                 style={{
                   height: v.size,

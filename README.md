@@ -5,9 +5,13 @@
 <h1 align="center">SchemaScope</h1>
 
 <p align="center">
-  <a href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe"><b>Download for Windows</b></a>
+  <b>Compare one SQL Server database against all your environments at once — in about a second.</b>
+</p>
+
+<p align="center">
+  <a href="https://schemascope.shadowmark.in"><b>schemascope.shadowmark.in</b></a>
   &nbsp;·&nbsp;
-  <a href="https://schemascope.shadowmark.in">Website</a>
+  <a href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe"><b>Download for Windows</b></a>
   &nbsp;·&nbsp;
   <a href="SECURITY.md">Security</a>
 </p>
@@ -18,116 +22,240 @@
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4" alt="Windows 10 and 11">
 </p>
 
-A fast SQL Server schema comparison tool for Windows.
+---
 
-Compares **one source database against many targets at the same time** and shows
-the result as a matrix, a drift dashboard, and a VS Code style diff.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/dashboard-dark.png">
+    <img src="assets/screenshots/dashboard-light.png" alt="SchemaScope comparing Dev against Staging, UAT and Production. A drift dashboard shows how much of the source each environment still matches, a matrix lists every object, and the panel below shows the difference." width="100%">
+  </picture>
+</p>
 
-**Read only.** There is no code in SchemaScope that writes to a database. It
-produces scripts and reports; applying them is your decision, in your own tools.
+<p align="center"><i>One source, three environments, one screen. Dev on the left, everything that drifted on the right.</i></p>
 
 ---
 
-## Why it exists
+## What it does
 
-Visual Studio's Schema Compare builds a full semantic model of both databases
-before it can tell you anything. On a large database that takes minutes, and it
-only ever compares one pair at a time.
+You have one database you trust — call it Dev. You also have Staging, UAT and
+Production, and you are not completely sure they still match.
 
-SchemaScope reads the system catalog in bulk instead, then hashes every object.
-Measured on a real 1,189 object database against a 990 object copy:
+SchemaScope answers that in one shot. Pick the source, add as many targets as
+you want, press **Compare**. You get:
 
-| Stage | Time |
-|---|---|
-| Read both databases (in parallel) | 500 ms |
-| Compare and classify | 296 ms |
-| **Total** | **806 ms** |
+- a score per environment — *"Production is 89.1% the same as Dev"*
+- a list of every object that is different, missing, or extra
+- the actual difference, side by side, in the VS Code editor
 
-Same work in Visual Studio: 60 to 180 seconds, for one target.
-
-### How it gets there
-
-1. **Read the catalog, not the model.** Two round trips per database: a version
-   probe, then one batch that returns every result set we need. Never one query
-   per object.
-2. **Hash first, diff later.** Every object gets a SHA-256 of its normalized
-   text. Matching hashes mean the object is identical and is never looked at
-   again - typically 90% or more of the database.
-3. **Compare tables as data, not text.** Columns, indexes and constraints are
-   rendered from catalog metadata by the *same code* on both sides, so
-   formatting can never produce a fake difference.
-4. **All targets in parallel.** Four databases cost about as much wall clock
-   time as one.
-5. **Cheap gate before expensive checks.** The T-SQL parser only runs on bodies
-   that are already nearly identical. Skipping it on the obviously-different
-   ones cut the compare stage from 1693 ms to 296 ms.
-6. **Stream to the screen.** Progress arrives per database as it happens.
+**It never writes to your databases.** There is no code in SchemaScope that
+writes. It only reads, and it only ever gives you scripts and reports. What you
+do with those is your call, in your own tools.
 
 ---
 
-## Six statuses, not two
+## Why not just use Visual Studio?
 
-Most tools tell you "same" or "different". That reports a re-indented procedure
-as a change and buries the real ones.
+Straight answer: **Visual Studio's Schema Compare sucks at this job.**
 
-| | Status | Meaning |
+It is fine at what it was built for — pushing one database into another. Ask it
+the question people actually ask on a Friday afternoon, *is production still the
+same as dev?*, and it wastes your afternoon.
+
+- **It is slow. Every single time.** Before it says one word, it builds a full
+  model of both databases. On a big database that is minutes of watching a
+  progress bar, and you pay it again on every run.
+- **One pair at a time. That is it.** Four environments means running it four
+  times, waiting four times, and then holding four sets of results in your head.
+- **It cries wolf.** Re-indent a stored procedure and it screams "changed". The
+  one difference that will actually break production is buried in that noise.
+- **It drags a whole IDE along.** A DBA who does not write C# should not have to
+  install a multi-gigabyte IDE to find out whether last night's release landed.
+- **It is the wrong tool pointed at production.** Schema Compare exists to write
+  to a database. If all you wanted was an answer, that is a lot of loaded gun to
+  be holding.
+
+SchemaScope does the one job, properly. Measured on a real 1,189 object database
+against a 990 object copy:
+
+| | SchemaScope | VS Schema Compare |
+|---|---|---|
+| Read both databases | 500 ms | — |
+| Compare and classify | 296 ms | — |
+| **Total** | **806 ms** | **60–180 seconds** |
+| Targets per run | as many as you like | one |
+| Needs Visual Studio | no | yes |
+
+Four target databases take about the same time as one, because they are read at
+the same time.
+
+### How it is that fast
+
+1. **Read the catalog, not the model.** Two round trips per database: check the
+   version, then one batch that returns everything. Never one query per object.
+2. **Never read the same procedure body twice.** Bodies are the only thing here
+   that touches LOB pages, and on a server whose buffer pool is under pressure
+   they are the entire cost of a compare. They are kept between runs and re-read
+   only when `sys.objects.modify_date` says the object has actually been altered,
+   so a third round trip fetches the handful that changed and is skipped when
+   none did. On a 1,170 against 1,193 object pair, on an instance squeezed down
+   to a 555 MB buffer pool: **25.9 s on the first run, 1.8 s on the next**, with
+   an identical answer both times.
+3. **Hash first, look later.** Every object gets a SHA-256 of its cleaned-up
+   text. Same hash means the object is identical, and it is never opened again —
+   that is usually 90% or more of the database.
+4. **Compare tables as data, not as text.** Columns, indexes and constraints are
+   built from catalog metadata by the *same code* on both sides, so formatting
+   can never invent a fake difference.
+5. **Do all targets at once**, in parallel.
+6. **Run the expensive check last.** The T-SQL parser only runs on bodies that
+   already look nearly identical. Skipping it on the obviously different ones
+   took the compare stage from 1693 ms down to 296 ms.
+7. **Stream results to the screen** as each database finishes.
+
+---
+
+## Six answers, not two
+
+Most tools say "same" or "different". That is why a re-indented procedure looks
+like a change and the real one gets buried.
+
+| | Status | What it means |
 |:-:|---|---|
 | `=` | Same | Identical to the source |
-| `~` | Formatting | Same code, only layout, comments or bracket quoting moved |
-| `≠` | Different | A real difference, with the changed line count |
-| `✕` | Missing | In the source but not in this target |
-| `+` | Extra | Only in this target - usually a local customisation |
-| `?` | Unreadable | Encrypted, or the login lacks `VIEW DEFINITION` |
+| `~` | Formatting | Same code. Only spacing, comments or brackets moved |
+| `≠` | Different | A real difference, with the number of changed lines |
+| `✕` | Missing | In the source, but not in this target |
+| `+` | Extra | Only in this target — usually a local change |
+| `?` | Unreadable | Encrypted, or your login lacks `VIEW DEFINITION` |
 
-Nothing is ever hidden. An ignore rule downgrades an object to *Formatting*
-rather than making it disappear.
+Nothing is ever hidden. An ignore rule moves an object down to *Formatting*
+instead of making it disappear.
 
-Every status carries a symbol and a word as well as a colour, and the colours
-are validated for colour vision deficiency in both light and dark mode.
-
----
-
-## What it shows
-
-- **Drift dashboard** - one tile per target: how much of the source it still
-  matches, a breakdown meter, and counts you can click to filter.
-- **"Drifted in exactly one target"** - objects that changed in a single
-  environment. Almost always a local customisation rather than a missed release.
-- **Matrix grid** - one row per object, one column per target, virtualized so
-  thousands of rows stay smooth.
-- **Diff panel** - Monaco (the VS Code editor) with real line numbers,
-  side-by-side or inline. `F8` and `Shift+F8` walk the changes.
-- **Table grid diff** - tables compare field by field. A text diff of a
-  `CREATE TABLE` lights up the whole block when one column is renamed; the grid
-  highlights only the cells that actually differ.
-- **Export** - standalone HTML report, CSV, Markdown, or one `.sql` file per
-  object into a folder.
+Every status has a symbol and a word as well as a colour, and the colours are
+checked for colour blindness in both light and dark mode.
 
 ---
 
-## Privacy
+## What you see
 
-Everything is local, and it is enforced rather than promised:
+### Real diffs, in the VS Code editor
 
-- Connections and passwords live in `%LOCALAPPDATA%\SchemaScope\schemascope.db`.
-  Passwords are encrypted with Windows DPAPI under your account, so no other
-  Windows user can read them.
-- The UI is served from inside the exe. The page runs under a
-  `Content-Security-Policy` of `default-src 'self'`, so the browser engine
-  itself blocks any request to an outside host.
-- The window refuses to navigate anywhere except its own loopback origin.
-- No telemetry, no update check, no network calls of any kind.
+<p align="center">
+  <img src="assets/screenshots/diff.png" alt="A side-by-side diff of a stored procedure. The production copy has a batched delete and a hotfix comment that the source never received." width="100%">
+</p>
+
+Monaco — the editor from VS Code — with real line numbers, side by side or
+inline. `F8` and `Shift+F8` jump between changes.
+
+### Tables compared field by field
+
+<p align="center">
+  <img src="assets/screenshots/table-grid.png" alt="A table comparison grid showing which columns changed type, which was dropped, which were added, and which index is missing." width="100%">
+</p>
+
+A text diff lights up a whole `CREATE TABLE` when one column is renamed. The
+grid shows you only the cells that actually differ — plus indexes, keys and
+constraints.
+
+### And the rest
+
+- **Drift dashboard** — one tile per environment: how much still matches, a
+  breakdown bar, and counts you can click to filter.
+- **"Drifted in exactly one target"** — objects that changed in a single
+  environment. Almost always a local change rather than a missed release.
+- **Matrix grid** — one row per object, one column per target. Virtualized, so
+  thousands of rows stay smooth. The filter box works like SQL `LIKE '%...%'`:
+  part of a name is enough, several words must all appear in any order, and
+  `%` or `*` stands for any characters (`EY%Logs`).
+- **Where is this used?** — pick an object and see what references it, and what
+  it uses, in the source and in every target. The answer can differ between
+  environments, which is itself the finding.
+- **Export** — a standalone HTML report, CSV, Markdown for the wiki, or one
+  `.sql` file per object into a folder.
+- **Create scripts** — the SQL that would make a target look like the source,
+  as numbered folders you review and run yourself. See [Create scripts](#create-scripts).
+- **Share on your network** — send a colleague a read-only link to a finished
+  comparison. See [Share on your network](#share-on-your-network).
+
+---
+
+## Share on your network
+
+A finished comparison can be handed to someone else on the same network as a
+link, so they can read the dashboard, the matrix and every diff in their own
+browser without installing anything or having a login on your servers.
+
+1. Run a compare, then click **Share**.
+2. Send the link it shows you, for example
+   `http://192.168.1.20:5280/s/<token>`. The Share tab lists your live links and
+   who is reading them right now.
+3. **Revoke** a link whenever you like. Links also expire on their own after
+   seven days.
+
+How it is kept contained:
+
+- **Off until you use it.** Nothing listens on the network until you share. The
+  listener stops when you revoke the last link, when the last one expires, and
+  when you close SchemaScope.
+- **A separate, read-only server.** The link is served by a second listener on
+  port 5280 that only knows a handful of `GET` routes for the shared snapshot.
+  Your connections, passwords, history and the compare and script routes are not
+  on it at all — they stay on the token-protected loopback API.
+- **The link is the key.** Each link carries a 128-bit random token, compared in
+  constant time. Wrong guesses are rate limited, and so is everything else.
+- **A snapshot, not a connection.** The shared copy is written when you click
+  Share. It never goes back to a database, and it never contains a connection
+  string or password; driver error messages are scrubbed before they are
+  written.
+- **Windows Firewall.** If others cannot reach the link, the Share tab offers to
+  add a rule. It is limited to private and domain networks, to callers on your
+  local subnet, and to SchemaScope itself, and the exact `netsh` command is shown
+  before you click. To remove it later:
+  `netsh advfirewall firewall delete rule name="SchemaScope share"` from an
+  admin prompt.
+
+Be clear about what a link hands over: **the full text of every object in the
+comparison**, plus the server and database names, over plain HTTP, to anyone who
+has the link and can reach your machine. Share it the way you would share the
+`.sql` files themselves. Shared snapshots are kept in
+`%LOCALAPPDATA%\SchemaScope\shares` until they are revoked or expire.
+
+---
+
+## Your schema stays on your machine
+
+This is built in, not promised in a policy document:
+
+- Connections and passwords live in
+  `%LOCALAPPDATA%\SchemaScope\schemascope.db`. Passwords are encrypted with
+  Windows DPAPI under your account, so no other Windows user can read them.
+- The UI is served from inside the exe, under a
+  `Content-Security-Policy` of `default-src 'self'`. A request to an outside
+  host is not blocked by our code — the browser engine refuses to make it.
+- The local API only answers its own window: every call must carry a token
+  minted at startup, and requests addressed to any other host name are refused.
+- Saved passwords are only ever used for the server and login they were saved
+  with. Point a saved connection somewhere else and you have to type it again.
+- The window will not navigate anywhere except its own loopback address.
+- Procedure and view bodies are cached in `%LOCALAPPDATA%\SchemaScope\cache` so
+  an unchanged one is never read twice. It is object text, not data, it never
+  leaves the machine, and deleting the folder costs nothing but the next run's
+  time.
+- No telemetry. No update check. The only outgoing connections it opens are to
+  the databases you named. Nothing listens on the network unless you
+  [share a comparison](#share-on-your-network) — and then only the read-only
+  viewer, until you stop.
 
 ---
 
 ## Installing
 
 [**Download SchemaScope-Setup.exe**](https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe)
-and run it. It installs for your account only, so there is no administrator
-prompt, and it offers a desktop shortcut.
+and run it. It installs for your account only, so Windows never asks for
+administrator rights, and it offers a desktop shortcut.
 
 Prefer nothing installed? [`SchemaScope.exe`](https://github.com/Shrikant-satpute/schemascope/releases/latest)
-is the portable build - one self-contained file, no .NET install needed, nothing
+is the portable build — one self-contained file, no .NET install needed, nothing
 to unpack, no files beside it.
 
 ### From Scoop
@@ -136,14 +264,14 @@ to unpack, no files beside it.
 scoop install https://raw.githubusercontent.com/Shrikant-satpute/schemascope/main/packaging/scoop/schemascope.json
 ```
 
-This installs the portable build and keeps it current with `scoop update`, and
-it skips the SmartScreen prompt described below - that warning comes from the
-mark browsers attach to downloaded files, which a package manager never adds.
+This installs the portable build and keeps it up to date with `scoop update`. It
+also skips the SmartScreen warning below — that warning comes from a mark
+browsers attach to downloaded files, and a package manager never adds it.
 
-WebView2 is required and ships with Windows 10 and 11. If it is somehow missing
+WebView2 is required and ships with Windows 10 and 11. If it is somehow missing,
 you get a plain explanation and a download link.
 
-### Windows will warn you on first run
+### Windows will warn you the first time
 
 The binaries are not code-signed yet, so SmartScreen shows *"Windows protected
 your PC"*. Click **More info**, then **Run anyway**.
@@ -155,7 +283,7 @@ GitHub Actions from the tagged commit, and ships a `SHA256SUMS.txt`:
 Get-FileHash .\SchemaScope-Setup.exe -Algorithm SHA256
 ```
 
-### Permissions it needs
+### What it needs on the server
 
 A login that can read the catalog:
 
@@ -163,9 +291,9 @@ A login that can read the catalog:
 GRANT VIEW DEFINITION TO [your_login];
 ```
 
-Without it SchemaScope still sees object names but not their bodies, and says so
-per object instead of reporting a false difference. The connection test warns
-you up front.
+Without it, SchemaScope still sees object names but not their bodies. It says so
+per object instead of reporting a false difference, and the connection test
+warns you up front.
 
 ---
 
@@ -184,6 +312,9 @@ Needs the .NET 9 SDK and Node 20+.
 # terminal 1 - the API on a fixed port
 dotnet run --project src\SchemaScope.Shell -- --server --port 5199
 
+# optional: a throwaway settings store, so you never touch your own connections
+dotnet run --project src\SchemaScope.Shell -- --server --port 5199 --store C:\temp\scratch.db
+
 # terminal 2 - Vite with hot reload, proxying /api to 5199
 cd web
 npm run dev
@@ -192,7 +323,7 @@ npm run dev
 ### Measuring the engine
 
 The Phase 0 spike is still in the repo. It reports stage timings and, more
-usefully, every object that differs *only* by formatting - each one is a
+usefully, every object that differs *only* by formatting — each one is a
 normalizer rule worth reviewing before trusting the tool on a new database.
 
 ```powershell
@@ -209,30 +340,88 @@ dotnet run --project src\SchemaScope.Spike -c Release -- `
 src/
   SchemaScope.Core        models, T-SQL normalizer, hashing, diff engine, local store
   SchemaScope.SqlServer   catalog reader, connection handling
-  SchemaScope.Api         minimal API + SSE, embeds the built UI
+  SchemaScope.Scripting   Create scripts: folder generators, offline validator
+  SchemaScope.Api         minimal API + SSE, share viewer, embeds the built UI
   SchemaScope.Shell       WebView2 window, single file exe entry point
   SchemaScope.Spike       Phase 0 measurement console
 web/                      React + TypeScript + Vite + Tailwind + Monaco
+site/                     the landing page at schemascope.shadowmark.in
+tests/                    xUnit: engine, normalizer, and the security rules
 ```
 
-Supports SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed
+Works with SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed
 Instance and AWS RDS. The catalog queries adjust to the server version.
+
+---
+
+## Create scripts
+
+After a compare, each target tile has a **Create scripts** button. It writes the
+SQL that would make that target look like the source, as numbered folders. It
+**never runs anything**: SchemaScope only reads the two databases (catalog
+`SELECT`s and row counts) and checks the scripts offline. You review them and
+run them yourself.
+
+1. Run a compare, then click **Create scripts** on the target's tile.
+2. Untick what you do not want. Everything is ticked except **Table types** and
+   **Triggers**, which change how the running application behaves.
+3. Click **Generate** and pick a folder. The run goes into
+   `<folder>\<Target>_<yyyyMMdd-HHmm>\`. Its `README.md` explains each folder.
+
+| Folder | What it does | Run by `RUN.ps1` |
+|---|---|---|
+| `01_columns` | Adds missing columns to tables both sides have | yes |
+| `02_tabletypes` | Rebuilds changed table types (drops and recreates the procedures that use them) | only with `-WithTableTypes` |
+| `03_missing` | Creates missing tables, functions, views, procedures, schemas, sequences, synonyms | yes |
+| `04_columntypes` | Widens columns and relaxes NOT NULL; never narrows | yes (first) |
+| `05_constraints` | Adds missing defaults, checks, keys and foreign keys | yes |
+| `06_indexes` | Adds missing indexes | yes |
+| `07_triggers` | Creates missing triggers | no - run on its own |
+| `08_formatting_modules` | Replaces modules that differ only by formatting, with a `rollback\` | no - run on its own |
+| `09_formatting_tables` | Renames names that differ only by letter case (`sp_rename`) | no - run on its own |
+| `99_review` | Reports only: everything held back, and why | - |
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\RUN.ps1 -Database <TargetDatabase> [-Server <name>] [-WithTableTypes]
+```
+
+What it is careful about:
+
+- **Module text is byte for byte.** Procedure, function and view bodies come out
+  exactly as the source has them, even through SSMS. The offline check proves
+  it for every module.
+- **Nothing is dropped that only the target has.** `04` never narrows a column.
+- **Anything risky is held back, not scripted**: a NOT NULL column with no
+  default, a key that existing data would break, a procedure that would not
+  compile on the target, a module that reads a column the target will not get,
+  and so on. Each one is listed in `99_review` with the reason.
+- **No connection details in any file.** `RUN.ps1` uses your Windows login.
+- **Only into a local folder you chose.** Network paths, and system and Startup
+  folders, are refused, so a `RUN.ps1` can never land somewhere it would run by
+  itself.
+- If you stop a run, the folder gets an `INCOMPLETE - DO NOT RUN.txt` marker.
+
+Always run the scripts on a restored copy of the target first, then compare
+again, before touching the real one.
 
 ---
 
 ## Not in this version
 
-Deployment scripting. Comparison is a solvable problem; generating a correct
-deploy script for every edge case - dependency order, drop and recreate, data
-preservation - is a much bigger one. Shipping half of it would be worse than
-not shipping it. Export the objects as `.sql` and review them yourself.
+Data migration. The scripts change structure only; they never move or fix rows.
 
 ---
+
+## Links
+
+- **Website** — <https://schemascope.shadowmark.in>
+- **Download** — [latest release](https://github.com/Shrikant-satpute/schemascope/releases/latest)
+- **Report an issue** — <https://github.com/Shrikant-satpute/schemascope/issues>
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the build, the dev loop and where
-tests are expected. Found a security issue? [SECURITY.md](SECURITY.md) - please
+tests are expected. Found a security issue? [SECURITY.md](SECURITY.md) — please
 report it privately rather than in an issue.
 
 ## License

@@ -53,6 +53,22 @@ public sealed class ConnectionSettings
         : string.IsNullOrWhiteSpace(Database) ? Server
         : $"{Server}.{Database}";
 
+    /// <summary>Whether this connection signs in with a password typed by the user.</summary>
+    public bool UsesPassword =>
+        !UseRawConnectionString && Auth is AuthMode.SqlLogin or AuthMode.AzureAdPassword;
+
+    /// <summary>
+    /// The one rule for releasing a stored secret: it only ever goes back to the
+    /// server, login and auth mode it was saved against. The database may differ
+    /// - one server is often compared against itself - because a database name
+    /// cannot redirect a credential elsewhere.
+    /// </summary>
+    public static bool SameDestination(ConnectionSettings a, ConnectionSettings b) =>
+        string.Equals(a.Server, b.Server, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(a.UserName ?? "", b.UserName ?? "", StringComparison.OrdinalIgnoreCase) &&
+        a.Auth == b.Auth &&
+        a.UseRawConnectionString == b.UseRawConnectionString;
+
     public ConnectionSettings WithoutSecrets()
     {
         var copy = (ConnectionSettings)MemberwiseClone();

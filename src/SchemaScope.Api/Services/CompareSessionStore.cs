@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using SchemaScope.Core.Comparison;
 using SchemaScope.Core.Model;
@@ -27,7 +28,37 @@ public sealed class CompareSession
     public SchemaSnapshot? Source { get; set; }
     public List<SchemaSnapshot> Targets { get; set; } = [];
 
+    /// <summary>
+    /// Where the source was read from, connection string and all. Kept so "Create scripts"
+    /// reads exactly the server and database that were compared, even if the saved
+    /// connection has been edited since. In memory only: the session is never serialised
+    /// (RunSummary and shares copy <see cref="Result"/> alone), and the attribute keeps it
+    /// that way should anyone ever hand the session to a serialiser.
+    /// </summary>
+    [JsonIgnore]
+    public SchemaSource? SourceConnection { get; set; }
+
+    /// <summary>One per target, in the same order as <see cref="Targets"/> and Result.Targets. In memory only.</summary>
+    [JsonIgnore]
+    public List<SchemaSource> TargetConnections { get; set; } = [];
+
     public CancellationTokenSource Cancellation { get; } = new();
+
+    // Looking an object up by key happens once per click, and once per object
+    // when a run is published as a share. Scanning a 1,200 object list each time
+    // turns that second case into a million comparisons, so index it on first use.
+    private Dictionary<string, DbObject>? _sourceIndex;
+    private List<Dictionary<string, DbObject>>? _targetIndexes;
+    private Dictionary<string, CompareRow>? _rowIndex;
+
+    public Dictionary<string, DbObject> SourceIndex =>
+        _sourceIndex ??= Source?.BuildIndex() ?? [];
+
+    public List<Dictionary<string, DbObject>> TargetIndexes =>
+        _targetIndexes ??= [.. Targets.Select(t => t.BuildIndex())];
+
+    public Dictionary<string, CompareRow> RowIndex =>
+        _rowIndex ??= Result?.Rows.ToDictionary(r => r.Key, StringComparer.Ordinal) ?? [];
 
     private readonly List<ProgressEvent> _history = [];
     private readonly List<Channel<ProgressEvent>> _subscribers = [];

@@ -19,8 +19,9 @@ export default defineConfig({
         // changeOrigin rewrites Host to the target, which the API requires.
         changeOrigin: true,
         // The packaged app gets its token from the launch URL. In development
-        // the proxy supplies the fixed one that `--server` mode expects.
-        headers: { 'X-SchemaScope-Token': 'schemascope-dev' },
+        // the proxy supplies the fixed one a Debug `--server` expects; a Release
+        // `--server` mints its own and prints it - pass that as SCHEMASCOPE_TOKEN.
+        headers: { 'X-SchemaScope-Token': process.env.SCHEMASCOPE_TOKEN || 'schemascope-dev' },
       },
     },
   },

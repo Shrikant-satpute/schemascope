@@ -305,6 +305,16 @@ public sealed class ExportService
 
         var trimmed = folder.Trim();
 
+        // A \\host\share path would leave the machine, and Windows offers the
+        // user's NTLM credentials to that host the moment it is probed - before
+        // anything has been written. Every route that writes files comes through
+        // here, so it is refused here, ahead of the first Directory call.
+        if (IsNetworkPath(trimmed))
+        {
+            refusal = "Choose a folder on this computer - files are not written to network paths.";
+            return false;
+        }
+
         // Checked before GetFullPath, which would happily resolve a relative
         // path against whatever the working directory happens to be.
         if (!Path.IsPathRooted(trimmed))
@@ -336,6 +346,13 @@ public sealed class ExportService
         }
 
         return true;
+    }
+
+    /// <summary>UNC (\\host\share), device (\\?\UNC\..., \\.\...) and forward-slash variants.</summary>
+    internal static bool IsNetworkPath(string path)
+    {
+        var p = path.Trim().Replace('/', '\\');
+        return p.StartsWith(@"\\", StringComparison.Ordinal);
     }
 
     private static string Safe(string name)

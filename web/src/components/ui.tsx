@@ -172,6 +172,9 @@ export function Modal({
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className="ss-fade my-auto w-full rounded-xl border shadow-2xl"
         style={{ background: 'var(--surface)', borderColor: 'var(--line)', maxWidth: width }}
         onMouseDown={(e) => e.stopPropagation()}

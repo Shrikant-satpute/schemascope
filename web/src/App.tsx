@@ -15,6 +15,7 @@ import { SetupBar, type TargetSlot } from './components/SetupBar'
 import { ResultsWorkspace } from './components/ResultsWorkspace'
 import { OptionsDialog, countNonDefault } from './components/OptionsDialog'
 import { ScriptDialog } from './components/ScriptDialog'
+import { ObjectScriptDialog } from './components/ObjectScriptDialog'
 import { Button, EmptyState, Spinner } from './components/ui'
 
 type View = 'compare' | 'connections' | 'history' | 'share'
@@ -54,6 +55,10 @@ export default function App() {
   /** Index into `result.targets` whose "Create scripts" dialog is open, or null. */
   const [scriptTarget, setScriptTarget] = useState<number | null>(null)
   const closeScripts = useCallback(() => setScriptTarget(null), [])
+  /** The object (row key) and target whose "Generate script" dialog is open, or null. */
+  const [objectScript, setObjectScript] = useState<{ key: string; targetIndex: number } | null>(null)
+  const closeObjectScript = useCallback(() => setObjectScript(null), [])
+  const openObjectScript = useCallback((key: string, targetIndex: number) => setObjectScript({ key, targetIndex }), [])
   const [toast, setToast] = useState<string | null>(null)
   /** Target the results are focused on - preselected when a swap has to ask which. */
   const [focusedTarget, setFocusedTarget] = useState<number | null>(null)
@@ -163,6 +168,7 @@ export default function App() {
     setResult(null)
     // a new run has new targets: a script dialog or focused target from the old one must not carry over
     setScriptTarget(null)
+    setObjectScript(null)
     setFocusedTarget(null)
     setProgress([])
 
@@ -366,7 +372,7 @@ export default function App() {
             onRun={() => void runCompare(source, targets)}
             onSwap={swapAndRun}
             swapPreferred={focusedTarget}
-            blocked={showOptions || scriptTarget !== null}
+            blocked={showOptions || scriptTarget !== null || objectScript !== null}
             onCancel={cancelCompare}
             onOpenOptions={() => setShowOptions(true)}
             optionCount={optionBadge}
@@ -426,6 +432,7 @@ export default function App() {
               onShare={doShare}
               sharing={publishing}
               onCreateScripts={setScriptTarget}
+              onGenerateObjectScript={openObjectScript}
               onFocusedTargetChange={setFocusedTarget}
             />
           )}
@@ -452,6 +459,19 @@ export default function App() {
           result={result}
           targetIndex={scriptTarget}
           onClose={closeScripts}
+          onToast={say}
+        />
+      )}
+
+      {objectScript && result && runId && result.targets[objectScript.targetIndex] && (
+        <ObjectScriptDialog
+          key={`${runId}:${objectScript.key}:${objectScript.targetIndex}`}
+          runId={runId}
+          result={result}
+          objectKey={objectScript.key}
+          targetIndex={objectScript.targetIndex}
+          theme={theme}
+          onClose={closeObjectScript}
           onToast={say}
         />
       )}

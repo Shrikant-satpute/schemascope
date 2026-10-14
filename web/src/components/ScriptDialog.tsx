@@ -474,7 +474,7 @@ function newProgressId(): string {
 }
 
 /** The bar under the options while a run is going: the step it is on and how far along the whole run is. */
-function RunProgress({ progress }: { progress: ScriptProgress | null }) {
+export function RunProgress({ progress }: { progress: ScriptProgress | null }) {
   const percent = progress?.percent ?? 0
   return (
     <div className="flex flex-col gap-1.5" role="status" aria-live="polite">
@@ -694,7 +694,7 @@ function runAllText(f: FolderResult): string {
 }
 
 /** The house inline banner: a 12% wash of the status colour with the icon on the left. */
-function Banner({ tone, children }: { tone: 'error' | 'warning' | 'success'; children: React.ReactNode }) {
+export function Banner({ tone, children }: { tone: 'error' | 'warning' | 'success'; children: React.ReactNode }) {
   const colour = tone === 'error' ? 'var(--st-miss)' : tone === 'warning' ? 'var(--st-diff)' : 'var(--st-same)'
   return (
     <div

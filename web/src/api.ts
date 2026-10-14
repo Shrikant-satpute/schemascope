@@ -8,6 +8,9 @@ import type {
   ExportResult,
   Health,
   ObjectDetail,
+  ObjectScriptDependencies,
+  ObjectScriptOutcome,
+  ObjectScriptRequest,
   ProgressEvent,
   ReferenceResult,
   RunSummary,
@@ -85,6 +88,7 @@ async function read<T>(res: Response): Promise<T> {
     try {
       const body = await res.json()
       if (body?.message) message = body.message
+      else if (typeof body?.error === 'string') message = body.error
     } catch {
       /* response was not json */
     }
@@ -210,6 +214,27 @@ export const api = {
      */
     scripts: (runId: string, body: ScriptRequest, signal?: AbortSignal) =>
       req<ScriptOutcome>(`/api/compare/${runId}/scripts`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        signal,
+      }),
+
+    /**
+     * What one object needs before it can be scripted on its own against one
+     * target: the plan, and the objects it depends on that the target lacks.
+     */
+    objectScriptDependencies: (runId: string, key: string, targetIndex: number) =>
+      req<ObjectScriptDependencies>(
+        `/api/compare/${runId}/object-script/dependencies?key=${encodeURIComponent(key)}&targetIndex=${targetIndex}`,
+      ),
+
+    /**
+     * Writes the sync script for just this object (and the chosen
+     * dependencies) and returns its text. Like `scripts`, nothing is run
+     * against a database. Aborting the signal stops it on the server too.
+     */
+    objectScript: (runId: string, body: ObjectScriptRequest, signal?: AbortSignal) =>
+      req<ObjectScriptOutcome>(`/api/compare/${runId}/object-script`, {
         method: 'POST',
         body: JSON.stringify(body),
         signal,

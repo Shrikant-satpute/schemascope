@@ -90,7 +90,7 @@ public static class CanonicalScriptWriter
         foreach (var ix in o.Indexes
                      .Where(i => i.IsPrimaryKey || i.IsUniqueConstraint)
                      .OrderBy(i => i.IsPrimaryKey ? 0 : 1)
-                     .ThenBy(i => i.Name, StringComparer.OrdinalIgnoreCase))
+                     .ThenBy(i => SortKeyFor(i, opt), StringComparer.OrdinalIgnoreCase))
             lines.Add("    " + KeyConstraintLine(ix, opt));
 
         foreach (var ck in o.Constraints
@@ -115,6 +115,10 @@ public static class CanonicalScriptWriter
 
     private static string SortKeyFor(ConstraintInfo c, CompareOptions opt) =>
         opt.IgnoreSystemNamedConstraints && c.IsSystemNamed ? c.Definition : c.Name;
+
+    // A random PK__Table__3213E83F... name must not decide the order either.
+    private static string SortKeyFor(IndexInfo ix, CompareOptions opt) =>
+        opt.IgnoreSystemNamedConstraints && ix.IsSystemNamed ? KeyColumnList(ix) : ix.Name;
 
     private static string ColumnLine(ColumnInfo c, DbObject o, CompareOptions opt)
     {
@@ -167,7 +171,8 @@ public static class CanonicalScriptWriter
     private static string KeyConstraintLine(IndexInfo ix, CompareOptions opt)
     {
         var sb = new StringBuilder(96);
-        sb.Append("CONSTRAINT ").Append(Q(ix.Name)).Append(' ');
+        if (!(opt.IgnoreSystemNamedConstraints && ix.IsSystemNamed))
+            sb.Append("CONSTRAINT ").Append(Q(ix.Name)).Append(' ');
         sb.Append(ix.IsPrimaryKey ? "PRIMARY KEY " : "UNIQUE ");
         sb.Append(ix.TypeDesc.Contains("CLUSTERED", StringComparison.OrdinalIgnoreCase)
             ? ix.TypeDesc.ToUpperInvariant()

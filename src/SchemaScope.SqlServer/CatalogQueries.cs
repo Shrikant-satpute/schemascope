@@ -123,10 +123,12 @@ internal static class CatalogQueries
                    i.is_padded,
                    i.ignore_dup_key,
                    i.filter_definition,
-                   ISNULL(ds.name, N'') AS data_space
+                   ISNULL(ds.name, N'') AS data_space,
+                   CAST(ISNULL(k.is_system_named, 0) AS bit) AS is_system_named
             FROM sys.indexes i
             JOIN sys.objects o ON o.object_id = i.object_id AND o.type IN ({ColumnBearingTypes})
             LEFT JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
+            LEFT JOIN sys.key_constraints k ON k.parent_object_id = i.object_id AND k.unique_index_id = i.index_id
             WHERE i.type <> 0 AND i.name IS NOT NULL;
             """);
 

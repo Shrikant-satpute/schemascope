@@ -42,7 +42,7 @@ public sealed class DifferentModulesGenerator : IFolderGenerator
         foreach (var k in src.SortedModules())
         {
             ct.ThrowIfCancellationRequested();
-            if (!ctx.DifferentCandidates.ContainsKey(k.ToString())) continue;
+            if (!ctx.DifferentCandidates.ContainsKey(k.ToString()) || !ctx.InScope(k)) continue;
             var m = src.Modules[k];
             if (ctx.Target.FindModule(k) is not { } t) continue;
             if (m.Definition is null || t.Definition is null)

@@ -440,6 +440,46 @@ public sealed partial class TargetProbes : CatalogProbes
             expectedErrors: NotThereYet);
     }
 
+    /// <summary>11_destructive: the rows a DROP TABLE would delete, <c>SELECT COUNT_BIG(*)</c> (READ UNCOMMITTED).</summary>
+    public Task<ProbeCount> RowCountProbeAsync(ObjectName table, CancellationToken ct = default)
+    {
+        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        return CountAsync($"rows in {table}", $"SELECT COUNT_BIG(*) FROM {table.Bracketed}", ct, readUncommitted: true);
+    }
+
+    /// <summary>
+    /// 11_destructive's data-fit test for <c>ALTER COLUMN</c>: rows that hold NULL when <paramref name="notNull"/>, and,
+    /// when <paramref name="newType"/> is given, rows whose value does not come back byte for byte after a round trip
+    /// <c>TRY_CONVERT(oldType, TRY_CONVERT(newType, col))</c> - a failed conversion, an overflow, a cut string, a rounded
+    /// number or a character the new type cannot hold. Types are bare (no COLLATE). A conversion SQL Server does not
+    /// allow at all fails the probe, which the caller treats as "not checked".
+    /// </summary>
+    public Task<ProbeCount> ColumnFitViolationsAsync(ObjectName table, string column, string oldType, string? newType, bool notNull,
+        CancellationToken ct = default)
+    {
+        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        if (ColumnFitPredicate(column, oldType, newType, notNull) is not { } misfit) return Task.FromResult(new ProbeCount(0));
+        return CountAsync($"rows of {table}.{column} against its new type",
+            $"SELECT COUNT_BIG(*) FROM {table.Bracketed} WHERE {misfit}", ct, readUncommitted: true);
+    }
+
+    /// <summary>
+    /// The WHERE condition of <see cref="ColumnFitViolationsAsync"/>: true for a row that would not survive the change.
+    /// Null when there is nothing to check. 11_destructive also writes it into the file, to run again when the file runs.
+    /// </summary>
+    public static string? ColumnFitPredicate(string column, string oldType, string? newType, bool notNull)
+    {
+        var c = Ddl.Bracket(column);
+        var parts = new List<string>();
+        if (notNull) parts.Add($"{c} IS NULL");
+        if (newType is not null)
+        {
+            var back = $"TRY_CONVERT({oldType}, TRY_CONVERT({newType}, {c}))";
+            parts.Add($"({c} IS NOT NULL AND ({back} IS NULL OR CONVERT(varbinary(max), {back}) <> CONVERT(varbinary(max), {c})))");
+        }
+        return parts.Count == 0 ? null : string.Join(" OR ", parts);
+    }
+
     // ------------------------------------------------------------------ catalog probes (§6C, §6D)
 
     /// <summary>Rows per table from sys.partitions (heap or clustered index). Metadata, not a scan, so it runs even with data checks off.</summary>
@@ -651,9 +691,30 @@ public sealed class SourceProbes : CatalogProbes
     /// Measured on Platform_Core: 47 modules raise a bare 2020 (e.g. dbo.get_shift reads a table "shifts"
     /// that does not exist) and the Python created them; only kn_ZN_COM_FMEA_Functional_Items_Crud (207) is
     /// really broken - exactly the Python's BROKEN_IN_DEV.
+    /// Also always a failure: the compile errors in <see cref="CompileErrors"/> (213 insert column count,
+    /// 4104 unbound multi-part identifier, 102/156 syntax) - SQL Server raises them for a statement whose
+    /// tables all exist, which is exactly when CREATE compiles it too.
     /// </summary>
     public static bool IsCreateFailure(int errorNumber, string objectType) =>
-        errorNumber == 207 || (errorNumber is 208 or 2020 && (objectType ?? "").Trim().ToUpperInvariant() is "V" or "IF");
+        errorNumber == 207 || CompileErrors.Contains(errorNumber) ||
+        (errorNumber is 208 or 2020 && (objectType ?? "").Trim().ToUpperInvariant() is "V" or "IF");
+
+    /// <summary>Errors besides <see cref="BindingErrors"/> that mean the CREATE fails for every module kind (see <see cref="IsCreateFailure"/>).</summary>
+    public static IReadOnlySet<int> CompileErrors { get; } = new HashSet<int> { 102, 156, 213, 4104 };
+
+    /// <summary>
+    /// Judges the errors <c>sys.dm_sql_referenced_entities</c> raised: a CREATE failure gives Compiles false, a
+    /// deferred-resolution binding error gives true with a note, and null means none of them is an answer (not checked).
+    /// </summary>
+    internal static CompileCheck? Judge(IReadOnlyList<(int Number, string Message)> errors, string objectType)
+    {
+        var fatal = errors.FirstOrDefault(e => IsCreateFailure(e.Number, objectType));
+        if (fatal.Message is not null) return new CompileCheck(false, fatal.Number, fatal.Message);
+        var deferred = errors.FirstOrDefault(e => BindingErrors.Contains(e.Number));
+        if (deferred.Message is null) return null;
+        return new CompileCheck(true, deferred.Number, null,
+            "references an object that does not exist - its CREATE succeeds (deferred name resolution), but it fails when run");
+    }
 
     /// <summary>
     /// Asks SQL Server to bind the module's references:
@@ -680,14 +741,9 @@ public sealed class SourceProbes : CatalogProbes
             await r.CloseAsync();
             return new CompileCheck(true);
         }
-        catch (SqlException ex) when (ex.Errors.Cast<SqlError>().Any(e => BindingErrors.Contains(e.Number)))
+        catch (SqlException ex) when (Judge(ex.Errors.Cast<SqlError>().Select(e => (e.Number, e.Message)).ToList(), objectType) is { } judged)
         {
-            var errors = ex.Errors.Cast<SqlError>().ToList();
-            var fatal = errors.FirstOrDefault(e => IsCreateFailure(e.Number, objectType));
-            if (fatal is not null) return new CompileCheck(false, fatal.Number, fatal.Message);
-            var deferred = errors.First(e => BindingErrors.Contains(e.Number));
-            return new CompileCheck(true, deferred.Number, null,
-                "references an object that does not exist - its CREATE succeeds (deferred name resolution), but it fails when run");
+            return judged;
         }
         catch (Exception ex) when (ex is SqlException or InvalidOperationException or IOException
                                    || (ex is OperationCanceledException && !ct.IsCancellationRequested))

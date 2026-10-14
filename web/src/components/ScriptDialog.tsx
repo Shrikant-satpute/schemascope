@@ -8,14 +8,16 @@ import {
   FileCode,
   FolderOpen,
   FolderSearch,
+  Play,
 } from 'lucide-react'
 import { api } from '../api'
-import type { CompareResult, FolderResult, ScriptOutcome, ScriptProgress, ScriptSection } from '../types'
+import type { ApplyPlan, CompareResult, FolderResult, ScriptOutcome, ScriptProgress, ScriptSection } from '../types'
 import { canOpenFolder, hasNativeHost, openFolder, pickFolder, type PickFolderOptions } from '../host'
 import {
   DEFAULT_SCRIPT_OPTIONS,
   DEFAULT_SCRIPT_SECTIONS,
   SCRIPT_SECTIONS,
+  applyPlanOf,
   looksLikeAbsoluteWindowsPath,
   parsePatterns,
   sectionDependencyWarnings,
@@ -40,7 +42,8 @@ const headingClass = 'text-[11px] font-semibold uppercase tracking-wide'
  *
  * The dialog only collects choices and shows what came back. The server reads
  * both databases, writes the numbered folders, and checks every file offline -
- * nothing here, and nothing on the server, runs a script against a database.
+ * generating runs nothing against a database. Only while Read & write is on
+ * does the outcome carry a plan, which "Apply to <target>" hands to ApplyDialog.
  *
  * It has two faces in the same Modal: the form, and after a successful run a
  * summary of what was written. A run that fails keeps the form, with the
@@ -51,6 +54,8 @@ export function ScriptDialog({
   runId,
   result,
   targetIndex,
+  writeMode,
+  onApply,
   onClose,
   onToast,
 }: {
@@ -58,6 +63,10 @@ export function ScriptDialog({
   result: CompareResult
   /** Index into `result.targets`, as the tile passed it. */
   targetIndex: number
+  /** Read & write is on for this session. */
+  writeMode: boolean
+  /** Opens the apply dialog for the plan the run came back with. */
+  onApply: (plan: ApplyPlan) => void
   onClose: () => void
   onToast: (message: string) => void
 }) {
@@ -70,6 +79,8 @@ export function ScriptDialog({
   const [checkExistingData, setCheckExistingData] = useState(DEFAULT_SCRIPT_OPTIONS.checkExistingData)
   const [largeTableRows, setLargeTableRows] = useState(String(DEFAULT_SCRIPT_OPTIONS.largeTableRows))
   const [showAdvanced, setShowAdvanced] = useState(false)
+  /** Only offered while Read & write is on, and only sent while it still is. */
+  const [includeDestructive, setIncludeDestructive] = useState(false)
 
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<ScriptProgress | null>(null)
@@ -171,6 +182,7 @@ export function ScriptDialog({
             checkExistingData,
             largeTableRows: rows,
             probeTimeoutSeconds: DEFAULT_SCRIPT_OPTIONS.probeTimeoutSeconds,
+            includeDestructive: writeMode && includeDestructive,
           },
         },
         controller.signal,
@@ -210,6 +222,7 @@ export function ScriptDialog({
   const subtitle = target ? `Make ${target.label} look like ${result.source.label}` : undefined
 
   if (outcome) {
+    const plan = writeMode ? applyPlanOf(runId, targetIndex, outcome) : null
     return (
       <Modal
         title="Scripts written"
@@ -217,9 +230,17 @@ export function ScriptDialog({
         onClose={close}
         width={720}
         footer={
-          <Button variant="primary" onClick={close}>
-            Close
-          </Button>
+          <>
+            {plan && (
+              <Button variant="outline" onClick={() => onApply(plan)}>
+                <Play size={14} /> Apply to {plan.applyTarget.label}…
+              </Button>
+            )}
+            <div className="flex-1" />
+            <Button variant="primary" onClick={close}>
+              Close
+            </Button>
+          </>
         }
       >
         <ScriptSummary outcome={outcome} onToast={onToast} />
@@ -321,6 +342,8 @@ export function ScriptDialog({
               Tick at least one to generate.
             </div>
           )}
+
+          {writeMode && <DestructiveOption checked={includeDestructive} onChange={setIncludeDestructive} disabled={running} />}
         </section>
 
         {dependencyWarnings.length > 0 && (
@@ -467,6 +490,44 @@ export function ScriptDialog({
   )
 }
 
+/**
+ * "Include changes that can lose data": shown only while Read & write is on,
+ * off to start with. The server refuses it when write mode is off anyway.
+ */
+export function DestructiveOption({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean
+  onChange: (on: boolean) => void
+  disabled?: boolean
+}) {
+  return (
+    <label
+      className="mt-1.5 flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--raised)]"
+      style={{ background: 'color-mix(in srgb, var(--st-miss) 8%, transparent)' }}
+    >
+      <input
+        type="checkbox"
+        className="mt-[3px]"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="min-w-0">
+        <span className="block text-[12.5px]" style={{ color: 'var(--st-miss)' }}>
+          Include changes that can lose data
+        </span>
+        <span className="block text-[11px] leading-snug" style={{ color: 'var(--st-miss)' }}>
+          Also writes 11_destructive: changes that can throw data away. It is never applied unless you tick it again
+          when applying and confirm that data can be lost.
+        </span>
+      </span>
+    </label>
+  )
+}
+
 /** Ids the server accepts: 8-64 letters, digits or dashes. */
 function newProgressId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
@@ -474,7 +535,7 @@ function newProgressId(): string {
 }
 
 /** The bar under the options while a run is going: the step it is on and how far along the whole run is. */
-function RunProgress({ progress }: { progress: ScriptProgress | null }) {
+export function RunProgress({ progress }: { progress: ScriptProgress | null }) {
   const percent = progress?.percent ?? 0
   return (
     <div className="flex flex-col gap-1.5" role="status" aria-live="polite">
@@ -694,7 +755,7 @@ function runAllText(f: FolderResult): string {
 }
 
 /** The house inline banner: a 12% wash of the status colour with the icon on the left. */
-function Banner({ tone, children }: { tone: 'error' | 'warning' | 'success'; children: React.ReactNode }) {
+export function Banner({ tone, children }: { tone: 'error' | 'warning' | 'success'; children: React.ReactNode }) {
   const colour = tone === 'error' ? 'var(--st-miss)' : tone === 'warning' ? 'var(--st-diff)' : 'var(--st-same)'
   return (
     <div

@@ -43,6 +43,8 @@ public sealed class IndexInfo
     public string? DataSpace { get; set; }
     public List<IndexColumnInfo> KeyColumns { get; set; } = [];
     public List<string> IncludedColumns { get; set; } = [];
+    /// <summary>True when SQL Server generated the PK/UQ constraint name (PK__Table__3213E83F...).</summary>
+    public bool IsSystemNamed { get; set; }
 }
 
 public sealed class ForeignKeyInfo

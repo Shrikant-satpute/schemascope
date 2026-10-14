@@ -150,7 +150,12 @@ public sealed class CompareEngine(CompareOptions options)
             {
                 Type = g.Key,
                 Total = g.Count(),
-                WithDifferences = g.Count(r => r.HasDifference)
+                WithDifferences = g.Count(r => r.HasDifference),
+                Different = g.Count(r => r.Worst == ObjectStatus.Different),
+                FormattingOnly = g.Count(r => r.Worst == ObjectStatus.FormattingOnly),
+                MissingInTarget = g.Count(r => r.Worst == ObjectStatus.MissingInTarget),
+                OnlyInTarget = g.Count(r => r.Worst == ObjectStatus.OnlyInTarget),
+                Unavailable = g.Count(r => r.Worst == ObjectStatus.Unavailable)
             })
             .OrderByDescending(b => b.Total)];
 

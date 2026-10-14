@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+using SchemaScope.Api.Services;
 using SchemaScope.Core.Comparison;
 using SchemaScope.Core.Model;
 using SchemaScope.Scripting;
@@ -116,4 +118,124 @@ public sealed class ScriptRequest
     public ScriptOptions Options { get; set; } = new();
     /// <summary>Optional id the caller makes up, to poll GET /api/scripts/progress/{id} while the run is going.</summary>
     public string? ProgressId { get; set; }
+}
+
+/// <summary>
+/// "Generate script" for one object of a finished compare against one target. Like <see cref="ScriptRequest"/>,
+/// the databases come from the compare session, never from the request.
+/// </summary>
+public sealed class ObjectScriptRequest
+{
+    /// <summary>Index into the run's targets. Required.</summary>
+    public int? TargetIndex { get; set; }
+    /// <summary>The row key the UI fetches object details with (<see cref="CompareRow.Key"/>).</summary>
+    public string? Key { get; set; }
+    /// <summary>Row keys of dependencies to script with it (from the dependency check). Prerequisites are added anyway.</summary>
+    public List<string>? IncludeDependencies { get; set; }
+    /// <summary>Optional, as for <see cref="ScriptRequest.ProgressId"/>.</summary>
+    public string? ProgressId { get; set; }
+}
+
+/// <summary>What scripting one object would do, and which objects it needs that the target lacks or has differently.</summary>
+public sealed class ObjectDependencies
+{
+    public string Key { get; set; } = "";
+    public ObjectStatus Status { get; set; }
+    /// <summary>create | alter | tableChanges | tableType | trigger | formatting | extra | identical | unavailable</summary>
+    public string Plan { get; set; } = "";
+    public List<ObjectDependency> Dependencies { get; set; } = [];
+    public List<string> Warnings { get; set; } = [];
+}
+
+public sealed class ObjectDependency
+{
+    public string Key { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    /// <summary>The type label the grid shows ("Table", "Procedure", ...).</summary>
+    public string Type { get; set; } = "";
+    public ObjectStatus Status { get; set; }
+    /// <summary>A prerequisite (schema, alias type, sequence, synonym): the server scripts it whether or not it is sent.</summary>
+    public bool Required { get; set; }
+    /// <summary>The object's CREATE fails without it, so the UI ticks it by default; the user may untick it.</summary>
+    public bool DefaultIncluded { get; set; }
+    public string Reason { get; set; } = "";
+}
+
+/// <summary>The answer to POST /api/compare/{runId}/object-script.</summary>
+public sealed class ObjectScriptOutcome
+{
+    public bool Success { get; set; }
+    public string Message { get; set; } = "";
+    /// <summary>Every part in run order, each after a "-- folder: object" line, GO kept.</summary>
+    public string Script { get; set; } = "";
+    /// <summary>The rollback\ files of the parts that replace or create code (10, 08, 07, 02), or null.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public string? Rollback { get; set; }
+    /// <summary>For an object only the target has: the DROP statement, to copy. Generate script never runs it (Create scripts can put it in 11_destructive).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public string? DropPreview { get; set; }
+    public List<ObjectScriptPart> Parts { get; set; } = [];
+    public List<ObjectScriptHeld> HeldBack { get; set; } = [];
+    public List<string> Warnings { get; set; } = [];
+    public ObjectScriptValidation Validation { get; set; } = new();
+    public List<string> DependenciesIncluded { get; set; } = [];
+    public long ElapsedMs { get; set; }
+    /// <summary>The run folder, or "" when nothing was written.</summary>
+    public string Path { get; set; } = "";
+    /// <summary>Set only while write mode is on and the script is complete and validated: the plan POST .../apply takes.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public string? PlanId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public ApplyTarget? ApplyTarget { get; set; }
+    public IReadOnlyList<PlanSection> PlanSections { get; set; } = [];
+    /// <summary>The generator's own outcome (its files and folders), for the apply plan. Not sent to the browser.</summary>
+    [JsonIgnore] public ScriptOutcome? Generated { get; set; }
+}
+
+public sealed class ObjectScriptPart
+{
+    public string Folder { get; set; } = "";
+    /// <summary>Absolute path of the objects\*.sql file.</summary>
+    public string File { get; set; } = "";
+    public string ObjectName { get; set; } = "";
+    /// <summary>How the file runs: statements | rawModule (the whole file is one batch, with no GO at the end) | execBlockModules.</summary>
+    public string Kind { get; set; } = "";
+}
+
+public sealed class ObjectScriptHeld
+{
+    public string ObjectName { get; set; } = "";
+    public string Reason { get; set; } = "";
+}
+
+public sealed class ObjectScriptValidation
+{
+    public bool Passed { get; set; } = true;
+    public string Summary { get; set; } = "";
+}
+
+/// <summary>
+/// POST /api/compare/{runId}/apply: run a generated plan against its target. Owner app only, and only while
+/// write mode is on. The database comes from the compare session, never from the request; the request names
+/// the plan, the sections to run, and the target database name the user typed to confirm it.
+/// </summary>
+public sealed class ApplyRequest
+{
+    public string? PlanId { get; set; }
+    public int? TargetIndex { get; set; }
+    /// <summary>Folder names of the plan ("04_columntypes", ...). Must be a subset of the plan's sections.</summary>
+    public List<string>? Sections { get; set; }
+    /// <summary>The target database name as the user typed it; compared case-insensitively.</summary>
+    public string? ConfirmDatabase { get; set; }
+    /// <summary>Required for "11_destructive".</summary>
+    public bool AcceptDataLoss { get; set; }
+    /// <summary>Optional, as for <see cref="ScriptRequest.ProgressId"/>; also the id POST /api/apply/{id}/stop takes.</summary>
+    public string? ProgressId { get; set; }
+}
+
+/// <summary>The answer to an apply: how each file ended, where it stopped, and the audit log entry.</summary>
+public sealed class ApplyResult
+{
+    public bool Success { get; set; }
+    public string Message { get; set; } = "";
+    public List<ApplyFileRecord> Applied { get; set; } = [];
+    /// <summary>"folder\objects\file.sql" of the file that failed, or of the first one not run after a stop.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public string? StoppedAt { get; set; }
+    public string AuditId { get; set; } = "";
 }

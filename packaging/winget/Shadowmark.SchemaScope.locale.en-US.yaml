@@ -18,8 +18,10 @@ Description: |-
   generating SQL side by side.
 
   It ships as a self-contained executable: no .NET runtime install and no
-  server component. It reads database catalogs and never writes to them,
-  sends no telemetry, and keeps database credentials on the local machine.
+  server component. It is read-only by default: it changes a database only
+  when Read & write mode is switched on for a session and scripts are
+  applied. It sends no telemetry and keeps database credentials on the local
+  machine.
 
   Supports SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed
   Instance and AWS RDS.

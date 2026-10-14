@@ -44,6 +44,8 @@ export function ResultsWorkspace({
   onShare,
   sharing,
   onCreateScripts,
+  onGenerateObjectScript,
+  onFocusedTargetChange,
 }: {
   result: CompareResult
   theme: 'dark' | 'light'
@@ -61,6 +63,14 @@ export function ResultsWorkspace({
    * the tile button does not exist on a shared link.
    */
   onCreateScripts?: (targetIndex: number) => void
+  /**
+   * Owner only: the diff panel's "Generate script" for one object (its row
+   * key) against one target (index into `result.targets`). Viewers never pass
+   * it, so the button does not exist on a shared link.
+   */
+  onGenerateObjectScript?: (key: string, targetIndex: number) => void
+  /** Owner only: which target the grid is narrowed to, so a swap can preselect it. */
+  onFocusedTargetChange?: (targetIndex: number | null) => void
 }) {
   const [filters, setFilters] = useState<MatrixFilters>(EMPTY_FILTERS)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -81,6 +91,8 @@ export function ResultsWorkspace({
 
   const rows = useMemo(() => filterRows(result, filters), [result, filters])
 
+  useEffect(() => onFocusedTargetChange?.(filters.targetIndex), [filters.targetIndex, onFocusedTargetChange])
+
   // One tint per database, worked out once and handed down, so the dashboard
   // tile, the matrix column and the diff tab all agree on what colour a
   // database is.
@@ -90,6 +102,10 @@ export function ResultsWorkspace({
   )
   const targetColours = useMemo(
     () => result.targets.map((t) => dbColour(dbKey(t.server, t.database))),
+    [result],
+  )
+  const targetErrors = useMemo(
+    () => result.targets.map((t) => (t.failed ? (t.error ?? 'the read failed') : null)),
     [result],
   )
 
@@ -356,6 +372,13 @@ export function ResultsWorkspace({
               onContextMenu={onDiffContextMenu}
               revealTarget={reveal}
               highlight={references?.mode === 'usedBy' ? (references.name ?? null) : null}
+              onGenerateScript={
+                onGenerateObjectScript && detail
+                  ? (targetIndex) => onGenerateObjectScript(detail.key, targetIndex)
+                  : undefined
+              }
+              targetErrors={targetErrors}
+              preferredTargetIndex={filters.targetIndex}
             />
           </div>
         </div>

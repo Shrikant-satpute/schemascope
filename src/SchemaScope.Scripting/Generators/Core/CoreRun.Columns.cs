@@ -38,6 +38,14 @@ internal sealed partial class CoreRun
 
         foreach (var k in commonTables)
         {
+            if (!ctx.InScope(k))
+            {
+                // an object script leaves this table as it is, so a column 01 would add here is not there for what it creates
+                foreach (var c in src.ColumnsOf(k))
+                    if (tgt.FindColumn(k, c.Col) is null)
+                        MarkUnavailable(k, c.Col, "built on a column this object script does not add (its table is not part of it)");
+                continue;
+            }
             var excluded = ctx.IsExcluded(k);
             var defaults = new Dictionary<string, DefaultRow>(StringComparer.Ordinal);
             foreach (var r in Of(srcDef, k)) defaults[r.Col] = r;
@@ -125,15 +133,15 @@ internal sealed partial class CoreRun
 
     // ------------------------------------------------------------------ 04 compute
 
-    private static readonly Dictionary<string, int> IntSize = new(StringComparer.Ordinal)
+    internal static readonly Dictionary<string, int> IntSize = new(StringComparer.Ordinal)
     {
         ["tinyint"] = 1, ["smallint"] = 2, ["int"] = 4, ["bigint"] = 8,
     };
 
-    private static readonly HashSet<string> CharTypes = new(StringComparer.Ordinal) { "char", "varchar", "nchar", "nvarchar" };
+    internal static readonly HashSet<string> CharTypes = new(StringComparer.Ordinal) { "char", "varchar", "nchar", "nvarchar" };
 
     /// <summary>generate.py <c>col_width</c>: characters for the char family (2^31 for max), bytes for the int family, else null.</summary>
-    private static long? Width(ColumnRow c)
+    internal static long? Width(ColumnRow c)
     {
         var t = c.Dt.ToLowerInvariant();
         if (CharTypes.Contains(t))
@@ -170,6 +178,7 @@ internal sealed partial class CoreRun
 
         foreach (var k in commonTables)
         {
+            if (!ctx.InScope(k)) continue;
             var srcCols = new Dictionary<string, ColumnRow>(StringComparer.Ordinal);
             foreach (var c in src.ColumnsOf(k)) srcCols[c.Col.ToLowerInvariant()] = c;
             var tgtCols = new Dictionary<string, ColumnRow>(StringComparer.Ordinal);

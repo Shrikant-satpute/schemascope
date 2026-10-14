@@ -502,11 +502,19 @@ public sealed class OwnerRouteTests : IAsyncLifetime
         { "POST", "/api/shares/firewall" },
         { "DELETE", "/api/shares/firewall" },
         { "POST", "/api/compare/abc/scripts" },
+        { "GET", "/api/compare/abc/object-script/dependencies?key=x&targetIndex=0" },
+        { "POST", "/api/compare/abc/object-script" },
         { "GET", "/api/compare/abc/references?name=abcd" },
         { "GET", "/api/compare/abc/uses?key=abc" },
         { "GET", "/api/scripts/last-folder" },
         { "GET", "/api/scripts/progress/abcdefgh" },
         { "GET", "/api/connections" },
+        { "GET", "/api/write-mode" },
+        { "POST", "/api/write-mode" },
+        { "DELETE", "/api/write-mode" },
+        { "POST", "/api/compare/abc/apply" },
+        { "POST", "/api/apply/abcdefgh/stop" },
+        { "GET", "/api/apply-history" },
     };
 
     [Theory]

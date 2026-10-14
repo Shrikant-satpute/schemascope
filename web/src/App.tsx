@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, Database, History, Lock, Moon, Server, Share2, Sun, Zap } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Database, History, Lock, Moon, Pencil, Server, Share2, Sun, Zap } from 'lucide-react'
 import { api } from './api'
 import type {
+  ApplyPlan,
   CompareHistoryEntry,
   CompareOptions,
   CompareResult,
   ConnectionSettings,
   ProgressEvent,
+  WriteModeState,
 } from './types'
 import { ConnectionsView } from './components/ConnectionsView'
 import { HistoryView } from './components/HistoryView'
@@ -15,11 +17,20 @@ import { SetupBar, type TargetSlot } from './components/SetupBar'
 import { ResultsWorkspace } from './components/ResultsWorkspace'
 import { OptionsDialog, countNonDefault } from './components/OptionsDialog'
 import { ScriptDialog } from './components/ScriptDialog'
-import { Button, EmptyState, Spinner } from './components/ui'
+import { ObjectScriptDialog } from './components/ObjectScriptDialog'
+import { ApplyDialog } from './components/ApplyDialog'
+import { Button, EmptyState, Modal, Spinner } from './components/ui'
 
 type View = 'compare' | 'connections' | 'history' | 'share'
 
 const THEME_KEY = 'schemascope.theme'
+
+/** How often the header asks whether write mode is still on, so an idle time-out shows without a click. */
+const WRITE_MODE_POLL_MS = 30_000
+
+const WRITE_OFF: WriteModeState = { enabled: false, expiresUtc: null }
+
+const noop = () => undefined
 
 /** Light unless this machine has asked for dark before. */
 function initialTheme(): 'dark' | 'light' {
@@ -43,6 +54,8 @@ export default function App() {
   const [showOptions, setShowOptions] = useState(false)
 
   const [runId, setRunId] = useState<string | null>(null)
+  /** The pair and options each run compared, by run id: the compare after an apply re-runs those, not the picker's. */
+  const ranWith = useRef(new Map<string, { source: TargetSlot; targets: TargetSlot[]; options: CompareOptions }>())
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<ProgressEvent[]>([])
   const [result, setResult] = useState<CompareResult | null>(null)
@@ -54,7 +67,20 @@ export default function App() {
   /** Index into `result.targets` whose "Create scripts" dialog is open, or null. */
   const [scriptTarget, setScriptTarget] = useState<number | null>(null)
   const closeScripts = useCallback(() => setScriptTarget(null), [])
+  /** The object (row key) and target whose "Generate script" dialog is open, or null. */
+  const [objectScript, setObjectScript] = useState<{ key: string; targetIndex: number } | null>(null)
+  const closeObjectScript = useCallback(() => setObjectScript(null), [])
+  const openObjectScript = useCallback((key: string, targetIndex: number) => setObjectScript({ key, targetIndex }), [])
   const [toast, setToast] = useState<string | null>(null)
+
+  /** Read & write for this session. The server owns it; this is the last answer it gave. */
+  const [writeMode, setWriteMode] = useState<WriteModeState>(WRITE_OFF)
+  const [askEnableWrite, setAskEnableWrite] = useState(false)
+  /** The plan whose "Apply to <target>" dialog is open, or null. */
+  const [applyPlan, setApplyPlan] = useState<ApplyPlan | null>(null)
+  const closeApply = useCallback(() => setApplyPlan(null), [])
+  /** Target the results are focused on - preselected when a swap has to ask which. */
+  const [focusedTarget, setFocusedTarget] = useState<number | null>(null)
 
   const say = useCallback((message: string) => {
     setToast(message)
@@ -125,6 +151,7 @@ export default function App() {
       setTargets(nextTargets)
       setOptions(entry.options)
       setResult(null)
+      setFocusedTarget(null)
       setError(null)
       setHint(null)
       setView('compare')
@@ -138,6 +165,55 @@ export default function App() {
     [connections, say],
   )
 
+  // ---------------- write mode ----------------
+
+  const refreshWriteMode = useCallback(async () => {
+    try {
+      setWriteMode(await api.writeMode.get())
+    } catch {
+      // cannot tell: show it off, and the server refuses anything that needs it on anyway
+      setWriteMode(WRITE_OFF)
+    }
+  }, [])
+
+  // Asked on launch, now and then, and when the window comes back to the front.
+  useEffect(() => {
+    void refreshWriteMode()
+    const poll = window.setInterval(() => void refreshWriteMode(), WRITE_MODE_POLL_MS)
+    const onFocus = () => void refreshWriteMode()
+    window.addEventListener('focus', onFocus)
+    return () => {
+      window.clearInterval(poll)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [refreshWriteMode])
+
+  // And just after it was due to time out, so the strip goes when it does.
+  useEffect(() => {
+    if (!writeMode.enabled || !writeMode.expiresUtc) return
+    const due = Date.parse(writeMode.expiresUtc) - Date.now() + 1000
+    if (!Number.isFinite(due)) return
+    const timer = window.setTimeout(() => void refreshWriteMode(), Math.max(due, 1000))
+    return () => window.clearTimeout(timer)
+  }, [writeMode, refreshWriteMode])
+
+  async function turnWriteModeOff() {
+    try {
+      setWriteMode(await api.writeMode.disable())
+      say('Read only again.')
+    } catch (e) {
+      say(e instanceof Error ? e.message : String(e))
+      void refreshWriteMode()
+    }
+  }
+
+  /** The script dialogs hand their plan over and close: the apply dialog outlives them and the re-compare. */
+  const openApply = useCallback((plan: ApplyPlan) => {
+    setScriptTarget(null)
+    setObjectScript(null)
+    setApplyPlan(plan)
+  }, [])
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     try {
@@ -149,21 +225,28 @@ export default function App() {
 
   // ---------------- run a compare ----------------
 
-  async function runCompare() {
-    if (!source || targets.length === 0 || !options) return
+  // Takes the pair explicitly: a swap sets new state and runs in the same tick,
+  // so reading `source`/`targets` here would compare the old direction.
+  async function runCompare(source: TargetSlot | null, targets: TargetSlot[], runOptions = options) {
+    if (!source || targets.length === 0 || !runOptions) return
 
     setRunning(true)
     setError(null)
     setHint(null)
     setResult(null)
+    // a new run has new targets: a script dialog or focused target from the old one must not carry over
+    setScriptTarget(null)
+    setObjectScript(null)
+    setFocusedTarget(null)
     setProgress([])
 
     try {
       const { runId: id } = await api.compare.start({
         source: { connectionId: source.connectionId, database: source.database },
         targets: targets.map((t) => ({ connectionId: t.connectionId, database: t.database })),
-        options,
+        options: runOptions,
       })
+      ranWith.current.set(id, { source, targets, options: runOptions })
       setRunId(id)
 
       const stop = api.compare.events(id, (e) => {
@@ -195,6 +278,20 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e))
       setRunning(false)
     }
+  }
+
+  /**
+   * Flip the direction: target `index` becomes the source and the old source
+   * takes its place in the target list, then compare straight away. The run
+   * just shown stays in History, which keys on direction.
+   */
+  function swapAndRun(index: number) {
+    const next = targets[index]
+    if (!source || !next || running) return
+    const nextTargets = targets.map((t, i) => (i === index ? source : t))
+    setSource(next)
+    setTargets(nextTargets)
+    void runCompare(next, nextTargets)
   }
 
   async function cancelCompare() {
@@ -300,18 +397,56 @@ export default function App() {
 
         <div className="flex-1" />
 
-        <span
-          className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11.5px] font-medium"
-          style={{ background: 'color-mix(in srgb, var(--st-same) 14%, transparent)', color: 'var(--st-same)' }}
-          title="SchemaScope can only read. There is no code in it that writes to a database."
-        >
-          <Lock size={12} /> Read only
-        </span>
+        {writeMode.enabled ? (
+          <button
+            type="button"
+            onClick={() => void turnWriteModeOff()}
+            className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11.5px] font-medium"
+            style={{ background: 'color-mix(in srgb, var(--st-diff) 16%, transparent)', color: 'var(--st-diff)' }}
+            title="Read & write is on for this session: scripts can be applied to a target. Click to go back to read only."
+            aria-label="Read & write is on. Turn it off"
+          >
+            <Pencil size={12} /> Read & write
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAskEnableWrite(true)}
+            className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11.5px] font-medium"
+            style={{ background: 'color-mix(in srgb, var(--st-same) 14%, transparent)', color: 'var(--st-same)' }}
+            title="Read-only by default. SchemaScope only changes a database when you turn on Read & write for this session and apply scripts to it yourself."
+            aria-label="Read only. Turn on Read & write"
+          >
+            <Lock size={12} /> Read only
+          </button>
+        )}
 
         <Button size="sm" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme">
           {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
         </Button>
       </header>
+
+      {writeMode.enabled && (
+        <div
+          className="flex shrink-0 items-center gap-2 px-4 py-1.5 text-[12.5px]"
+          style={{ background: 'color-mix(in srgb, var(--st-diff) 16%, transparent)', color: 'var(--st-diff)' }}
+          role="status"
+        >
+          <Pencil size={13} className="shrink-0" />
+          <span className="font-medium">Write mode on — SchemaScope can change databases you apply scripts to.</span>
+          {writeMode.expiresUtc && (
+            <span style={{ color: 'var(--text-2)' }}>
+              Turns itself off at{' '}
+              {new Date(writeMode.expiresUtc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} if left
+              idle.
+            </span>
+          )}
+          <div className="flex-1" />
+          <Button size="sm" variant="outline" onClick={() => void turnWriteModeOff()}>
+            Turn off
+          </Button>
+        </div>
+      )}
 
       {view === 'connections' ? (
         <ConnectionsView
@@ -337,8 +472,16 @@ export default function App() {
             running={running}
             elapsedMs={result?.totalMs ?? null}
             onSourceChange={setSource}
-            onTargetsChange={setTargets}
-            onRun={runCompare}
+            onTargetsChange={(t) => {
+              setTargets(t)
+              setFocusedTarget(null)
+            }}
+            onRun={() => void runCompare(source, targets)}
+            onSwap={swapAndRun}
+            swapPreferred={focusedTarget}
+            blocked={
+              showOptions || scriptTarget !== null || objectScript !== null || applyPlan !== null || askEnableWrite
+            }
             onCancel={cancelCompare}
             onOpenOptions={() => setShowOptions(true)}
             optionCount={optionBadge}
@@ -398,6 +541,8 @@ export default function App() {
               onShare={doShare}
               sharing={publishing}
               onCreateScripts={setScriptTarget}
+              onGenerateObjectScript={openObjectScript}
+              onFocusedTargetChange={setFocusedTarget}
             />
           )}
         </div>
@@ -422,8 +567,55 @@ export default function App() {
           runId={runId}
           result={result}
           targetIndex={scriptTarget}
+          writeMode={writeMode.enabled}
+          onApply={openApply}
           onClose={closeScripts}
           onToast={say}
+        />
+      )}
+
+      {objectScript && result && runId && result.targets[objectScript.targetIndex] && (
+        <ObjectScriptDialog
+          key={`${runId}:${objectScript.key}:${objectScript.targetIndex}`}
+          runId={runId}
+          result={result}
+          objectKey={objectScript.key}
+          targetIndex={objectScript.targetIndex}
+          theme={theme}
+          writeMode={writeMode.enabled}
+          onApply={openApply}
+          onClose={closeObjectScript}
+          onToast={say}
+        />
+      )}
+
+      {/* Mounted here, not in the script dialogs, so it stays up while the compare runs again after the apply. */}
+      {applyPlan && (
+        <ApplyDialog
+          key={applyPlan.planId}
+          plan={applyPlan}
+          writeMode={writeMode.enabled}
+          compareRunning={running}
+          compareResult={result}
+          compareError={error}
+          onRecompare={() => {
+            // the comparison the plan was made from, even if the picker has changed since
+            const ran = ranWith.current.get(applyPlan.runId)
+            if (!ran) return false
+            void runCompare(ran.source, ran.targets, ran.options)
+            return true
+          }}
+          onClose={closeApply}
+        />
+      )}
+
+      {askEnableWrite && (
+        <EnableWriteModeDialog
+          onClose={() => setAskEnableWrite(false)}
+          onEnabled={(state) => {
+            setWriteMode(state)
+            setAskEnableWrite(false)
+          }}
         />
       )}
 
@@ -436,6 +628,71 @@ export default function App() {
         </div>
       )}
     </div>
+  )
+}
+
+/** The one confirmation before Read & write: what it does, and how it ends. */
+function EnableWriteModeDialog({
+  onClose,
+  onEnabled,
+}: {
+  onClose: () => void
+  onEnabled: (state: WriteModeState) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function enable() {
+    setBusy(true)
+    setError(null)
+    try {
+      onEnabled(await api.writeMode.enable())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal
+      title="Turn on Read & write?"
+      subtitle="SchemaScope is read-only by default."
+      onClose={busy ? noop : onClose}
+      width={560}
+      footer={
+        <>
+          <Button onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void enable()} disabled={busy} style={{ background: 'var(--st-diff)' }}>
+            {busy ? <Spinner size={13} /> : <Pencil size={14} />} Enable for this session
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3 text-[12.5px] leading-relaxed">
+        {error && (
+          <div
+            className="flex items-start gap-2 rounded-md px-3 py-2 text-[12px]"
+            style={{ background: 'color-mix(in srgb, var(--st-miss) 12%, transparent)', color: 'var(--st-miss)' }}
+          >
+            <AlertTriangle size={14} className="mt-px shrink-0" />
+            {error}
+          </div>
+        )}
+        <p>
+          With Read & write on, scripts you generate can be applied to their target database from here, instead of only
+          being written to disk.
+        </p>
+        <ul className="flex list-disc flex-col gap-1 pl-5" style={{ color: 'var(--text-2)' }}>
+          <li>Scripts run with the target connection's own login, so they can do whatever that login is allowed to do.</li>
+          <li>Every apply asks again: you pick the folders and type the database name each time.</li>
+          <li>The source is never changed, and neither is a server marked "Protected — never apply scripts here".</li>
+          <li>It lasts for this session only - it is off the next time SchemaScope starts.</li>
+          <li>It turns itself off after 30 minutes without use.</li>
+        </ul>
+      </div>
+    </Modal>
   )
 }
 

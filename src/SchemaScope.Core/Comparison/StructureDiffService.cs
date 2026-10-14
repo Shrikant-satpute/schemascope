@@ -192,7 +192,9 @@ public static class StructureDiffService
             var filter = string.IsNullOrEmpty(ix.FilterDefinition) ? "" : $" WHERE {ix.FilterDefinition}";
             var ff = options.IgnoreFillFactor || ix.FillFactor == 0 ? "" : $" FILLFACTOR={ix.FillFactor}";
             var uq = ix.IsUnique && !ix.IsPrimaryKey && !ix.IsUniqueConstraint ? "UNIQUE " : "";
-            map[ix.Name] = $"{uq}{kind} ({cols}){inc}{filter}{ff}{(ix.IsDisabled ? " [disabled]" : "")}";
+            // System-named PK/UQ names are random per server - match those by kind + columns.
+            var key = options.IgnoreSystemNamedConstraints && ix.IsSystemNamed ? $"{kind} ({cols})" : ix.Name;
+            map[key] = $"{uq}{kind} ({cols}){inc}{filter}{ff}{(ix.IsDisabled ? " [disabled]" : "")}";
         }
 
         return map;

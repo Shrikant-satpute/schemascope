@@ -116,6 +116,36 @@ public sealed class SchemaScopeStore
                 object_count  INTEGER NOT NULL DEFAULT 0,
                 total_views   INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS apply_runs (
+                id            TEXT PRIMARY KEY,
+                started       TEXT NOT NULL,
+                finished      TEXT NULL,
+                compare_run   TEXT NOT NULL,
+                target_label  TEXT NOT NULL,
+                server        TEXT NOT NULL,
+                database_name TEXT NOT NULL,
+                login         TEXT NOT NULL,
+                sections_json TEXT NOT NULL,
+                success       INTEGER NOT NULL DEFAULT 0,
+                message       TEXT NOT NULL DEFAULT '',
+                stopped_at    TEXT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_apply_runs_started
+                ON apply_runs (started DESC);
+
+            CREATE TABLE IF NOT EXISTS apply_batches (
+                run_id      TEXT NOT NULL,
+                seq         INTEGER NOT NULL,
+                folder      TEXT NOT NULL,
+                file        TEXT NOT NULL,
+                object_name TEXT NOT NULL,
+                ok          INTEGER NOT NULL,
+                error       TEXT NULL,
+                elapsed_ms  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (run_id, seq)
+            );
             """;
         cmd.ExecuteNonQuery();
     }
@@ -558,6 +588,129 @@ public sealed class SchemaScopeStore
         del.ExecuteNonQuery();
 
         return expired;
+    }
+
+    // ---------------- apply audit ----------------
+    // Written as the apply goes - the run before its first file, each file as it ends - so a crash
+    // part-way still leaves a record of what reached the database. Never trimmed: it is an audit log.
+
+    public void StartApplyRun(ApplyRunRecord run)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO apply_runs
+                (id, started, compare_run, target_label, server, database_name, login, sections_json, message)
+            VALUES
+                ($id, $started, $run, $label, $server, $db, $login, $sections, $message);
+            """;
+        cmd.Parameters.AddWithValue("$id", run.Id);
+        cmd.Parameters.AddWithValue("$started", run.StartedUtc.ToString("O"));
+        cmd.Parameters.AddWithValue("$run", run.CompareRunId);
+        cmd.Parameters.AddWithValue("$label", run.TargetLabel);
+        cmd.Parameters.AddWithValue("$server", run.Server);
+        cmd.Parameters.AddWithValue("$db", run.Database);
+        cmd.Parameters.AddWithValue("$login", run.Login);
+        cmd.Parameters.AddWithValue("$sections", JsonSerializer.Serialize(run.Sections));
+        cmd.Parameters.AddWithValue("$message", run.Message);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void AddApplyFile(string runId, int seq, ApplyFileRecord file)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO apply_batches (run_id, seq, folder, file, object_name, ok, error, elapsed_ms)
+            VALUES ($run, $seq, $folder, $file, $object, $ok, $error, $ms);
+            """;
+        cmd.Parameters.AddWithValue("$run", runId);
+        cmd.Parameters.AddWithValue("$seq", seq);
+        cmd.Parameters.AddWithValue("$folder", file.Folder);
+        cmd.Parameters.AddWithValue("$file", file.File);
+        cmd.Parameters.AddWithValue("$object", file.ObjectName);
+        cmd.Parameters.AddWithValue("$ok", file.Ok ? 1 : 0);
+        cmd.Parameters.AddWithValue("$error", (object?)file.Error ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$ms", file.ElapsedMs);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void FinishApplyRun(ApplyRunRecord run)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE apply_runs
+            SET finished = $finished, success = $success, message = $message, stopped_at = $stopped
+            WHERE id = $id;
+            """;
+        cmd.Parameters.AddWithValue("$id", run.Id);
+        cmd.Parameters.AddWithValue("$finished", (run.FinishedUtc ?? DateTime.UtcNow).ToString("O"));
+        cmd.Parameters.AddWithValue("$success", run.Success ? 1 : 0);
+        cmd.Parameters.AddWithValue("$message", run.Message);
+        cmd.Parameters.AddWithValue("$stopped", (object?)run.StoppedAt ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>The most recent applies, newest first, each with its files in run order.</summary>
+    public List<ApplyRunRecord> GetApplyRuns(int limit = 50)
+    {
+        using var conn = Open();
+        var runs = new List<ApplyRunRecord>();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT id, started, finished, compare_run, target_label, server, database_name, login,
+                       sections_json, success, message, stopped_at
+                FROM apply_runs
+                ORDER BY started DESC
+                LIMIT $limit;
+                """;
+            cmd.Parameters.AddWithValue("$limit", limit);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                runs.Add(new ApplyRunRecord
+                {
+                    Id = r.GetString(0),
+                    StartedUtc = ReadUtc(r.GetString(1)),
+                    FinishedUtc = r.IsDBNull(2) ? null : ReadUtc(r.GetString(2)),
+                    CompareRunId = r.GetString(3),
+                    TargetLabel = r.GetString(4),
+                    Server = r.GetString(5),
+                    Database = r.GetString(6),
+                    Login = r.GetString(7),
+                    Sections = JsonSerializer.Deserialize<List<string>>(r.GetString(8)) ?? [],
+                    Success = r.GetInt32(9) == 1,
+                    Message = r.GetString(10),
+                    StoppedAt = r.IsDBNull(11) ? null : r.GetString(11)
+                });
+            }
+        }
+
+        foreach (var run in runs)
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT folder, file, object_name, ok, error, elapsed_ms
+                FROM apply_batches WHERE run_id = $id ORDER BY seq;
+                """;
+            cmd.Parameters.AddWithValue("$id", run.Id);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                run.Files.Add(new ApplyFileRecord
+                {
+                    Folder = r.GetString(0),
+                    File = r.GetString(1),
+                    ObjectName = r.GetString(2),
+                    Ok = r.GetInt32(3) == 1,
+                    Error = r.IsDBNull(4) ? null : r.GetString(4),
+                    ElapsedMs = r.GetInt64(5)
+                });
+            }
+        }
+        return runs;
     }
 
     // Fully qualified: System.Globalization.CompareOptions would collide with ours.

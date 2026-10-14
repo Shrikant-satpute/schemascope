@@ -3,7 +3,7 @@ import { useState } from 'react'
 import clsx from 'clsx'
 import type { CompareResult, ObjectStatus } from '../types'
 import type { DbColour } from '../dbColour'
-import { STATUS } from '../status'
+import { STATUS, TYPE_COUNT_ORDER, TYPE_COUNT_WORD, typeCounts } from '../status'
 
 /** Names for the stage keys the engine reports, in the order the work happens. */
 const STAGES: [key: string, label: string][] = [
@@ -287,14 +287,17 @@ function TargetTile({
   )
 }
 
+/** Words for the per-type split - "differ" means a changed definition only. */
 function TypeBreakdown({ result }: { result: CompareResult }) {
   const [expanded, setExpanded] = useState(false)
   const rows = expanded ? result.byType : result.byType.slice(0, 6)
   const max = Math.max(1, ...result.byType.map((b) => b.total))
+  // '?' only earns a legend entry when some type has an unreadable object
+  const anyUnavailable = result.byType.some((b) => typeCounts(b, result.rows).unavailable > 0)
 
   return (
     <div
-      className="min-w-64 shrink-0 rounded-lg border px-3.5 py-2.5"
+      className="min-w-80 shrink-0 rounded-lg border px-3.5 py-2.5"
       style={{ borderColor: 'var(--line)', background: 'var(--surface-2)' }}
     >
       <div className="mb-1.5 flex items-center justify-between">
@@ -313,33 +316,55 @@ function TypeBreakdown({ result }: { result: CompareResult }) {
       </div>
 
       <div className="flex flex-col gap-1">
-        {rows.map((b) => (
-          <div key={b.type} className="flex items-center gap-2 text-[11.5px]">
-            <span className="w-24 shrink-0 truncate" style={{ color: 'var(--text-2)' }}>
-              {b.label}
-            </span>
-            <span className="relative h-2 flex-1 overflow-hidden rounded-sm" style={{ background: 'var(--raised)' }}>
-              <span
-                className="absolute inset-y-0 left-0 rounded-sm"
-                style={{ width: `${(b.total / max) * 100}%`, background: 'var(--line)' }}
-              />
-              <span
-                className="absolute inset-y-0 left-0 rounded-sm"
-                style={{
-                  width: `${(b.withDifferences / max) * 100}%`,
-                  background: b.withDifferences > 0 ? 'var(--st-diff)' : 'transparent',
-                }}
-              />
-            </span>
-            <span className="w-16 shrink-0 text-right tabular-nums" style={{ color: 'var(--text-3)' }}>
-              {b.withDifferences}/{b.total}
-            </span>
-          </div>
-        ))}
+        {rows.map((b) => {
+          const counts = typeCounts(b, result.rows)
+          const shown = TYPE_COUNT_ORDER.filter((s) => counts[s] > 0)
+          const title =
+            `${b.label}: ${b.total} object(s)\n` +
+            TYPE_COUNT_ORDER.map((s) => `${counts[s]} ${TYPE_COUNT_WORD[s]}`).join(' · ')
+          return (
+            <div key={b.type} className="flex items-center gap-2 text-[11.5px]" title={title}>
+              <span className="w-24 shrink-0 truncate" style={{ color: 'var(--text-2)' }}>
+                {b.label}
+              </span>
+              <span className="relative flex h-2 flex-1 overflow-hidden rounded-sm" style={{ background: 'var(--raised)' }}>
+                <span
+                  className="absolute inset-y-0 left-0 rounded-sm"
+                  style={{ width: `${(b.total / max) * 100}%`, background: 'var(--line)' }}
+                />
+                {shown.map((s) => (
+                  <span
+                    key={s}
+                    className="relative h-full"
+                    style={{ width: `${(counts[s] / max) * 100}%`, background: STATUS[s].colour }}
+                  />
+                ))}
+              </span>
+              <span className="min-w-28 shrink-0 whitespace-nowrap text-right tabular-nums" style={{ color: 'var(--text-3)' }}>
+                {shown.length === 0
+                  ? 0
+                  : shown.map((s) => (
+                      <span key={s} className="ml-1" style={{ color: STATUS[s].colour }}>
+                        {STATUS[s].symbol}
+                        {counts[s]}
+                      </span>
+                    ))}
+                <span className="ml-1">/ {b.total}</span>
+              </span>
+            </div>
+          )
+        })}
       </div>
 
-      <div className="mt-1.5 text-[10.5px]" style={{ color: 'var(--text-3)' }}>
-        Amber = objects with at least one difference
+      <div className="mt-1.5 flex flex-wrap gap-x-2 text-[10.5px]" style={{ color: 'var(--text-3)' }}>
+        {TYPE_COUNT_ORDER.filter((s) => s !== 'unavailable' || anyUnavailable).map((s) => (
+          <span key={s}>
+            <span className="font-mono font-semibold" style={{ color: STATUS[s].colour }}>
+              {STATUS[s].symbol}
+            </span>{' '}
+            {TYPE_COUNT_WORD[s]}
+          </span>
+        ))}
       </div>
     </div>
   )

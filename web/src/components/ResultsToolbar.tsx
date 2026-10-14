@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Download, Filter, Search, Share2, X } from 'lucide-react'
 import type { CompareResult, DbObjectType, ObjectStatus } from '../types'
-import { STATUS, STATUS_ORDER } from '../status'
+import { STATUS, STATUS_ORDER, TYPE_COUNT_ORDER, TYPE_COUNT_WORD, typeCounts } from '../status'
 import { Button, Input, Spinner } from './ui'
 import type { MatrixFilters } from './MatrixGrid'
 import { Legend } from './MatrixGrid'
@@ -84,19 +84,33 @@ export function ResultsToolbar({
         label="Types"
         count={filters.types.size}
       >
-        {result.byType.map((b) => (
-          <label key={b.type} className="flex cursor-pointer items-center gap-2 px-2.5 py-1 text-[12.5px] hover:bg-[var(--raised)]">
-            <input
-              type="checkbox"
-              checked={filters.types.has(b.type)}
-              onChange={() => set({ types: toggleSet(filters.types, b.type as DbObjectType) })}
-            />
-            <span className="flex-1">{b.label}</span>
-            <span className="tabular-nums" style={{ color: 'var(--text-3)' }}>
-              {b.withDifferences}/{b.total}
-            </span>
-          </label>
-        ))}
+        {result.byType.map((b) => {
+          const counts = typeCounts(b, result.rows)
+          return (
+            <label key={b.type} className="flex cursor-pointer items-center gap-2 px-2.5 py-1 text-[12.5px] hover:bg-[var(--raised)]">
+              <input
+                type="checkbox"
+                checked={filters.types.has(b.type)}
+                onChange={() => set({ types: toggleSet(filters.types, b.type as DbObjectType) })}
+              />
+              <span className="flex-1">{b.label}</span>
+              <span
+                className="tabular-nums"
+                style={{ color: 'var(--text-3)' }}
+                title={TYPE_COUNT_ORDER.map((s) => `${counts[s]} ${TYPE_COUNT_WORD[s]}`).join(' · ')}
+              >
+                {TYPE_COUNT_ORDER.filter((s) => counts[s] > 0)
+                  .map((s) => (
+                    <span key={s} className="mr-1" style={{ color: STATUS[s].colour }}>
+                      {STATUS[s].symbol}
+                      {counts[s]}
+                    </span>
+                  ))}
+                / {b.total}
+              </span>
+            </label>
+          )
+        })}
         {filters.types.size > 0 && (
           <button
             className="w-full px-2.5 py-1 text-left text-[12px] hover:bg-[var(--raised)]"

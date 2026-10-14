@@ -195,7 +195,11 @@ public sealed class CompareService(
                         : database == settings.Database ? settings.Label : $"{settings.Label} / {database}"),
             Server = settings.Server,
             Database = database,
-            ConnectionString = connections.BuildConnectionString(settings, database)
+            ConnectionString = connections.BuildConnectionString(settings, database),
+            // An inline connection may be a saved one edited in the form: keep its id, so applying
+            // re-reads the saved "Protected" flag too.
+            ConnectionId = reference.ConnectionId ?? reference.Inline?.Id,
+            ProtectedServer = settings.ProtectedServer
         };
     }
 

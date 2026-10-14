@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using SchemaScope.Api.Services;
 using SchemaScope.Core.Comparison;
 using SchemaScope.Core.Model;
 using SchemaScope.Scripting;
@@ -179,6 +180,12 @@ public sealed class ObjectScriptOutcome
     public long ElapsedMs { get; set; }
     /// <summary>The run folder, or "" when nothing was written.</summary>
     public string Path { get; set; } = "";
+    /// <summary>Set only while write mode is on and the script is complete and validated: the plan POST .../apply takes.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public string? PlanId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public ApplyTarget? ApplyTarget { get; set; }
+    public IReadOnlyList<PlanSection> PlanSections { get; set; } = [];
+    /// <summary>The generator's own outcome (its files and folders), for the apply plan. Not sent to the browser.</summary>
+    [JsonIgnore] public ScriptOutcome? Generated { get; set; }
 }
 
 public sealed class ObjectScriptPart
@@ -201,4 +208,34 @@ public sealed class ObjectScriptValidation
 {
     public bool Passed { get; set; } = true;
     public string Summary { get; set; } = "";
+}
+
+/// <summary>
+/// POST /api/compare/{runId}/apply: run a generated plan against its target. Owner app only, and only while
+/// write mode is on. The database comes from the compare session, never from the request; the request names
+/// the plan, the sections to run, and the target database name the user typed to confirm it.
+/// </summary>
+public sealed class ApplyRequest
+{
+    public string? PlanId { get; set; }
+    public int? TargetIndex { get; set; }
+    /// <summary>Folder names of the plan ("04_columntypes", ...). Must be a subset of the plan's sections.</summary>
+    public List<string>? Sections { get; set; }
+    /// <summary>The target database name as the user typed it; compared case-insensitively.</summary>
+    public string? ConfirmDatabase { get; set; }
+    /// <summary>Required for "11_destructive".</summary>
+    public bool AcceptDataLoss { get; set; }
+    /// <summary>Optional, as for <see cref="ScriptRequest.ProgressId"/>; also the id POST /api/apply/{id}/stop takes.</summary>
+    public string? ProgressId { get; set; }
+}
+
+/// <summary>The answer to an apply: how each file ended, where it stopped, and the audit log entry.</summary>
+public sealed class ApplyResult
+{
+    public bool Success { get; set; }
+    public string Message { get; set; } = "";
+    public List<ApplyFileRecord> Applied { get; set; } = [];
+    /// <summary>"folder\objects\file.sql" of the file that failed, or of the first one not run after a stop.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public string? StoppedAt { get; set; }
+    public string AuditId { get; set; } = "";
 }

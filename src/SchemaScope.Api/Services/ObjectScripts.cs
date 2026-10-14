@@ -436,6 +436,7 @@ public static partial class ObjectScripts
             DependenciesIncluded = dependencies,
             ElapsedMs = outcome.ElapsedMs,
             Path = outcome.Path ?? "",
+            Generated = outcome,
         };
         var v = outcome.Validation;
         result.Validation = new ObjectScriptValidation

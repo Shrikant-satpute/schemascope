@@ -1,4 +1,4 @@
-import type { ScriptOptions, ScriptSection } from './types'
+import type { ApplyPlan, ScriptOptions, ScriptSection } from './types'
 
 /**
  * The words and defaults for the "Create scripts" dialog.
@@ -147,4 +147,26 @@ export function parsePatterns(text: string): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
+}
+
+/** The plan in a script outcome, when the server made one: only while write mode is on and the run came out clean. */
+export function applyPlanOf(
+  runId: string,
+  targetIndex: number,
+  outcome: {
+    planId?: string | null
+    applyTarget?: ApplyPlan['applyTarget'] | null
+    planSections?: ApplyPlan['planSections']
+    heldBack: unknown[]
+  },
+): ApplyPlan | null {
+  if (!outcome.planId || !outcome.applyTarget || !outcome.planSections) return null
+  return {
+    runId,
+    targetIndex,
+    planId: outcome.planId,
+    applyTarget: outcome.applyTarget,
+    planSections: outcome.planSections,
+    heldBack: outcome.heldBack.length,
+  }
 }

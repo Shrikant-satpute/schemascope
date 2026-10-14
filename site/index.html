@@ -556,15 +556,15 @@
 <header class="hero" id="top">
   <div class="glow" aria-hidden="true"></div>
   <div class="shell">
-    <a class="badge-new" href="#new"><b>New in 1.2</b><span>Apply the fix scripts directly, opt-in</span></a>
+    <a class="badge-new" href="#new"><b>New in 1.2</b><span>Apply fixes, reach 100%</span></a>
     <h1>Is <span class="prod">production</span> still the same as <span class="dev">dev?</span></h1>
     <p class="lede">
       SchemaScope compares the SQL Server database you trust against <strong>every other environment at once</strong>
       — Staging, UAT, Production, every client's copy — and shows you what drifted, where, and by how much
-      in about a second. Then it writes the scripts that close the gap — and, when you switch on
-      <strong>Read &amp; write mode</strong>, applies them and compares again. A default apply runs the same
-      safe set as <code>RUN.ps1</code>; table types, triggers, formatting, renames, changed code and changes
-      that can lose data are yours to tick. Anything held back is listed with the reason, not guessed.
+      in about a second. Then it writes the scripts that close the gap and, when you switch on
+      <strong>Read &amp; write mode</strong>, <strong>applies them and compares again until the target matches</strong>.
+      Anything it cannot script safely — code broken in the source, a change that would lose data — is listed
+      with the reason, never guessed.
     </p>
     <div class="cta">
       <a class="btn btn-primary btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe">

@@ -476,3 +476,74 @@ export interface ScriptOutcome {
   validation: ScriptValidation
   elapsedMs: number
 }
+
+// ---------------- one object's sync script ----------------
+
+/** What the server will write for one object against one target. */
+export type ObjectScriptPlan =
+  | 'create'
+  | 'alter'
+  | 'tableChanges'
+  | 'tableType'
+  | 'trigger'
+  | 'formatting'
+  | 'extra'
+  | 'identical'
+  | 'unavailable'
+
+/** Something in the comparison this object needs that the target lacks or has differently. */
+export interface ObjectScriptDependency {
+  /** The same row key as `CompareRow.key`. */
+  key: string
+  displayName: string
+  type: string
+  status: ObjectStatus
+  /** A prerequisite (schema, alias type, sequence, synonym): always scripted with it. */
+  required: boolean
+  /** True when the CREATE itself would fail without it. */
+  defaultIncluded: boolean
+  reason: string
+}
+
+export interface ObjectScriptDependencies {
+  key: string
+  status: ObjectStatus
+  plan: ObjectScriptPlan
+  dependencies: ObjectScriptDependency[]
+  warnings: string[]
+}
+
+export interface ObjectScriptRequest {
+  /** Index into `CompareResult.targets`. */
+  targetIndex: number
+  /** `CompareRow.key`. */
+  key: string
+  /** Dependency keys to script as well, from the pre-check. */
+  includeDependencies: string[]
+  progressId?: string
+}
+
+export interface ObjectScriptPart {
+  folder: string
+  /** Absolute path of the written .sql file. */
+  file: string
+  objectName: string
+  kind: string
+}
+
+export interface ObjectScriptOutcome {
+  success: boolean
+  message: string
+  /** Every part in the order it runs, with "-- <folder>: <object>" separators. */
+  script: string
+  rollback: string | null
+  /** Extras only: the DROP statement to copy. SchemaScope never runs it. */
+  dropPreview: string | null
+  parts: ObjectScriptPart[]
+  heldBack: { objectName: string; reason: string }[]
+  warnings: string[]
+  validation: { passed: boolean; summary: string }
+  dependenciesIncluded: string[]
+  elapsedMs: number
+  path: string
+}

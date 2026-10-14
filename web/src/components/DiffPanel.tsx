@@ -2,51 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { DiffEditor, type MonacoDiffEditor } from '@monaco-editor/react'
 import type { Monaco } from '@monaco-editor/react'
 import type { editor as MonacoApi } from 'monaco-editor/editor/editor.api'
-import { ChevronDown, ChevronUp, Columns2, Copy, FileText, Table2, Check } from 'lucide-react'
+import { ChevronDown, ChevronUp, Columns2, Copy, FileCode, FileText, Table2, Check } from 'lucide-react'
 import type { ObjectDetail } from '../types'
 import type { DbColour } from '../dbColour'
 import { STATUS } from '../status'
+import { THEME_DARK, THEME_LIGHT, defineThemes } from '../monacoThemes'
 import { Button, EmptyState, Spinner } from './ui'
 import { StructureGrid } from './StructureGrid'
-
-const THEME_DARK = 'schemascope-dark'
-const THEME_LIGHT = 'schemascope-light'
-
-function defineThemes(monaco: Monaco) {
-  monaco.editor.defineTheme(THEME_DARK, {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [],
-    colors: {
-      'editor.background': '#12141b',
-      'editorGutter.background': '#12141b',
-      'editor.lineHighlightBackground': '#171a23',
-      'editorLineNumber.foreground': '#4d566b',
-      'editorLineNumber.activeForeground': '#9aa1b4',
-      'diffEditor.insertedTextBackground': '#1baf7a26',
-      'diffEditor.removedTextBackground': '#d03b3b26',
-      'diffEditor.insertedLineBackground': '#1baf7a1a',
-      'diffEditor.removedLineBackground': '#d03b3b1a',
-      'diffEditorGutter.insertedLineBackground': '#1baf7a40',
-      'diffEditorGutter.removedLineBackground': '#d03b3b40',
-      'editorOverviewRuler.border': '#00000000',
-    },
-  })
-
-  monaco.editor.defineTheme(THEME_LIGHT, {
-    base: 'vs',
-    inherit: true,
-    rules: [],
-    colors: {
-      'editor.background': '#ffffff',
-      'editorGutter.background': '#ffffff',
-      'diffEditor.insertedTextBackground': '#0b907026',
-      'diffEditor.removedTextBackground': '#c22f2f26',
-      'diffEditor.insertedLineBackground': '#0b90701a',
-      'diffEditor.removedLineBackground': '#c22f2f1a',
-    },
-  })
-}
 
 // ------------------------------------------------------------------
 //  Match highlighting
@@ -100,6 +62,8 @@ export function DiffPanel({
   onContextMenu,
   revealTarget,
   highlight,
+  onGenerateScript,
+  targetErrors,
 }: {
   detail: ObjectDetail | null
   loading: boolean
@@ -112,6 +76,14 @@ export function DiffPanel({
   revealTarget?: RevealTarget | null
   /** Kept lit even when nothing is selected - the term the references panel is showing. */
   highlight?: string | null
+  /**
+   * Owner only: script just this object against the target tab on show. The
+   * argument is the index into the run's targets. Without it - a shared link -
+   * the button and its shortcut do not exist.
+   */
+  onGenerateScript?: (targetIndex: number) => void
+  /** Per target, why it could not be read, or null. Disables the button for that tab. */
+  targetErrors?: (string | null)[]
 }) {
   const [targetIndex, setTargetIndex] = useState(0)
   const [view, setView] = useState<'text' | 'grid'>('text')
@@ -371,6 +343,25 @@ export function DiffPanel({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Ctrl+Shift+G: the "Generate script" button, for the object and tab on show.
+  // Not while typing, inside an editor, or with a dialog already open.
+  const generateRef = useRef<(() => void) | null>(null)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.code !== 'KeyG') return
+      const el = e.target as HTMLElement | null
+      if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable || el.closest('.monaco-editor'))) return
+      if (document.querySelector('[aria-modal="true"]')) return
+      if (!generateRef.current) return
+      e.preventDefault()
+      generateRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  generateRef.current = null
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center gap-2 text-[13px]" style={{ background: 'var(--surface)', color: 'var(--text-2)' }}>
@@ -393,6 +384,19 @@ export function DiffPanel({
 
   const target = detail.targets[targetIndex]
   const canGrid = detail.hasStructure && (target?.structure.length ?? 0) > 0
+
+  // Why this tab has nothing to script, or null when it does.
+  const targetError = targetErrors?.[targetIndex]
+  const scriptBlocked = !target
+    ? 'No target selected'
+    : targetError
+      ? `${target.label} could not be read: ${targetError}`
+      : target.status === 'same'
+        ? `Already the same in ${target.label}`
+        : target.status === 'unavailable'
+          ? (target.note ?? `This object cannot be read in ${target.label}`)
+          : null
+  if (onGenerateScript && !scriptBlocked) generateRef.current = () => onGenerateScript(targetIndex)
 
   async function copy(which: 'source' | 'target') {
     await navigator.clipboard.writeText(which === 'source' ? detail!.sourceText : target?.text ?? '')
@@ -472,6 +476,21 @@ export function DiffPanel({
           <Button size="sm" variant="outline" onClick={() => setInline((v) => !v)} title="Toggle inline / side by side">
             <Columns2 size={13} /> {inline ? 'Inline' : 'Split'}
           </Button>
+        )}
+
+        {onGenerateScript && (
+          // The title sits on a wrapper: a disabled button shows no tooltip of its own.
+          <span title={scriptBlocked ?? `Script just this object for ${target?.label} (Ctrl+Shift+G)`}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!!scriptBlocked}
+              onClick={() => onGenerateScript(targetIndex)}
+            >
+              <FileCode size={13} />
+              {detail.targets.length > 1 && target ? `Generate script for ${target.label}` : 'Generate script'}
+            </Button>
+          </span>
         )}
 
         <Button size="sm" onClick={() => copy('source')} title="Copy the source definition">

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Editor } from '@monaco-editor/react'
-import { CircleCheck, Copy, Download, Eye, FileCode, FolderOpen } from 'lucide-react'
+import { CircleCheck, Copy, Download, Eye, FileCode, FolderOpen, Play } from 'lucide-react'
 import { api } from '../api'
 import type {
+  ApplyPlan,
   CompareResult,
   ObjectScriptDependencies,
   ObjectScriptOutcome,
@@ -14,7 +15,8 @@ import { STATUS } from '../status'
 import { THEME_DARK, THEME_LIGHT, defineThemes } from '../monacoThemes'
 import { canOpenFolder, openFolder } from '../host'
 import { Button, Modal, Spinner } from './ui'
-import { Banner, RunProgress } from './ScriptDialog'
+import { applyPlanOf } from '../scriptSections'
+import { Banner, DestructiveOption, RunProgress } from './ScriptDialog'
 
 const noop = () => undefined
 
@@ -41,8 +43,9 @@ type Tab = 'script' | 'rollback' | 'review'
  * "Generate script" for one object against one target.
  *
  * It runs the same generator as "Create scripts", narrowed to this object and
- * whichever dependencies are ticked, and shows the text. Like every other
- * script here it is only written to disk - nothing runs it against a database.
+ * whichever dependencies are ticked, and shows the text. Generating only
+ * writes it to disk; while Read & write is on, "Apply to <target>" in the
+ * footer hands the plan to ApplyDialog.
  */
 export function ObjectScriptDialog({
   runId,
@@ -50,6 +53,8 @@ export function ObjectScriptDialog({
   objectKey,
   targetIndex,
   theme,
+  writeMode,
+  onApply,
   onClose,
   onToast,
 }: {
@@ -60,6 +65,10 @@ export function ObjectScriptDialog({
   /** Index into `result.targets`. */
   targetIndex: number
   theme: 'dark' | 'light'
+  /** Read & write is on for this session. */
+  writeMode: boolean
+  /** Opens the apply dialog for the plan the run came back with. */
+  onApply: (plan: ApplyPlan) => void
   onClose: () => void
   onToast: (message: string) => void
 }) {
@@ -79,6 +88,8 @@ export function ObjectScriptDialog({
   const [error, setError] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<ObjectScriptOutcome | null>(null)
   const [tab, setTab] = useState<Tab>('script')
+  /** Only offered while Read & write is on, and only sent while it still is. */
+  const [includeDestructive, setIncludeDestructive] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const stoppedRef = useRef(false)
 
@@ -157,6 +168,7 @@ export function ObjectScriptDialog({
           key: objectKey,
           includeDependencies: [...required, ...optional.filter((d) => ticked.has(d.key))].map((d) => d.key),
           progressId,
+          includeDestructive: writeMode && includeDestructive,
         },
         controller.signal,
       )
@@ -239,6 +251,7 @@ export function ObjectScriptDialog({
     const shown = tab === 'rollback' ? (outcome.rollback ?? '') : outcome.script
     const reviewCount = outcome.heldBack.length + outcome.warnings.length + (outcome.validation.passed ? 0 : 1)
     const canOpen = canOpenFolder(outcome.path)
+    const applyPlan = writeMode ? applyPlanOf(runId, targetIndex, outcome) : null
 
     return (
       <Modal
@@ -247,7 +260,11 @@ export function ObjectScriptDialog({
         width={1040}
         footer={
           <>
-            {/* Stage 3: "Apply to <target>…" goes here, left of the other buttons. */}
+            {applyPlan && (
+              <Button variant="outline" onClick={() => onApply(applyPlan)}>
+                <Play size={14} /> Apply to {applyPlan.applyTarget.label}…
+              </Button>
+            )}
             <div className="flex-1" />
             {canOpen && (
               <Button variant="outline" onClick={() => openFolder(outcome.path)}>
@@ -438,6 +455,10 @@ export function ObjectScriptDialog({
                   </>
                 )}
               </section>
+            )}
+
+            {canScript && writeMode && (
+              <DestructiveOption checked={includeDestructive} onChange={setIncludeDestructive} disabled={running} />
             )}
           </>
         )}

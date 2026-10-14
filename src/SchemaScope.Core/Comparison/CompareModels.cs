@@ -107,7 +107,17 @@ public sealed class TypeBreakdown
     public DbObjectType Type { get; set; }
     public string Label => Type.Label();
     public int Total { get; set; }
+    /// <summary>Rows that are not Same anywhere - includes missing and extra. Kept for older snapshots.</summary>
     public int WithDifferences { get; set; }
+
+    // Split of WithDifferences by each row's worst status across targets, so the
+    // panel can tell a changed object from one that is only missing or extra.
+    // Snapshots saved before these existed read back as all zero.
+    public int Different { get; set; }
+    public int FormattingOnly { get; set; }
+    public int MissingInTarget { get; set; }
+    public int OnlyInTarget { get; set; }
+    public int Unavailable { get; set; }
 }
 
 public sealed class CompareResult

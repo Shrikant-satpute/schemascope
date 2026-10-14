@@ -55,6 +55,8 @@ export default function App() {
   const [scriptTarget, setScriptTarget] = useState<number | null>(null)
   const closeScripts = useCallback(() => setScriptTarget(null), [])
   const [toast, setToast] = useState<string | null>(null)
+  /** Target the results are focused on - preselected when a swap has to ask which. */
+  const [focusedTarget, setFocusedTarget] = useState<number | null>(null)
 
   const say = useCallback((message: string) => {
     setToast(message)
@@ -149,7 +151,9 @@ export default function App() {
 
   // ---------------- run a compare ----------------
 
-  async function runCompare() {
+  // Takes the pair explicitly: a swap sets new state and runs in the same tick,
+  // so reading `source`/`targets` here would compare the old direction.
+  async function runCompare(source: TargetSlot | null, targets: TargetSlot[]) {
     if (!source || targets.length === 0 || !options) return
 
     setRunning(true)
@@ -195,6 +199,20 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e))
       setRunning(false)
     }
+  }
+
+  /**
+   * Flip the direction: target `index` becomes the source and the old source
+   * takes its place in the target list, then compare straight away. The run
+   * just shown stays in History, which keys on direction.
+   */
+  function swapAndRun(index: number) {
+    const next = targets[index]
+    if (!source || !next || running) return
+    const nextTargets = targets.map((t, i) => (i === index ? source : t))
+    setSource(next)
+    setTargets(nextTargets)
+    void runCompare(next, nextTargets)
   }
 
   async function cancelCompare() {
@@ -338,7 +356,9 @@ export default function App() {
             elapsedMs={result?.totalMs ?? null}
             onSourceChange={setSource}
             onTargetsChange={setTargets}
-            onRun={runCompare}
+            onRun={() => void runCompare(source, targets)}
+            onSwap={swapAndRun}
+            swapPreferred={focusedTarget}
             onCancel={cancelCompare}
             onOpenOptions={() => setShowOptions(true)}
             optionCount={optionBadge}
@@ -398,6 +418,7 @@ export default function App() {
               onShare={doShare}
               sharing={publishing}
               onCreateScripts={setScriptTarget}
+              onFocusedTargetChange={setFocusedTarget}
             />
           )}
         </div>

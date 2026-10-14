@@ -176,6 +176,13 @@ export interface TypeBreakdown {
   label: string
   total: number
   withDifferences: number
+  // Split of withDifferences by each row's worst status. Optional: snapshots
+  // saved before it existed come back without it (or as zeros).
+  different?: number
+  formattingOnly?: number
+  missingInTarget?: number
+  onlyInTarget?: number
+  unavailable?: number
 }
 
 export interface CompareResult {

@@ -4,6 +4,10 @@
        compare target look like its source. Reads catalogs only; never writes to a server. -->
 
   <ItemGroup>
+    <InternalsVisibleTo Include="SchemaScope.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\SchemaScope.Core\SchemaScope.Core.csproj" />
     <ProjectReference Include="..\SchemaScope.SqlServer\SchemaScope.SqlServer.csproj" />
   </ItemGroup>

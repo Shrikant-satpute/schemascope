@@ -177,7 +177,8 @@ public sealed record IntendedAlter(int Number, string File, ObjectName Table, st
 
 /// <summary>
 /// One statement 05 or 06 wrote. Exactly one of the row properties is set, matching <see cref="Kind"/>
-/// (default, check, key, foreignkey, index).
+/// (default, check, key, foreignkey, index); none for a "state" statement, which changes an existing check or
+/// foreign key of the target.
 /// </summary>
 public sealed record EmittedStatement(int Number, string File, string Kind, ObjectName Table, string? Name, string Sql)
 {

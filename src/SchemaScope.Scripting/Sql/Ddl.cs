@@ -234,6 +234,13 @@ public static partial class Ddl
     public static string DisableConstraint(INamedConstraint r) => TrustConstraint(r.Sch, r.Tbl, r.CName, isNotTrusted: true);
 
     /// <summary>
+    /// <c>ALTER TABLE [s].[t] WITH CHECK CHECK CONSTRAINT [c]</c>: enables a check or foreign key and re-validates
+    /// every existing row, so it ends up trusted (fails if a row breaks it).
+    /// </summary>
+    public static string RetrustConstraint(INamedConstraint r) =>
+        $"ALTER TABLE [{Esc(r.Sch)}].[{Esc(r.Tbl)}] WITH CHECK CHECK CONSTRAINT [{Esc(r.CName)}]";
+
+    /// <summary>
     /// Why <see cref="CreateIndex"/> must not be used for this source index, or null when it can.
     /// <see cref="CreateIndex"/> only writes valid DDL for rowstore CLUSTERED / NONCLUSTERED indexes with key
     /// columns; a hypothetical (tuning advisor) index is not a real index, and a disabled one would be created enabled.

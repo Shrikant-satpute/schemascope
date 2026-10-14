@@ -21,6 +21,13 @@ public sealed class ScriptOptions
     public int ProbeTimeoutSeconds { get; set; } = 60;
 
     /// <summary>
+    /// Also write 11_destructive (<see cref="DestructiveGenerator"/>): drops of what only the target has, narrowing or
+    /// cross-family column changes, NULL to NOT NULL, and same-name checks with another rule. Off by default; never in
+    /// RUN.ps1. With it off the output is exactly what it is without this option.
+    /// </summary>
+    public bool IncludeDestructive { get; set; }
+
+    /// <summary>
     /// An object script: only these objects (the one asked for, the dependencies chosen with it and their
     /// prerequisites) are scripted, and every object loop skips the rest without a review row. A missing schema
     /// is <c>(schema, "")</c>. Null = the whole database. Set by the server, never read from a request body.
@@ -297,6 +304,12 @@ public sealed class CoreFacts
     // ---- 10
     /// <summary>Modules 10 replaces with the source text, in file order.</summary>
     public List<ObjectName> DifferentModules { get; } = [];
+
+    // ---- 11_destructive
+    /// <summary>Target-only tables, modules, table types, synonyms and sequences 11 drops, in file order.</summary>
+    public List<ObjectName> DestructiveDrops { get; } = [];
+    /// <summary>Columns of tables both sides have whose type or nullability 11 changes, in file order.</summary>
+    public List<(ObjectName Table, string Column)> DestructiveAlters { get; } = [];
 
     // ---- helpers shared by B1/B3/B4
     /// <summary>(table, lower-cased column) of every 01 column, for "is this column new?" tests.</summary>

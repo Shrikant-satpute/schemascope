@@ -440,6 +440,37 @@ public sealed partial class TargetProbes : CatalogProbes
             expectedErrors: NotThereYet);
     }
 
+    /// <summary>11_destructive: the rows a DROP TABLE would delete, <c>SELECT COUNT_BIG(*)</c> (READ UNCOMMITTED).</summary>
+    public Task<ProbeCount> RowCountProbeAsync(ObjectName table, CancellationToken ct = default)
+    {
+        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        return CountAsync($"rows in {table}", $"SELECT COUNT_BIG(*) FROM {table.Bracketed}", ct, readUncommitted: true);
+    }
+
+    /// <summary>
+    /// 11_destructive's data-fit test for <c>ALTER COLUMN</c>: rows that hold NULL when <paramref name="notNull"/>, and,
+    /// when <paramref name="newType"/> is given, rows whose value does not come back byte for byte after a round trip
+    /// <c>TRY_CONVERT(oldType, TRY_CONVERT(newType, col))</c> - a failed conversion, an overflow, a cut string, a rounded
+    /// number or a character the new type cannot hold. Types are bare (no COLLATE). A conversion SQL Server does not
+    /// allow at all fails the probe, which the caller treats as "not checked".
+    /// </summary>
+    public Task<ProbeCount> ColumnFitViolationsAsync(ObjectName table, string column, string oldType, string? newType, bool notNull,
+        CancellationToken ct = default)
+    {
+        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        var c = Ddl.Bracket(column);
+        var parts = new List<string>();
+        if (notNull) parts.Add($"{c} IS NULL");
+        if (newType is not null)
+        {
+            var back = $"TRY_CONVERT({oldType}, TRY_CONVERT({newType}, {c}))";
+            parts.Add($"({c} IS NOT NULL AND ({back} IS NULL OR CONVERT(varbinary(max), {back}) <> CONVERT(varbinary(max), {c})))");
+        }
+        if (parts.Count == 0) return Task.FromResult(new ProbeCount(0));
+        return CountAsync($"rows of {table}.{column} against its new type",
+            $"SELECT COUNT_BIG(*) FROM {table.Bracketed} WHERE {string.Join(" OR ", parts)}", ct, readUncommitted: true);
+    }
+
     // ------------------------------------------------------------------ catalog probes (§6C, §6D)
 
     /// <summary>Rows per table from sys.partitions (heap or clustered index). Metadata, not a scan, so it runs even with data checks off.</summary>

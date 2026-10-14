@@ -223,17 +223,27 @@ public sealed class DestructiveGenerator : IFolderGenerator
         if (srcSyn is not null && tgtSyn is not null)
         {
             var have = new HashSet<ObjectName>(srcSyn.Select(s => s.Key), cmp);
+            var haveAnyCase = new HashSet<ObjectName>(srcSyn.Select(s => s.Key), ObjectName.IgnoreCase);
             foreach (var s in tgtSyn.Where(s => !have.Contains(s.Key) && ctx.InScope(s.Key)).OrderBy(s => s.Key, ObjectName.Ordinal))
-                items.Add(ObjectDrop(ctx, Kind.DropSynonym, s.Key, "synonym", "SYNONYM", $"Drops synonym {s.Key} (for {s.BaseObject}): {srcLabel} does not have it."));
+            {
+                var i = ObjectDrop(ctx, Kind.DropSynonym, s.Key, "synonym", "SYNONYM", $"Drops synonym {s.Key} (for {s.BaseObject}): {srcLabel} does not have it.");
+                if (haveAnyCase.Contains(s.Key)) Hold(i, OtherCase(s.Key.ToString()));
+                items.Add(i);
+            }
         }
         var srcSeq = await ctx.SourceProbes.SequencesAsync(ct);
         var tgtSeq = await ctx.Probes.SequencesAsync(ct);
         if (srcSeq is not null && tgtSeq is not null)
         {
             var have = new HashSet<ObjectName>(srcSeq.Select(s => s.Key), cmp);
+            var haveAnyCase = new HashSet<ObjectName>(srcSeq.Select(s => s.Key), ObjectName.IgnoreCase);
             foreach (var s in tgtSeq.Where(s => !have.Contains(s.Key) && ctx.InScope(s.Key)).OrderBy(s => s.Key, ObjectName.Ordinal))
-                items.Add(ObjectDrop(ctx, Kind.DropSequence, s.Key, "sequence", "SEQUENCE",
-                    $"Drops sequence {s.Key}: {srcLabel} does not have it. Its current value is lost: {Ddl.CreateSequence(s)}"));
+            {
+                var i = ObjectDrop(ctx, Kind.DropSequence, s.Key, "sequence", "SEQUENCE",
+                    $"Drops sequence {s.Key}: {srcLabel} does not have it. Its current value is lost: {Ddl.CreateSequence(s)}");
+                if (haveAnyCase.Contains(s.Key)) Hold(i, OtherCase(s.Key.ToString()));
+                items.Add(i);
+            }
         }
         foreach (var k in tgt.SortedTableTypes())
             if (!srcTypes.Contains(k) && ctx.InScope(k))
@@ -340,6 +350,10 @@ public sealed class DestructiveGenerator : IFolderGenerator
                 case Kind.DropTable:
                     AddRefs(i, i.Table);
                     AddFkRefs(i, i.Table, _ => true);
+                    // DROP TABLE takes its triggers with it: one held back (encrypted, excluded) holds the table too
+                    foreach (var (trigger, _) in parents.Where(p => cmp.Equals(p.Value, i.Table)))
+                        if (objects.TryGetValue(trigger, out var t))
+                            i.Deps.Add(new Dep($"trigger {trigger} is on it", t));
                     break;
                 case Kind.DropTableType:
                     if (typeRefs is null) i.Deps.Add(new Dep($"could not read which modules use {i.Table} in {tgtLabel}", null, Unknown: true));

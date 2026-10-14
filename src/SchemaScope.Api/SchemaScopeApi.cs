@@ -928,6 +928,9 @@ public static class SchemaScopeApi
 
             var connection = session.TargetConnections[index].ConnectionString;
             var facts = await ApplyService.InspectAsync(connection);
+            // the name the server reports for itself, against the protected connections: an alias or address is no way round
+            if (facts is not null && OnProtectedServer(store, facts.Key[..facts.Key.IndexOf('|')]))
+                return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is on a server marked \"Protected - never apply scripts here\". Nothing was applied.");
             var key = ApplyService.TargetKey(facts, target.Server, target.Database);
             if (!applier.TryLock(key))
                 return Refuse(StatusCodes.Status409Conflict, $"An apply to {target.Label} is already running - wait for it to finish.");
@@ -1024,9 +1027,23 @@ public static class SchemaScopeApi
         try
         {
             if (target.ConnectionId is { } id && store.GetConnection(id) is { ProtectedServer: true }) return true;
-            return store.GetConnections().Any(c => c.ProtectedServer &&
-                (string.Equals(SavedServer(c), server.Trim(), StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(SavedServer(c), target.Server.Trim(), StringComparison.OrdinalIgnoreCase)));
+            return OnProtectedServer(store, server, target.Server);
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Any protected saved connection names one of <paramref name="servers"/>, compared as <see cref="ServerNames"/>
+    /// spells them ('.', localhost and the machine name are one server). A store that cannot be read counts as protected.
+    /// </summary>
+    internal static bool OnProtectedServer(SchemaScopeStore store, params string[] servers)
+    {
+        try
+        {
+            return store.GetConnections().Any(c => c.ProtectedServer && servers.Any(s => ServerNames.Same(SavedServer(c), s)));
         }
         catch (Exception)
         {

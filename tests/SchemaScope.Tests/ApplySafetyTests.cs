@@ -31,6 +31,23 @@ public class MemoryOptimizedPlanTests
         Assert.DoesNotContain("001_t.sql", problem);
         Assert.Contains("Nothing was applied", problem);
     }
+
+    [Fact]
+    public void Catalog_queries_and_comments_that_mention_the_options_are_not_refused()
+    {
+        var report = File("03_missing", "001_r.sql", "dbo.HekatonReport",
+            "-- lists WITH NATIVE_COMPILATION modules and MEMORY_OPTIMIZED = ON tables\r\n" +
+            "CREATE PROCEDURE dbo.HekatonReport AS SELECT name FROM sys.tables WHERE is_memory_optimized = 1; " +
+            "SELECT OBJECT_NAME(object_id) FROM sys.sql_modules WHERE uses_native_compilation = 1;\r\nGO\r\n");
+        Assert.Null(ApplyService.MemoryOptimizedProblem([report], new HashSet<string>()));
+
+        var native = File("03_missing", "002_p.sql", "dbo.P",
+            "CREATE PROCEDURE dbo.P WITH NATIVE_COMPILATION, SCHEMABINDING AS BEGIN ATOMIC WITH " +
+            "(TRANSACTION ISOLATION LEVEL = SNAPSHOT, LANGUAGE = N'us_english') SELECT 1 END\r\nGO\r\n");
+        var type = File("03_missing", "003_tt.sql", "dbo.TT",
+            "CREATE TYPE dbo.TT AS TABLE (id int NOT NULL PRIMARY KEY NONCLUSTERED) WITH ( memory_optimized=on )\r\nGO\r\n");
+        Assert.Contains("2 file(s)", ApplyService.MemoryOptimizedProblem([report, native, type], new HashSet<string>()));
+    }
 }
 
 /// <summary>
@@ -129,6 +146,41 @@ public sealed class ApplySafetyLocalDbTests
             Assert.False(result.Success);
             Assert.False(Assert.Single(result.Applied).Ok);
             Assert.Contains("Stopped because write mode was turned off", result.Message);
+        }
+        finally
+        {
+            LocalDb.Drop(tgt);
+        }
+    }
+
+    [LocalDbFact]
+    public async Task A_file_that_finishes_after_write_mode_went_off_is_rolled_back_not_committed()
+    {
+        var tgt = LocalDb.NewName(Guid.NewGuid().ToString("n")[..8], "Tgt");
+        using var temp = new TempStore();
+        using var folder = new TempFolder();
+        try
+        {
+            LocalDb.Create(tgt, "SELECT 1");
+            // finishes well inside the first 1 s watch tick, so only the check before COMMIT can catch it
+            var (plan, verified) = Files(folder.Path,
+                ("03_missing", "001_a.sql", "CREATE TABLE dbo.A (id int)\r\nGO\r\nWAITFOR DELAY '00:00:00.500'\r\nGO\r\n"));
+            var mode = new WriteMode();
+            mode.Enable();
+            var service = new ApplyService(temp.Store, mode, NullLogger<ApplyService>.Instance);
+
+            var run = service.RunAsync(new ApplyJob("run", LocalDb.Conn(tgt), new ApplyTarget
+            {
+                Label = Target.Label, Server = Target.Server, Database = tgt, Login = Target.Login,
+            }, plan, ["03_missing"], null), verified, null);
+            await Task.Delay(150);
+            mode.Disable();
+            var result = await run;
+
+            Assert.False(result.Success);
+            Assert.Contains("rolled back", Assert.Single(result.Applied).Error);
+            Assert.Contains("Stopped because write mode was turned off", result.Message);
+            Assert.Equal(DBNull.Value, LocalDb.Scalar(tgt, "SELECT OBJECT_ID('dbo.A')"));
         }
         finally
         {

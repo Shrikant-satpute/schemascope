@@ -401,6 +401,37 @@ public sealed class ApplyRouteTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_protected_connection_protects_the_server_however_the_target_spells_it()
+    {
+        Mode.Enable();
+        // the target is "tcp:127.0.0.1,1": the same machine as "localhost"
+        _temp.Store.SaveConnection(new ConnectionSettings { Server = "localhost", Database = "Other", ProtectedServer = true });
+
+        var r = await Apply(Body(NewPlan()));
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+        Assert.Contains("Protected", await Message(r));
+    }
+
+    [Theory]
+    [InlineData("tcp:PRODSQL,1433", "prodsql")]
+    [InlineData("PRODSQL.corp.local\\SQL2025", "PRODSQL\\sql2025")]
+    [InlineData("PRODSQL\\MSSQLSERVER", "PRODSQL")]
+    [InlineData(".\\SQL2025", "(local)\\SQL2025")]
+    [InlineData("localhost,1433", "127.0.0.1")]
+    [InlineData("np:.", "localhost")]
+    public void Server_spellings_of_one_server_are_the_same(string a, string b) => Assert.True(ServerNames.Same(a, b));
+
+    [Fact]
+    public void Local_aliases_are_this_machine() => Assert.True(ServerNames.Same(".\\X", $"{Environment.MachineName}\\X"));
+
+    [Theory]
+    [InlineData("PRODSQL", "PRODSQL2")]
+    [InlineData("PRODSQL\\A", "PRODSQL\\B")]
+    [InlineData("10.0.0.5", "10.0.0.6")]
+    [InlineData("10.0.0.5", "10")]
+    public void Different_servers_stay_different(string a, string b) => Assert.False(ServerNames.Same(a, b));
+
+    [Fact]
     public async Task Changes_that_can_lose_data_need_the_extra_tick_and_sections_must_be_the_plans()
     {
         Mode.Enable();

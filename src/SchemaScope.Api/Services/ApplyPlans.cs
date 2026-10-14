@@ -96,7 +96,7 @@ public static class ApplyPlans
             .ToDictionary(g => g.Key, g => g.First().Title, StringComparer.OrdinalIgnoreCase);
         int Order(string folder) => RunOrder.ToList().FindIndex(r => string.Equals(r, folder, StringComparison.OrdinalIgnoreCase));
 
-        // run_all.ps1 runs objects\*.sql (not subfolders) sorted by name
+        // run_all.ps1 runs objects\*.sql (not subfolders) by leading number, then name
         var runnable = written
             .Where(f => Order(f.Folder) >= 0 && f.IsObjectFile && !f.IsRollback &&
                         f.RelativePath.EndsWith(".sql", StringComparison.OrdinalIgnoreCase) &&

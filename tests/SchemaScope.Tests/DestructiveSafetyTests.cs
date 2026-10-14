@@ -96,6 +96,55 @@ public sealed class DestructiveSafetyLocalDbTests
     }
 
     [LocalDbFact]
+    public async Task Case_twin_sequences_and_synonyms_are_held_not_dropped()
+    {
+        using var db = new Pair("""
+            CREATE SEQUENCE dbo.OrderSeq AS int START WITH 1;
+            CREATE SYNONYM dbo.MySyn FOR dbo.Nowhere;
+            """, """
+            CREATE SEQUENCE dbo.orderseq AS int START WITH 5000;
+            CREATE SYNONYM dbo.mysyn FOR dbo.Nowhere;
+            """, tgtCollation: "Latin1_General_CS_AS");
+        using var temp = new TempFolder();
+
+        var outcome = await db.Generate(temp.Path);
+
+        Assert.True(outcome.Success, outcome.Message);
+        Assert.Empty(Destructive(outcome));
+        Assert.Contains(outcome.HeldBack, h => h.Object == "dbo.orderseq" && h.Reason.Contains("another letter case"));
+        Assert.Contains(outcome.HeldBack, h => h.Object == "dbo.mysyn" && h.Reason.Contains("another letter case"));
+    }
+
+    [LocalDbFact]
+    public async Task A_table_whose_trigger_is_held_is_held_too()
+    {
+        using var db = new Pair("""
+            CREATE TABLE dbo.Keep (Id int NOT NULL CONSTRAINT PK_Keep PRIMARY KEY);
+            """, """
+            CREATE TABLE dbo.Keep (Id int NOT NULL CONSTRAINT PK_Keep PRIMARY KEY);
+            CREATE TABLE dbo.Gone (Id int NOT NULL CONSTRAINT PK_Gone PRIMARY KEY);
+            CREATE TABLE dbo.Plain (Id int NOT NULL CONSTRAINT PK_Plain PRIMARY KEY);
+            GO
+            CREATE TRIGGER dbo.tr_gone ON dbo.Gone WITH ENCRYPTION AFTER INSERT AS SET NOCOUNT ON;
+            GO
+            CREATE TRIGGER dbo.tr_plain ON dbo.Plain AFTER INSERT AS SET NOCOUNT ON;
+            """);
+        using var temp = new TempFolder();
+
+        var outcome = await db.Generate(temp.Path);
+
+        Assert.True(outcome.Success, outcome.Message);
+        var files = Destructive(outcome);
+        Assert.DoesNotContain(files, f => f.RelativePath.Contains("Gone", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(outcome.HeldBack, h => h.Object == "dbo.tr_gone" && h.Reason.Contains("encrypted"));
+        Assert.Contains(outcome.HeldBack, h => h.Object == "dbo.Gone" && h.Reason.Contains("trigger dbo.tr_gone"));
+        // a trigger that can go goes first, then its table
+        int At(string part) => files.FindIndex(f => f.RelativePath.Contains(part, StringComparison.Ordinal));
+        Assert.True(At("drop_trigger_tr_plain") >= 0 && At("drop_trigger_tr_plain") < At("drop_table_Plain"),
+            string.Join(", ", files.Select(f => f.RelativePath)));
+    }
+
+    [LocalDbFact]
     public async Task A_view_goes_after_its_instead_of_trigger_and_xml_index_drops_tolerate_each_other()
     {
         using var db = new Pair("""

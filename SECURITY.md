@@ -121,7 +121,12 @@ never an apply target, and anything held back in `99_review` is never applied.
   **Protected — never apply scripts here** is refused, re-read from your saved
   connections at the moment of the apply, and so is any target on the same
   server as a protected connection (for a raw connection string, the server
-  named in it).
+  named in it). Server names are compared without `tcp:` and port, with `.`,
+  `(local)`, `localhost` and `127.0.0.1` read as this machine and DNS suffixes
+  dropped, and the target is also checked by the name it reports for itself.
+  Another machine's IP address is not resolved, so save the protected
+  connection under the server's own name (`SELECT @@SERVERNAME`): a target
+  that reaches it by address is then still refused.
 - **Data loss is a separate opt-in.** Changes that can lose data are only
   generated when you ask, which needs write mode on, and applying them needs a
   second explicit acceptance.

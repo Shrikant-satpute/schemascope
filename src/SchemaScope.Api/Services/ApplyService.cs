@@ -2,8 +2,10 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using SchemaScope.Core.Model;
+using SchemaScope.Core.Normalization;
 using SchemaScope.Core.Storage;
 using SchemaScope.Scripting;
 using SqlBatch = SchemaScope.Scripting.SqlBatch;
@@ -30,7 +32,7 @@ public sealed record TargetFacts(string Key, IReadOnlySet<string> InMemory);
 /// session SET options sqlcmd gives run_all.ps1, so a file does here exactly what RUN.ps1 would do. Files committed
 /// before a failure stay applied. Every run is written to the local audit log as it goes.
 /// </summary>
-public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, ILogger<ApplyService> log)
+public sealed partial class ApplyService(SchemaScopeStore store, WriteMode writeMode, ILogger<ApplyService> log)
 {
     /// <summary>
     /// The session options of <c>sqlcmd -S -E -d -b -x -f 65001</c> (measured: @@OPTIONS 5176 - ANSI_WARNINGS,
@@ -131,8 +133,8 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
     /// </summary>
     public static string? MemoryOptimizedProblem(IReadOnlyList<VerifiedFile> files, IReadOnlySet<string> inMemory)
     {
-        static bool Names(string text) =>
-            text.Contains("MEMORY_OPTIMIZED", StringComparison.OrdinalIgnoreCase) || text.Contains("NATIVE_COMPILATION", StringComparison.OrdinalIgnoreCase);
+        // the DDL options themselves, comments ignored: is_memory_optimized / uses_native_compilation in a catalog query are not
+        static bool Names(string text) => InMemoryDdl().IsMatch(TSqlText.StripComments(text));
         var hit = files.Where(v => inMemory.Contains(v.File.ObjectName) || v.Batches.Any(b => Names(b.Text)))
             .Select(v => $"{v.File.Folder}\\{v.File.RelativePath}").ToList();
         if (hit.Count == 0) return null;
@@ -140,6 +142,9 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
                $"inside a transaction (Msg 12331) - and Apply runs every file in one: {string.Join(", ", hit.Take(5))}" +
                $"{(hit.Count > 5 ? ", ..." : "")}. Nothing was applied. Untick that section, or run those files with the folder's run_all.ps1.";
     }
+
+    [GeneratedRegex(@"\bMEMORY_OPTIMIZED\s*=\s*ON\b|\bNATIVE_COMPILATION\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex InMemoryDdl();
 
     /// <summary>
     /// Reads every file of the plan and checks it against the hash taken when it was generated - all of them, before
@@ -224,7 +229,8 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
                 progress?.Report(new ScriptProgress(i * 100 / files.Count, $"Applying {i + 1} of {files.Count}: {name}"));
 
                 var sw = Stopwatch.StartNew();
-                var error = await RunFileAsync(job.ConnectionString, job.Target.Database, files[i].Batches, abort.Token);
+                var error = await RunFileAsync(job.ConnectionString, job.Target.Database, files[i].Batches, abort.Token,
+                    () => { if (!writeMode.Enabled) abort.Cancel(); });
                 var record = new ApplyFileRecord
                 {
                     Folder = f.Folder,
@@ -302,7 +308,7 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
     /// No command timeout, as with sqlcmd; <paramref name="abort"/> (Cancel now, or write mode turned off) cancels the
     /// running batch, and the file is rolled back instead of committing.
     /// </summary>
-    private static async Task<string?> RunFileAsync(string connectionString, string database, IReadOnlyList<SqlBatch> batches, CancellationToken abort)
+    private static async Task<string?> RunFileAsync(string connectionString, string database, IReadOnlyList<SqlBatch> batches, CancellationToken abort, Action beforeCommit)
     {
         SqlBatch? current = null;
         try
@@ -328,6 +334,7 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
                     await using var cmd = new SqlCommand(batch.Text, conn, tx) { CommandTimeout = 0 };
                     await cmd.ExecuteNonQueryAsync(abort);
                 }
+                beforeCommit();   // write mode turned off since the last watch tick cancels it here, not a second later
                 abort.ThrowIfCancellationRequested();
                 await tx.CommitAsync(CancellationToken.None);
                 return null;

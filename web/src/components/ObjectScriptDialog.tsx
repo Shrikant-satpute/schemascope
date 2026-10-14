@@ -16,7 +16,7 @@ import { THEME_DARK, THEME_LIGHT, defineThemes } from '../monacoThemes'
 import { canOpenFolder, openFolder } from '../host'
 import { Button, Modal, Spinner } from './ui'
 import { applyPlanOf } from '../scriptSections'
-import { Banner, DestructiveOption, RunProgress } from './ScriptDialog'
+import { Banner, RunProgress } from './ScriptDialog'
 
 const noop = () => undefined
 
@@ -88,8 +88,6 @@ export function ObjectScriptDialog({
   const [error, setError] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<ObjectScriptOutcome | null>(null)
   const [tab, setTab] = useState<Tab>('script')
-  /** Only offered while Read & write is on, and only sent while it still is. */
-  const [includeDestructive, setIncludeDestructive] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const stoppedRef = useRef(false)
 
@@ -168,7 +166,6 @@ export function ObjectScriptDialog({
           key: objectKey,
           includeDependencies: [...required, ...optional.filter((d) => ticked.has(d.key))].map((d) => d.key),
           progressId,
-          includeDestructive: writeMode && includeDestructive,
         },
         controller.signal,
       )
@@ -455,10 +452,6 @@ export function ObjectScriptDialog({
                   </>
                 )}
               </section>
-            )}
-
-            {canScript && writeMode && (
-              <DestructiveOption checked={includeDestructive} onChange={setIncludeDestructive} disabled={running} />
             )}
           </>
         )}

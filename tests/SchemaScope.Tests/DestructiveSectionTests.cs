@@ -153,36 +153,13 @@ public class DestructiveSectionTests
     }
 }
 
-/// <summary>A <see cref="FactAttribute"/> that skips when SQL Server LocalDB cannot be reached (e.g. a CI runner without it).</summary>
-public sealed class LocalDbFactAttribute : FactAttribute
-{
-    public LocalDbFactAttribute()
-    {
-        if (!LocalDb.Available.Value) Skip = "SQL Server LocalDB ((localdb)\\MSSQLLocalDB) is not available on this machine.";
-    }
-}
-
 /// <summary>Throwaway LocalDB databases. Nothing here ever connects anywhere but (localdb)\MSSQLLocalDB.</summary>
-internal static class LocalDb
+internal static class DestructiveDb
 {
     private const string Server = @"(localdb)\MSSQLLocalDB";
 
     public static string Cs(string database) =>
         $"Data Source={Server};Initial Catalog={database};Integrated Security=true;TrustServerCertificate=true;Connect Timeout=60";
-
-    public static readonly Lazy<bool> Available = new(() =>
-    {
-        try
-        {
-            using var c = new SqlConnection(Cs("master"));
-            c.Open();
-            return true;
-        }
-        catch (Exception e) when (e is SqlException or InvalidOperationException or PlatformNotSupportedException)
-        {
-            return false;
-        }
-    });
 
     /// <summary>Runs a script's GO batches in order (the way sqlcmd does), on one connection.</summary>
     public static void Run(string database, string script)
@@ -269,10 +246,10 @@ public class DestructiveLocalDbTests
             Tgt = Src[..^4] + "_Tgt";
             try
             {
-                LocalDb.Create(Src);
-                LocalDb.Create(Tgt);
-                LocalDb.Run(Src, SourceDdl);
-                LocalDb.Run(Tgt, TargetDdl);
+                DestructiveDb.Create(Src);
+                DestructiveDb.Create(Tgt);
+                DestructiveDb.Run(Src, SourceDdl);
+                DestructiveDb.Run(Tgt, TargetDdl);
             }
             catch
             {
@@ -281,13 +258,13 @@ public class DestructiveLocalDbTests
             }
         }
 
-        public ScriptEndpoint Source => new("Src", @"(localdb)\MSSQLLocalDB", Src, LocalDb.Cs(Src));
-        public ScriptEndpoint Target => new("Tgt", @"(localdb)\MSSQLLocalDB", Tgt, LocalDb.Cs(Tgt));
+        public ScriptEndpoint Source => new("Src", @"(localdb)\MSSQLLocalDB", Src, DestructiveDb.Cs(Src));
+        public ScriptEndpoint Target => new("Tgt", @"(localdb)\MSSQLLocalDB", Tgt, DestructiveDb.Cs(Tgt));
 
         public void Dispose()
         {
-            LocalDb.Drop(Src);
-            LocalDb.Drop(Tgt);
+            DestructiveDb.Drop(Src);
+            DestructiveDb.Drop(Tgt);
         }
     }
 
@@ -341,22 +318,22 @@ public class DestructiveLocalDbTests
 
         // run 11 on the throwaway target, file by file, as run_all.ps1 would
         foreach (var f in outcome.Files.Where(f => f.Folder == DestructiveGenerator.Folder && f.IsObjectFile).OrderBy(f => f.RelativePath, StringComparer.Ordinal))
-            LocalDb.Run(db.Tgt, ScriptWriter.ReadBack(f.FullPath));
+            DestructiveDb.Run(db.Tgt, ScriptWriter.ReadBack(f.FullPath));
 
-        Assert.Null(LocalDb.Scalar(db.Tgt, "SELECT OBJECT_ID('dbo.Extra')"));
-        Assert.Null(LocalDb.Scalar(db.Tgt, "SELECT OBJECT_ID('dbo.p_extra')"));
-        Assert.Null(LocalDb.Scalar(db.Tgt, "SELECT TYPE_ID('dbo.TT_extra')"));
-        Assert.Null(LocalDb.Scalar(db.Tgt, "SELECT COL_LENGTH('dbo.Parent', 'extra_col')"));
-        Assert.NotNull(LocalDb.Scalar(db.Tgt, "SELECT OBJECT_ID('dbo.Kept')"));
-        Assert.Equal((short)10, LocalDb.Scalar(db.Tgt, "SELECT max_length FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Parent') AND name = 'code'"));
-        Assert.Equal(false, LocalDb.Scalar(db.Tgt, "SELECT is_nullable FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Child') AND name = 'qty'"));
-        Assert.NotNull(LocalDb.Scalar(db.Tgt, "SELECT 1 FROM sys.indexes WHERE name = 'IX_Child_qty'"));
-        Assert.Contains("'C'", (string)LocalDb.Scalar(db.Tgt, "SELECT definition FROM sys.check_constraints WHERE name = 'CK_Parent_status'")!);
-        Assert.Equal(2, LocalDb.Scalar(db.Tgt, "SELECT COUNT(*) FROM dbo.Parent"));
+        Assert.Null(DestructiveDb.Scalar(db.Tgt, "SELECT OBJECT_ID('dbo.Extra')"));
+        Assert.Null(DestructiveDb.Scalar(db.Tgt, "SELECT OBJECT_ID('dbo.p_extra')"));
+        Assert.Null(DestructiveDb.Scalar(db.Tgt, "SELECT TYPE_ID('dbo.TT_extra')"));
+        Assert.Null(DestructiveDb.Scalar(db.Tgt, "SELECT COL_LENGTH('dbo.Parent', 'extra_col')"));
+        Assert.NotNull(DestructiveDb.Scalar(db.Tgt, "SELECT OBJECT_ID('dbo.Kept')"));
+        Assert.Equal((short)10, DestructiveDb.Scalar(db.Tgt, "SELECT max_length FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Parent') AND name = 'code'"));
+        Assert.Equal(false, DestructiveDb.Scalar(db.Tgt, "SELECT is_nullable FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Child') AND name = 'qty'"));
+        Assert.NotNull(DestructiveDb.Scalar(db.Tgt, "SELECT 1 FROM sys.indexes WHERE name = 'IX_Child_qty'"));
+        Assert.Contains("'C'", (string)DestructiveDb.Scalar(db.Tgt, "SELECT definition FROM sys.check_constraints WHERE name = 'CK_Parent_status'")!);
+        Assert.Equal(2, DestructiveDb.Scalar(db.Tgt, "SELECT COUNT(*) FROM dbo.Parent"));
 
         // a dropped module comes back from its rollback file
-        LocalDb.Run(db.Tgt, ScriptWriter.ReadBack(outcome.Files.Single(f => f.IsRollback && f.RelativePath.EndsWith("drop_trigger_tr_parent.sql")).FullPath));
-        Assert.NotNull(LocalDb.Scalar(db.Tgt, "SELECT OBJECT_ID('dbo.tr_parent')"));
+        DestructiveDb.Run(db.Tgt, ScriptWriter.ReadBack(outcome.Files.Single(f => f.IsRollback && f.RelativePath.EndsWith("drop_trigger_tr_parent.sql")).FullPath));
+        Assert.NotNull(DestructiveDb.Scalar(db.Tgt, "SELECT OBJECT_ID('dbo.tr_parent')"));
     }
 
     [LocalDbFact]

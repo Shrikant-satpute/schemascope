@@ -532,8 +532,6 @@ export interface ObjectScriptRequest {
   /** Dependency keys to script as well, from the pre-check. */
   includeDependencies: string[]
   progressId?: string
-  /** As for `ScriptOptions.includeDestructive`. */
-  includeDestructive?: boolean
 }
 
 export interface ObjectScriptPart {

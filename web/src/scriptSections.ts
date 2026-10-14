@@ -149,7 +149,10 @@ export function parsePatterns(text: string): string[] {
     .filter((s) => s.length > 0)
 }
 
-/** The plan in a script outcome, when the server made one: only while write mode is on and the run came out clean. */
+/**
+ * The plan in a script outcome, when the server made one: only while write mode is on and the run came out clean.
+ * A protected target gets no planId; it still opens the dialog (with no plan) so it can say why it cannot apply.
+ */
 export function applyPlanOf(
   runId: string,
   targetIndex: number,
@@ -160,11 +163,12 @@ export function applyPlanOf(
     heldBack: unknown[]
   },
 ): ApplyPlan | null {
-  if (!outcome.planId || !outcome.applyTarget || !outcome.planSections) return null
+  if (!outcome.applyTarget || !outcome.planSections) return null
+  if (!outcome.planId && !outcome.applyTarget.protected) return null
   return {
     runId,
     targetIndex,
-    planId: outcome.planId,
+    planId: outcome.planId ?? '',
     applyTarget: outcome.applyTarget,
     planSections: outcome.planSections,
     heldBack: outcome.heldBack.length,

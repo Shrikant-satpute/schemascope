@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace SchemaScope.Scripting;
@@ -18,6 +19,23 @@ public sealed class ScriptOptions
     public bool CheckExistingData { get; set; } = true;     // run the data probes (COUNT queries) on the target
     public int LargeTableRows { get; set; } = 100_000;
     public int ProbeTimeoutSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Also write 11_destructive (<see cref="DestructiveGenerator"/>): drops of what only the target has, narrowing or
+    /// cross-family column changes, NULL to NOT NULL, and same-name checks with another rule. Off by default; never in
+    /// RUN.ps1. With it off the output is exactly what it is without this option.
+    /// </summary>
+    public bool IncludeDestructive { get; set; }
+
+    /// <summary>
+    /// An object script: only these objects (the one asked for, the dependencies chosen with it and their
+    /// prerequisites) are scripted, and every object loop skips the rest without a review row. A missing schema
+    /// is <c>(schema, "")</c>. Null = the whole database. Set by the server, never read from a request body.
+    /// </summary>
+    [JsonIgnore] public HashSet<ObjectName>? OnlyObjects { get; set; }
+
+    /// <summary>The run folder's name instead of <c>label_yyyyMMdd-HHmm</c> (object scripts). Never read from a request body.</summary>
+    [JsonIgnore] public string? RunFolderName { get; set; }
 }
 
 /// <summary>One side of the compare. <see cref="ConnectionString"/> never leaves the server process.</summary>
@@ -65,6 +83,8 @@ public sealed class ScriptOutcome
     public List<string> Warnings { get; set; } = [];
     public ValidationSummary Validation { get; set; } = new();
     public long ElapsedMs { get; set; }
+    /// <summary>Every file the run wrote, in write order (object scripts assemble their text from it). Not sent to the browser.</summary>
+    [JsonIgnore] public IReadOnlyList<WrittenFile> Files { get; set; } = [];
 }
 
 /// <summary>
@@ -99,6 +119,23 @@ public sealed class ScriptContext
     /// <summary>Where the dialog's progress bar reads from; null when nobody is watching.</summary>
     public IProgress<ScriptProgress>? Progress { get; init; }
     public bool Selected(ScriptSection s) => Options.Sections.Contains(s);
+
+    /// <summary>True for an object script (<see cref="ScriptOptions.OnlyObjects"/> set).</summary>
+    public bool Scoped => Options.OnlyObjects is not null;
+
+    /// <summary>
+    /// Whether an object loop may script <paramref name="name"/>: always for a whole-database run; for an object
+    /// script only the objects in <see cref="ScriptOptions.OnlyObjects"/>, matched the way the source matches names.
+    /// Loops test this first, before exclusions and holds, so 99_review lists only what was asked for.
+    /// </summary>
+    public bool InScope(ObjectName name)
+    {
+        if (Options.OnlyObjects is not { } only) return true;
+        scope ??= new HashSet<ObjectName>(only, Source.NameComparer);
+        return scope.Contains(name);
+    }
+
+    private HashSet<ObjectName>? scope;
 
     /// <summary>Says which step the run has reached and how far along that is (0-100).</summary>
     public void Report(int percent, string step) => Progress?.Report(new ScriptProgress(percent, step));
@@ -177,7 +214,8 @@ public sealed record IntendedAlter(int Number, string File, ObjectName Table, st
 
 /// <summary>
 /// One statement 05 or 06 wrote. Exactly one of the row properties is set, matching <see cref="Kind"/>
-/// (default, check, key, foreignkey, index).
+/// (default, check, key, foreignkey, index); none for a "state" statement, which changes an existing check or
+/// foreign key of the target.
 /// </summary>
 public sealed record EmittedStatement(int Number, string File, string Kind, ObjectName Table, string? Name, string Sql)
 {
@@ -266,6 +304,12 @@ public sealed class CoreFacts
     // ---- 10
     /// <summary>Modules 10 replaces with the source text, in file order.</summary>
     public List<ObjectName> DifferentModules { get; } = [];
+
+    // ---- 11_destructive
+    /// <summary>Target-only tables, modules, table types, synonyms and sequences 11 drops, in file order.</summary>
+    public List<ObjectName> DestructiveDrops { get; } = [];
+    /// <summary>Columns of tables both sides have whose type or nullability 11 changes, in file order.</summary>
+    public List<(ObjectName Table, string Column)> DestructiveAlters { get; } = [];
 
     // ---- helpers shared by B1/B3/B4
     /// <summary>(table, lower-cased column) of every 01 column, for "is this column new?" tests.</summary>

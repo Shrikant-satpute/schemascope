@@ -9,8 +9,8 @@ namespace SchemaScope.Scripting;
 /// generators in a fixed order, validates the output offline, and writes RUN.ps1 and README.md.
 ///
 /// Read-only toward every database: the only statements sent are catalog SELECTs and the
-/// read-only probes in <see cref="TargetProbes"/>/<see cref="SourceProbes"/>. Nothing generated is
-/// ever sent to a server. Output goes to a fresh, uniquely named subfolder; nothing is deleted.
+/// read-only probes in <see cref="TargetProbes"/>/<see cref="SourceProbes"/>. The generator never sends
+/// what it writes to a server (only the API's opt-in apply does). Output goes to a fresh, uniquely named subfolder; nothing is deleted.
 /// </summary>
 public sealed class ScriptGenerator
 {
@@ -75,15 +75,20 @@ public sealed class ScriptGenerator
             await Task.WhenAll(srcTask, tgtTask);
             var src = srcTask.Result;
             var tgt = tgtTask.Result;
+            var renamed = new List<(string Side, ObjectName Module, string Was)>();
+            foreach (var (ep, schema) in new[] { (source, src), (target, tgt) })
+                foreach (var (m, was) in schema.FixRenamedHeaders())
+                    renamed.Add((ep.Label, m, was));
             var rawTarget = tgt.Clone();
 
-            writer = new ScriptWriter(NewRunRoot(options.OutputFolder, target.Label));
+            writer = new ScriptWriter(NewRunRoot(options.OutputFolder, options.RunFolderName ?? $"{target.Label}_{DateTime.Now:yyyyMMdd-HHmm}"));
             outcome.Path = writer.Root;
 
             if (src.IsCaseInsensitive && tgt.IsCaseInsensitive)
             {
                 foreach (var r in tgt.AlignCase(src))
-                    review.Warn($"same object, different case: {target.Label} {r.Old} = {source.Label} {r.New}");
+                    if (options.OnlyObjects is null)   // an object script does not list the whole database
+                        review.Warn($"same object, different case: {target.Label} {r.Old} = {source.Label} {r.New}");
             }
             else
             {
@@ -109,6 +114,8 @@ public sealed class ScriptGenerator
                 Ct = ct,
                 Progress = progress,
             };
+            var shownRenames = renamed.Where(r => ctx.InScope(r.Module)).ToList();
+            if (shownRenames.Count > 0) review.SetDocument(ReviewLog.RenamedHeaders, RenamedHeadersReport(shownRenames));
 
             // 3. generators, fixed order
             var folders = new List<FolderResult>();
@@ -123,7 +130,11 @@ public sealed class ScriptGenerator
             if (ctx.Selected(ScriptSection.DifferentModules)) Report(P.Different, "10 Different code");
             if (ctx.Selected(ScriptSection.DifferentModules)) folders.AddRange(await new DifferentModulesGenerator().GenerateAsync(ctx));
             ct.ThrowIfCancellationRequested();
+            if (options.IncludeDestructive) Report(P.Destructive, "11 Changes that can lose data");
+            if (options.IncludeDestructive) folders.AddRange(await new DestructiveGenerator().GenerateAsync(ctx));
+            ct.ThrowIfCancellationRequested();
             Report(P.Review, "99_review reports");
+            // an object script keeps flow_safety (it warns what this script breaks) and leaves out the whole-database reports
             folders.AddRange(await new ReviewReports().GenerateAsync(ctx));
             ct.ThrowIfCancellationRequested();
             folders = folders.OrderBy(f => f.Folder, StringComparer.Ordinal).ToList();
@@ -145,15 +156,21 @@ public sealed class ScriptGenerator
             var runAll = RunAllFolders.Where(Runs).ToList();
             var withTypes = Runs(TableTypesFolder) ? TableTypesFolder : null;
             var runWithTypes = withTypes is null ? null : RunAllFoldersWithTableTypes.Where(Runs).ToList();
-            writer.WriteRootFile("RUN.ps1", ScriptText.RootRunner(RunnerServer(target), runAll, runWithTypes), bom: true, WrittenFileKind.Runner);
+            // an object script is run from SchemaScope part by part: no RUN.ps1 or README of its own
+            if (!ctx.Scoped)
+                writer.WriteRootFile("RUN.ps1", ScriptText.RootRunner(RunnerServer(target), runAll, runWithTypes), bom: true, WrittenFileKind.Runner);
 
             outcome.Folders = folders;
             outcome.HeldBack = review.ToHeldBack();
             outcome.Warnings = review.Warnings.ToList();
+            // scripted, but listed in 99_review for a look (a weakened constraint, a deferred reference): with one
+            // object in the run, its result must say so itself
+            if (ctx.Scoped)
+                outcome.Warnings.AddRange(review.ToHeldBack(notes: true).Select(n => $"{n.Object}: {n.Reason}"));
             if (!outcome.Validation.Passed)
                 outcome.Warnings.Add("Validation found problems - read 99_review\\validation.md before running anything.");
 
-            writer.WriteMarkdown("", "README.md", Readme(ctx, folders, runAll, withTypes, outcome));
+            if (!ctx.Scoped) writer.WriteMarkdown("", "README.md", Readme(ctx, folders, runAll, withTypes, outcome));
 
             outcome.FileCount = writer.Files.Count;
             outcome.Success = true;
@@ -190,7 +207,11 @@ public sealed class ScriptGenerator
         }
         finally
         {
-            if (writer is not null) outcome.FileCount = writer.Files.Count;
+            if (writer is not null)
+            {
+                outcome.FileCount = writer.Files.Count;
+                outcome.Files = writer.Files;
+            }
             outcome.ElapsedMs = sw.ElapsedMilliseconds;
         }
         return outcome;
@@ -214,6 +235,7 @@ public sealed class ScriptGenerator
         public const int Triggers = 76;
         public const int Formatting = 77;
         public const int Different = 84;
+        public const int Destructive = 85;
         public const int Review = 86;
         public const int Validate = 93;
         public const int Finish = 99;
@@ -236,16 +258,16 @@ public sealed class ScriptGenerator
     private static readonly object RunRootLock = new();
 
     /// <summary>
-    /// <c>OutputFolder\Safe(label_yyyyMMdd-HHmm)</c>, with _2, _3 ... appended while that name is taken.
+    /// <c>OutputFolder\Safe(name)</c> (<c>label_yyyyMMdd-HHmm</c>, or an object script's own name), with _2, _3 ... appended while that name is taken.
     /// Directory.CreateDirectory does not fail on an existing folder, so the test and the create must be
     /// one step: two runs for the same target in the same minute (double click, two tabs) would otherwise
     /// both get the same folder and the second would overwrite the first. A process-wide lock covers the
     /// API host; a named mutex covers a second SchemaScope process on the same machine.
     /// </summary>
-    private static string NewRunRoot(string outputFolder, string label)
+    private static string NewRunRoot(string outputFolder, string name)
     {
         Directory.CreateDirectory(outputFolder);
-        var baseName = ScriptText.Safe($"{label}_{DateTime.Now:yyyyMMdd-HHmm}");
+        var baseName = ScriptText.Safe(name);
         lock (RunRootLock)
         {
             using var mutex = new Mutex(false, @"Local\SchemaScope.Scripting.RunRoot");
@@ -267,10 +289,14 @@ public sealed class ScriptGenerator
         }
     }
 
+    /// <summary>Tests only: the catalog of an endpoint from memory instead of the server.</summary>
+    internal Func<ScriptEndpoint, ScriptSchema>? CatalogOverride { get; init; }
+
     private async Task<ScriptSchema> ReadSideAsync(ScriptEndpoint ep, string side, Action queryDone, CancellationToken ct)
     {
         try
         {
+            if (CatalogOverride is not null) return CatalogOverride(ep);
             return await Reader.ReadAsync(ep, ct, queryDone);
         }
         catch (SqlException ex)
@@ -326,6 +352,19 @@ public sealed class ScriptGenerator
         return o;
     }
 
+    /// <summary>99_review\renamed_module_headers.md: modules whose CREATE header was rewritten - scripted, not held back.</summary>
+    private static string RenamedHeadersReport(List<(string Side, ObjectName Module, string Was)> rows)
+    {
+        var sb = new StringBuilder();
+        sb.Append("# Module headers rewritten to the catalog name\n\n");
+        sb.Append($"{rows.Count} module(s). sp_rename changes a module's name but not its stored text, so replaying the text would create the old name. ");
+        sb.Append("Every script that writes one of these modules has only the name in its CREATE header changed; nothing here is held back.\n\n");
+        sb.Append("| Database | Module | Its text says CREATE ... | The scripts create |\n|---|---|---|---|\n");
+        foreach (var (side, m, was) in rows)
+            sb.Append($"| {ReviewLog.Cell(side)} | {ReviewLog.Cell(m.ToString())} | {ReviewLog.Cell(was)} | {ReviewLog.Cell(m.Bracketed)} |\n");
+        return sb.ToString();
+    }
+
     // ------------------------------------------------------------------ README
 
     private static readonly Dictionary<string, string> FolderText = new(StringComparer.OrdinalIgnoreCase)
@@ -340,6 +379,7 @@ public sealed class ScriptGenerator
         ["08_formatting_modules"] = "Replaces modules that differ only in formatting with the source text (DROP + CREATE in one transaction). Replaces existing code.",
         ["09_formatting_tables"] = "Renames tables, columns, constraints and indexes whose names differ only in letter case (sp_rename; no data moves).",
         ["10_different_modules"] = "Replaces procedures, views, functions and triggers whose code really differs with the source text (DROP + CREATE in one transaction). Replaces the target's own code, which may hold a fix made only there - read 99_review\\different_modules.md first.",
+        ["11_destructive"] = "**CAN LOSE DATA.** Drops what only the target has (tables with their rows, columns with their values, procedures, functions, views, triggers, synonyms, sequences, table types, and checks, foreign keys, unique keys and indexes), narrows columns or changes their type, turns NULL into NOT NULL, and replaces checks whose rule differs. Each change was checked against the data when generated; what could not be proven safe is held back in 99_review\\not_applied_destructive.md. Never run by RUN.ps1 - see the caution below.",
         ["99_review"] = "Reports only - no runnable scripts. Everything held back, and why.",
     };
 
@@ -389,10 +429,23 @@ public sealed class ScriptGenerator
         sb.Append("- **01 before 03**: new procedures read the new columns.\n");
         sb.Append("- **02 is opt-in** (`-WithTableTypes`, after 01 and before 03): it breaks the currently deployed application's table-valued parameters until the application is updated.\n");
         sb.Append("- **07, 08, 09 and 10 are never run by RUN.ps1.** Run each folder's `run_all.ps1` (or `_ALL.sql`) on its own when you have decided to.\n");
-        sb.Append("- **10 after RUN.ps1**: the replaced code may read the columns and objects 01 and 03 add. Each file is one transaction, so a file that fails leaves the old version in place.\n\n");
+        sb.Append("- **10 after RUN.ps1**: the replaced code may read the columns and objects 01 and 03 add. Each file is one transaction, so a file that fails leaves the old version in place.\n");
+        bool Has(string folder) => folders.Any(f => f.Files > 0 && string.Equals(f.Folder, folder, StringComparison.OrdinalIgnoreCase));
+        var destructive = Has(DestructiveGenerator.Folder);
+        if (destructive)
+            sb.Append("- **11 last, and only on purpose**: it is never run by RUN.ps1. Run it after everything else, on a target you have just backed up.\n");
+        sb.Append('\n');
+        if (destructive)
+        {
+            sb.Append("## 11_destructive - changes that can lose data\n\n");
+            sb.Append("> [!CAUTION]\n");
+            sb.Append($"> **11_destructive deletes things from {tgt.Label}.** Its files drop tables (with every row), columns (with every value) and ");
+            sb.Append("code that only the target has, and change column types and nullability. **Back up the target first** and run it on a rehearsal copy before the real one. ");
+            sb.Append("Dropped tables and columns cannot be rolled back; `rollback\\` only recreates the dropped procedures, functions, views and triggers. ");
+            sb.Append("Read each file's header: it says what goes and, for a table, how many rows it held when the script was generated.\n\n");
+        }
 
         sb.Append("## Undo\n\n");
-        bool Has(string folder) => folders.Any(f => f.Files > 0 && string.Equals(f.Folder, folder, StringComparison.OrdinalIgnoreCase));
         var withRollback = folders.Where(f => f.HasRollback).Select(f => f.Folder).ToList();
         if (withRollback.Count > 0)
         {
@@ -410,7 +463,10 @@ public sealed class ScriptGenerator
             sb.Append($"- {string.Join(", ", additive)} only add objects; to undo them, drop what was added or restore the backup.\n");
         if (Has("04_columntypes"))
             sb.Append("- 04_columntypes widens columns; narrowing back can lose data, so undo it by restoring the backup.\n");
-        sb.Append(Has(TableTypesFolder)
+        if (destructive)
+            sb.Append("- 11_destructive drops tables, columns and code that only the target has and changes column types: only the backup brings " +
+                      "the lost rows and values back. Its `rollback\\` recreates the dropped procedures, functions, views and triggers from their text.\n\n");
+        else sb.Append(Has(TableTypesFolder)
             ? "- Nothing in these scripts drops an object that only the target has, except 02_tabletypes: it drops and recreates the target's own modules that use a changed table type (recreated from their current text).\n\n"
             : "- Nothing in these scripts drops an object that only the target has.\n\n");
 

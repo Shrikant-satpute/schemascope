@@ -176,6 +176,13 @@ export interface TypeBreakdown {
   label: string
   total: number
   withDifferences: number
+  // Split of withDifferences by each row's worst status. Optional: snapshots
+  // saved before it existed come back without it (or as zeros).
+  different?: number
+  formattingOnly?: number
+  missingInTarget?: number
+  onlyInTarget?: number
+  unavailable?: number
 }
 
 export interface CompareResult {
@@ -417,6 +424,11 @@ export interface ScriptOptions {
   checkExistingData: boolean
   largeTableRows: number
   probeTimeoutSeconds: number
+  /**
+   * Also write 11_destructive, the changes that can lose data. The server
+   * refuses true unless Read & write is on for this session.
+   */
+  includeDestructive?: boolean
 }
 
 export interface ScriptRequest {
@@ -468,4 +480,155 @@ export interface ScriptOutcome {
   warnings: string[]
   validation: ScriptValidation
   elapsedMs: number
+  /** Set only while Read & write is on and the scripts came out clean: what an apply refers to. */
+  planId?: string | null
+  /** The database an apply would change, from the compare session's own connection. */
+  applyTarget?: ApplyTarget | null
+  /** The folders an apply can run, in run order. */
+  planSections?: PlanSection[]
+}
+
+// ---------------- one object's sync script ----------------
+
+/** What the server will write for one object against one target. */
+export type ObjectScriptPlan =
+  | 'create'
+  | 'alter'
+  | 'tableChanges'
+  | 'tableType'
+  | 'trigger'
+  | 'formatting'
+  | 'extra'
+  | 'identical'
+  | 'unavailable'
+
+/** Something in the comparison this object needs that the target lacks or has differently. */
+export interface ObjectScriptDependency {
+  /** The same row key as `CompareRow.key`. */
+  key: string
+  displayName: string
+  type: string
+  status: ObjectStatus
+  /** A prerequisite (schema, alias type, sequence, synonym): always scripted with it. */
+  required: boolean
+  /** True when the CREATE itself would fail without it. */
+  defaultIncluded: boolean
+  reason: string
+}
+
+export interface ObjectScriptDependencies {
+  key: string
+  status: ObjectStatus
+  plan: ObjectScriptPlan
+  dependencies: ObjectScriptDependency[]
+  warnings: string[]
+}
+
+export interface ObjectScriptRequest {
+  /** Index into `CompareResult.targets`. */
+  targetIndex: number
+  /** `CompareRow.key`. */
+  key: string
+  /** Dependency keys to script as well, from the pre-check. */
+  includeDependencies: string[]
+  progressId?: string
+}
+
+export interface ObjectScriptPart {
+  folder: string
+  /** Absolute path of the written .sql file. */
+  file: string
+  objectName: string
+  kind: string
+}
+
+export interface ObjectScriptOutcome {
+  success: boolean
+  message: string
+  /** Every part in the order it runs, with "-- <folder>: <object>" separators. */
+  script: string
+  rollback: string | null
+  /** Extras only: the DROP statement to copy. Generate script never runs it (Create scripts can put it in 11_destructive). */
+  dropPreview: string | null
+  parts: ObjectScriptPart[]
+  heldBack: { objectName: string; reason: string }[]
+  warnings: string[]
+  validation: { passed: boolean; summary: string }
+  dependenciesIncluded: string[]
+  elapsedMs: number
+  path: string
+  /** Set only while Read & write is on and the scripts came out clean: what an apply refers to. */
+  planId?: string | null
+  /** The database an apply would change, from the compare session's own connection. */
+  applyTarget?: ApplyTarget | null
+  /** The folders an apply can run, in run order. */
+  planSections?: PlanSection[]
+}
+
+// ---------------- write mode and apply ----------------
+
+/** Read & write lives in server memory only: off on every launch, and off by itself after 30 minutes idle. */
+export interface WriteModeState {
+  enabled: boolean
+  expiresUtc: string | null
+}
+
+export interface ApplyTarget {
+  label: string
+  server: string
+  database: string
+  /** "Windows: DOMAIN\user" or "SQL login: name". */
+  login: string
+  protected: boolean
+}
+
+export type PlanRisk = 'normal' | 'changesCode' | 'destructive'
+
+export interface PlanSection {
+  /** "04_columntypes", ..., "11_destructive". */
+  folder: string
+  title: string
+  files: number
+  defaultSelected: boolean
+  risk: PlanRisk
+  warning: string | null
+}
+
+/** Everything the apply dialog needs from a script run that produced a plan. */
+export interface ApplyPlan {
+  runId: string
+  targetIndex: number
+  planId: string
+  applyTarget: ApplyTarget
+  planSections: PlanSection[]
+  /** Items the generator held back. They are never applied. */
+  heldBack: number
+}
+
+export interface ApplyRequest {
+  planId: string
+  targetIndex: number
+  /** Folder names, a subset of the plan's. */
+  sections: string[]
+  confirmDatabase: string
+  acceptDataLoss: boolean
+  progressId: string
+}
+
+export interface AppliedFile {
+  folder: string
+  file: string
+  objectName: string
+  ok: boolean
+  error: string | null
+  elapsedMs: number
+}
+
+export interface ApplyResult {
+  success: boolean
+  message: string
+  applied: AppliedFile[]
+  /** The file the run stopped at, when it did not finish. */
+  stoppedAt: string | null
+  auditId: string
 }

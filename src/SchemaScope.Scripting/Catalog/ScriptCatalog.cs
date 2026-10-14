@@ -130,9 +130,9 @@ public sealed record DefaultRow(string Sch, string Tbl, string Col, string CName
     public ObjectName Table => new(Sch, Tbl);
 }
 
-/// <summary>A row of <c>Q_CHECKS</c>.</summary>
+/// <summary>A row of <c>Q_CHECKS</c>. <see cref="Nfr"/> is is_not_for_replication (added column; meta.py never looked).</summary>
 public sealed record CheckRow(
-    string Sch, string Tbl, string CName, string Definition, bool IsSystemNamed, bool IsNotTrusted, bool IsDisabled)
+    string Sch, string Tbl, string CName, string Definition, bool IsSystemNamed, bool IsNotTrusted, bool IsDisabled, bool Nfr = false)
     : INamedConstraint
 {
     public ObjectName Table => new(Sch, Tbl);
@@ -388,6 +388,24 @@ public sealed class ScriptSchema
             list.Add(r);
         }
         return d;
+    }
+
+    /// <summary>
+    /// Puts each module's catalog name into its CREATE header where sp_rename left the old one
+    /// (<see cref="ModuleHeader.WithCatalogName"/>), so every folder that replays a definition creates the object
+    /// under the name it has. Call right after reading, before <see cref="AlignCase"/> and <see cref="Clone"/>.
+    /// Returns each rewritten module with the name its header had, sorted.
+    /// </summary>
+    public IReadOnlyList<(ObjectName Module, string Was)> FixRenamedHeaders()
+    {
+        var fixedHeaders = new List<(ObjectName, string)>();
+        foreach (var (k, m) in modules.ToList())
+        {
+            if (ModuleHeader.WithCatalogName(m) is not { } f) continue;
+            modules[k] = m with { Definition = f.Definition };
+            fixedHeaders.Add((k, f.Was));
+        }
+        return fixedHeaders.OrderBy(h => h.Item1, ObjectName.Ordinal).ToList();
     }
 
     /// <summary>

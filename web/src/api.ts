@@ -1,4 +1,6 @@
 import type {
+  ApplyRequest,
+  ApplyResult,
   CompareHistoryEntry,
   CompareProfile,
   CompareRequest,
@@ -8,6 +10,9 @@ import type {
   ExportResult,
   Health,
   ObjectDetail,
+  ObjectScriptDependencies,
+  ObjectScriptOutcome,
+  ObjectScriptRequest,
   ProgressEvent,
   ReferenceResult,
   RunSummary,
@@ -18,6 +23,7 @@ import type {
   ShareStatus,
   ShareSummary,
   SharedComparison,
+  WriteModeState,
 } from './types'
 
 const base = ''
@@ -85,6 +91,7 @@ async function read<T>(res: Response): Promise<T> {
     try {
       const body = await res.json()
       if (body?.message) message = body.message
+      else if (typeof body?.error === 'string') message = body.error
     } catch {
       /* response was not json */
     }
@@ -164,6 +171,29 @@ export const api = {
 
   defaultOptions: () => req<CompareOptions>('/api/options/defaults'),
 
+  /**
+   * Read & write for this session. The server keeps it in memory only: it is
+   * off on every launch and turns itself off after 30 minutes idle.
+   */
+  writeMode: {
+    get: () => req<WriteModeState>('/api/write-mode'),
+    enable: () =>
+      req<WriteModeState>('/api/write-mode', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: true, confirm: 'ENABLE' }),
+      }),
+    disable: () => req<WriteModeState>('/api/write-mode', { method: 'DELETE' }),
+  },
+
+  apply: {
+    /**
+     * Stops a running apply after the file it is on. Earlier files stay applied.
+     * With `now`, the file it is on is cancelled as well and rolled back.
+     */
+    stop: (progressId: string, now = false) =>
+      req<void>(`/api/apply/${encodeURIComponent(progressId)}/stop${now ? '?now=true' : ''}`, { method: 'POST' }),
+  },
+
   scripts: {
     /** The folder the last "Create scripts" run wrote into, to prefill the next one. */
     lastFolder: () => req<{ path?: string | null }>('/api/scripts/last-folder'),
@@ -204,7 +234,7 @@ export const api = {
 
     /**
      * Writes the numbered script folders that make one target look like the
-     * source. The server only reads the databases; a failed run still comes
+     * source. Writing them only reads the databases; a failed run still comes
      * back as 200 with `success: false` and the folder it got as far as.
      * Aborting the signal stops the run on the server too.
      */
@@ -214,6 +244,36 @@ export const api = {
         body: JSON.stringify(body),
         signal,
       }),
+
+    /**
+     * What one object needs before it can be scripted on its own against one
+     * target: the plan, and the objects it depends on that the target lacks.
+     */
+    objectScriptDependencies: (runId: string, key: string, targetIndex: number) =>
+      req<ObjectScriptDependencies>(
+        `/api/compare/${runId}/object-script/dependencies?key=${encodeURIComponent(key)}&targetIndex=${targetIndex}`,
+      ),
+
+    /**
+     * Writes the sync script for just this object (and the chosen
+     * dependencies) and returns its text. Like `scripts`, generating runs
+     * nothing against a database. Aborting the signal stops it on the server too.
+     */
+    objectScript: (runId: string, body: ObjectScriptRequest, signal?: AbortSignal) =>
+      req<ObjectScriptOutcome>(`/api/compare/${runId}/object-script`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        signal,
+      }),
+
+    /**
+     * Runs a plan's files against the target, each in its own transaction,
+     * stopping at the first error. Deliberately takes no abort signal: closing
+     * or navigating must not cut a file off half way - `api.apply.stop` stops
+     * it after the current file. Progress is on `api.scripts.progress`.
+     */
+    apply: (runId: string, body: ApplyRequest) =>
+      req<ApplyResult>(`/api/compare/${runId}/apply`, { method: 'POST', body: JSON.stringify(body) }),
 
     /** Downloads html / csv / md, or writes .sql files and returns the result. */
     exportTo: async (

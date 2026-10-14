@@ -38,7 +38,7 @@ public sealed class SchemaNormalizer(CompareOptions options)
             }
             else
             {
-                compareText = TSqlText.Light(o.Definition);
+                compareText = TSqlText.CanonicalHeaderName(TSqlText.Light(o.Definition), o.Schema, o.Name);
                 if (_options.IgnoreComments)
                     compareText = TSqlText.Light(TSqlText.StripComments(compareText));
             }

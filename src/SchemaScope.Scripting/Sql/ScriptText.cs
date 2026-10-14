@@ -495,7 +495,8 @@ public static partial class ScriptText
     /// default <c>$Server</c> is the target's server, sqlcmd gets <c>-x</c> so a <c>$(name)</c> inside a
     /// module body is not expanded as a sqlcmd variable, the files are listed with <c>-LiteralPath</c> (with
     /// <c>-Path</c> a folder such as <c>Deploy [C-Tech]</c> is a wildcard that matches nothing, and the folder
-    /// "ran" 0 files with exit code 0), and finding no file at all is a failure. The template's own line endings are normalised
+    /// "ran" 0 files with exit code 0), finding no file at all is a failure, and files run by their leading number
+    /// (then name), so a folder of 1000+ files keeps its order. The template's own line endings are normalised
     /// first, so the output is CRLF whether this .cs file is saved with LF or CRLF (Python read its source
     /// with universal newlines and never had the problem).
     /// </summary>
@@ -508,7 +509,9 @@ public static partial class ScriptText
             [switch]$ContinueOnError
         )
         $dir = Join-Path $PSScriptRoot "objects"
-        $files = @(Get-ChildItem -LiteralPath $dir -Filter *.sql | Sort-Object Name)
+        # by the leading number first, so 1000_x runs after 999_x and not before 101_x (as Apply orders them)
+        $files = @(Get-ChildItem -LiteralPath $dir -Filter *.sql |
+            Sort-Object @{ Expression = { if ($_.Name -match '^(\d{1,18})') { [long]$Matches[1] } else { [long]::MaxValue } } }, Name)
         if ($files.Count -eq 0) {
             Write-Host "No .sql files found in $dir - nothing was run." -ForegroundColor Red
             exit 1

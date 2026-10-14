@@ -45,7 +45,7 @@ public sealed class ScriptCatalogReader
 
         var checks = await QueryAsync(conn, Queries.Checks, r => new CheckRow(
             Str(r, "sch"), Str(r, "tbl"), Str(r, "cname"), Str(r, "definition"),
-            Bool(r, "is_system_named"), Bool(r, "is_not_trusted"), Bool(r, "is_disabled")), ct, queryDone);
+            Bool(r, "is_system_named"), Bool(r, "is_not_trusted"), Bool(r, "is_disabled"), Bool(r, "nfr")), ct, queryDone);
 
         var keys = await QueryAsync(conn, Queries.Keys, r => new KeyRow(
             Str(r, "sch"), Str(r, "tbl"), Str(r, "cname"), Str(r, "ktype"),
@@ -181,7 +181,7 @@ public sealed class ScriptCatalogReader
 
         public const string Checks = """
             SELECT s.name AS sch, t.name AS tbl, ck.name AS cname, ck.definition,
-                   ck.is_system_named, ck.is_not_trusted, ck.is_disabled
+                   ck.is_system_named, ck.is_not_trusted, ck.is_disabled, ck.is_not_for_replication AS nfr
             FROM sys.check_constraints ck
             JOIN sys.tables  t ON t.object_id = ck.parent_object_id
             JOIN sys.schemas s ON s.schema_id = t.schema_id

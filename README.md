@@ -47,9 +47,12 @@ you want, press **Compare**. You get:
 - a list of every object that is different, missing, or extra
 - the actual difference, side by side, in the VS Code editor
 
-**It never writes to your databases.** There is no code in SchemaScope that
-writes. It only reads, and it only ever gives you scripts and reports. What you
-do with those is your call, in your own tools.
+**Read-only by default.** Every time SchemaScope starts, it only reads: you
+get scores, diffs, scripts and reports, and what you do with them is your call.
+If you want SchemaScope to apply the fix scripts itself, you switch on
+**Read & write mode** for that session — it is off on every launch, turns itself
+off after 30 idle minutes, and every apply is gated. See
+[Apply scripts directly](#apply-scripts-directly).
 
 ---
 
@@ -174,6 +177,12 @@ constraints.
   `.sql` file per object into a folder.
 - **Create scripts** — the SQL that would make a target look like the source,
   as numbered folders you review and run yourself. See [Create scripts](#create-scripts).
+- **Generate a script for one object** — from the diff panel, the script for
+  just that object, with the prerequisites it needs.
+- **Apply scripts directly** — opt-in, per session, with the target's name typed
+  before every run. See [Apply scripts directly](#apply-scripts-directly).
+- **Swap source and target** — one click (`Alt+Shift+S`) to compare the other
+  way round.
 - **Share on your network** — send a colleague a read-only link to a finished
   comparison. See [Share on your network](#share-on-your-network).
 
@@ -245,6 +254,9 @@ This is built in, not promised in a policy document:
   the databases you named. Nothing listens on the network unless you
   [share a comparison](#share-on-your-network) — and then only the read-only
   viewer, until you stop.
+- Read-only by default. The one path that changes a database is
+  [Read & write mode](#apply-scripts-directly): off on every launch, never
+  saved, owner window only. A shared link can never write and never shows it.
 
 ---
 
@@ -357,14 +369,16 @@ Instance and AWS RDS. The catalog queries adjust to the server version.
 ## Create scripts
 
 After a compare, each target tile has a **Create scripts** button. It writes the
-SQL that would make that target look like the source, as numbered folders. It
-**never runs anything**: SchemaScope only reads the two databases (catalog
-`SELECT`s and row counts) and checks the scripts offline. You review them and
-run them yourself.
+SQL that would make that target look like the source, as numbered folders.
+Creating scripts **runs nothing**: SchemaScope only reads the two databases
+(catalog `SELECT`s and row counts) and checks the scripts offline. You review
+them and run them yourself — or, with Read & write mode on,
+[apply them from the app](#apply-scripts-directly).
 
 1. Run a compare, then click **Create scripts** on the target's tile.
-2. Untick what you do not want. Everything is ticked except **Table types** and
-   **Triggers**, which change how the running application behaves.
+2. Untick what you do not want. Everything is ticked except **Table types**,
+   **Triggers** and **Different code**, which change how the running
+   application behaves.
 3. Click **Generate** and pick a folder. The run goes into
    `<folder>\<Target>_<yyyyMMdd-HHmm>\`. Its `README.md` explains each folder.
 
@@ -379,6 +393,8 @@ run them yourself.
 | `07_triggers` | Creates missing triggers | no - run on its own |
 | `08_formatting_modules` | Replaces modules that differ only by formatting, with a `rollback\` | no - run on its own |
 | `09_formatting_tables` | Renames names that differ only by letter case (`sp_rename`) | no - run on its own |
+| `10_different_modules` | Replaces procedures, views, functions and triggers whose code really differs, with a `rollback\` | no - run on its own |
+| `11_destructive` | Changes that can lose data. Only written when you ask for it, which needs Read & write mode on | no - run on its own |
 | `99_review` | Reports only: everything held back, and why | - |
 
 ```powershell
@@ -390,7 +406,9 @@ What it is careful about:
 - **Module text is byte for byte.** Procedure, function and view bodies come out
   exactly as the source has them, even through SSMS. The offline check proves
   it for every module.
-- **Nothing is dropped that only the target has.** `04` never narrows a column.
+- **Nothing that can lose data unless you ask.** `04` never narrows a column.
+  Changes that can lose data go only into `11_destructive`, which is off unless
+  you turn on Read & write mode and tick it.
 - **Anything risky is held back, not scripted**: a NOT NULL column with no
   default, a key that existing data would break, a procedure that would not
   compile on the target, a module that reads a column the target will not get,
@@ -403,6 +421,63 @@ What it is careful about:
 
 Always run the scripts on a restored copy of the target first, then compare
 again, before touching the real one.
+
+---
+
+## Apply scripts directly
+
+SchemaScope is read-only by default. If you would rather not leave the app to
+run the scripts, switch on **Read & write mode**, and the script dialog gains an
+**Apply to &lt;target&gt;** button. It is built so that it cannot happen by
+accident:
+
+- **Off on every launch.** The switch lives only in the running app's memory.
+  It is never saved, it needs a confirmation to turn on, and it turns itself off
+  after 30 idle minutes. While it is on, an amber strip across the
+  window says so, with a **Turn off** button.
+- **Type the database name.** Before every apply you type the target
+  database's name. The server checks it against the connection it is about to
+  use, and against `DB_NAME()` on that connection once it is open.
+- **Protected servers are never touched.** Mark a connection
+  **Protected — never apply scripts here** and applying to it is refused, even
+  with Read & write mode on. The source database is never an apply target.
+- **The same safe defaults as `RUN.ps1`.** Only `04`, `01`, `03`, `05` and `06`
+  are ticked. Table types, triggers, formatting and different code start
+  unticked, each with its warning. Anything held back in `99_review` is never
+  applied.
+- **Data loss is a separate decision.** *Include changes that can lose data*
+  (in **Create scripts**) is off by default and only shows while Read & write
+  mode is on. The `11_destructive` section then starts unticked and needs a
+  second *I understand this can lose data* tick. Each column change in it checks
+  the data again when it runs and stops, changing nothing, if a row written
+  since no longer fits.
+- **One transaction per file.** Each script file runs in its own transaction.
+  The first error rolls that file back and stops the run. **Files before it
+  stay applied** — SchemaScope says so, and shows you which ones. Every file is
+  re-checked against the hash recorded when it was written before anything
+  runs, so an edited script is refused. Files that touch memory-optimized
+  tables or natively compiled code cannot run inside a transaction, so an
+  apply that includes them is refused; run those with `run_all.ps1`.
+- **Stop, or cancel now.** *Stop after this file* lets the running file finish.
+  *Cancel this file now* — or turning Read & write mode off — cancels the
+  running file too, and it is rolled back, for a file stuck waiting on locks.
+- **Compare again, automatically.** When the apply finishes, the compare runs
+  again, so you see the new score straight away.
+- **An audit trail.** Every apply — when, which server, database and login,
+  which sections, and the result of each file — is recorded in the local
+  settings database, with connection secrets and passwords left out.
+
+Applying runs DDL as the target connection's own login, so it can do what that
+login can do. Rehearse on a restored copy first, exactly as with `RUN.ps1`. The
+details are in [SECURITY.md](SECURITY.md#write-mode).
+
+What a default apply gets you: the `RUN.ps1` set — new columns, missing
+objects, widened columns, constraints and indexes. What still needs you is
+listed rather than guessed: table types, triggers, formatting, case renames and
+different code are opt-in sections; changes that can lose data need their own
+tick; and anything held back in `99_review` is never applied — code that is
+broken in the source, a NOT NULL column with no default, a key existing data
+would break, a module that reads a column the target will not get.
 
 ---
 

@@ -61,6 +61,9 @@ public static class SchemaScopeApi
         builder.Services.AddSingleton<CompareService>();
         builder.Services.AddSingleton<ShareStore>();
         builder.Services.AddSingleton<ViewerHost>();
+        builder.Services.AddSingleton<WriteMode>();
+        builder.Services.AddSingleton<ApplyPlanStore>();
+        builder.Services.AddSingleton<ApplyService>();
 
 #if DEBUG
         // The UI is served from the same origin in the packaged app, so this is
@@ -96,6 +99,7 @@ public static class SchemaScopeApi
 #endif
 
         UseLocalAuth(app, auth);
+        UseWriteModeActivity(app);
 
         app.UseDefaultFiles();
         app.UseStaticFiles();
@@ -108,6 +112,12 @@ public static class SchemaScopeApi
         MapCompare(app, json);
         MapExport(app);
         MapScripts(app, json);
+        MapObjectScripts(app, json);
+        MapWriteMode(app, json);
+        MapApply(app, json);
+
+        // Object scripts are scratch output: last week's runs go at start.
+        ObjectScripts.Prune(ObjectScripts.ScratchRoot, DateTime.UtcNow, ObjectScripts.KeepFor);
 
         // Anything that is not an API call falls through to the single page app.
         app.MapFallbackToFile("index.html");
@@ -140,6 +150,26 @@ public static class SchemaScopeApi
                 return;
             }
 
+            await next();
+        });
+    }
+
+    /// <summary>
+    /// Write mode turns itself off after 30 idle minutes; any call to the script and apply routes (the dialogs'
+    /// progress polls included) counts as activity. Runs after <see cref="UseLocalAuth"/>, so only our window's
+    /// calls count, and it never turns write mode on.
+    /// </summary>
+    private static void UseWriteModeActivity(WebApplication app)
+    {
+        var writeMode = app.Services.GetRequiredService<WriteMode>();
+        app.Use(async (ctx, next) =>
+        {
+            var path = ctx.Request.Path;
+            if (path.StartsWithSegments("/api/scripts") || path.StartsWithSegments("/api/apply") ||
+                (path.StartsWithSegments("/api/compare") && path.Value is { } p &&
+                 (p.EndsWith("/scripts", StringComparison.Ordinal) || p.EndsWith("/object-script", StringComparison.Ordinal) ||
+                  p.EndsWith("/apply", StringComparison.Ordinal))))
+                writeMode.Touch();
             await next();
         });
     }
@@ -192,11 +222,12 @@ public static class SchemaScopeApi
 
     private static void MapHealth(WebApplication app)
     {
-        app.MapGet("/api/health", (SchemaScopeStore store) => Results.Ok(new
+        app.MapGet("/api/health", (SchemaScopeStore store, WriteMode writeMode) => Results.Ok(new
         {
             ok = true,
             version = typeof(SchemaScopeApi).Assembly.GetName().Version?.ToString() ?? "0.1.0",
-            readOnly = true,
+            // read-only by default: only the session-only write mode switch changes this
+            readOnly = !writeMode.Enabled,
             storePath = store.DatabasePath,
             secretsProtected = SecretProtector.IsSupported
         }));
@@ -624,6 +655,8 @@ public static class SchemaScopeApi
             CompareSessionStore sessions,
             SchemaScopeStore store,
             ScriptProgressStore progressStore,
+            WriteMode writeMode,
+            ApplyPlanStore plans,
             ILoggerFactory loggers,
             CancellationToken ct) => // bound to HttpContext.RequestAborted: closing the dialog stops the reads
         {
@@ -648,6 +681,8 @@ public static class SchemaScopeApi
 
             var problem = CheckScriptRequest(session, request);
             if (problem is not null) return Results.BadRequest(new { message = problem });
+            if (request!.Options.IncludeDestructive && !writeMode.Enabled)
+                return Results.BadRequest(new { message = "Turn on Read & write to include changes that can lose data" });
 
             // CheckScriptRequest has proved all of these are present and in range.
             var result = session.Result!;
@@ -684,8 +719,383 @@ public static class SchemaScopeApi
             if (outcome.Path is not null) WriteSetting(store, LastScriptsFolderKey, options.OutputFolder);
 
             ScrubOutcome(outcome, source, target);
+            var offer = Offer(session, index, outcome, outcome.Success && outcome.Validation.Passed, writeMode, plans, store);
+            var body = JsonSerializer.SerializeToNode(outcome, json)!.AsObject();
+            body["planId"] = offer.PlanId;
+            body["applyTarget"] = JsonSerializer.SerializeToNode(offer.ApplyTarget, json);
+            body["planSections"] = JsonSerializer.SerializeToNode(offer.PlanSections, json);
+            return Results.Json(body, json);
+        });
+    }
+
+    /// <summary>
+    /// "Generate script" for one object of a finished compare against one target: the same generator as
+    /// "Create scripts", limited to that object and the dependencies picked with it, written under the scratch
+    /// folder (<see cref="ObjectScripts.ScratchRoot"/>). Owner app only, like the routes above; the databases
+    /// come from the session, never from the request.
+    /// </summary>
+    private static void MapObjectScripts(WebApplication app, JsonSerializerOptions json)
+    {
+        static IResult Bad(string message) => Results.BadRequest(new { error = message, message });
+        static IResult Gone() => Results.NotFound(new
+        {
+            error = "That comparison is no longer in memory - run the compare again.",
+            message = "That comparison is no longer in memory - run the compare again.",
+        });
+
+        // Read-only and quick: works from the compare's snapshots in memory, no database is touched.
+        app.MapGet("/api/compare/{runId}/object-script/dependencies", (
+            string runId, string? key, string? targetIndex, CompareSessionStore sessions) =>
+        {
+            var session = sessions.Get(runId);
+            if (session is null) return Gone();
+            int? index = int.TryParse(targetIndex, out var i) ? i : null;
+            if (ObjectScripts.Check(session, key, index, out var row) is { } problem) return Bad(problem);
+            return Results.Ok(ObjectScripts.Dependencies(session, row!, index!.Value));
+        });
+
+        app.MapPost("/api/compare/{runId}/object-script", async (
+            string runId,
+            HttpRequest http,
+            CompareSessionStore sessions,
+            ScriptProgressStore progressStore,
+            WriteMode writeMode,
+            ApplyPlanStore plans,
+            SchemaScopeStore store,
+            ILoggerFactory loggers,
+            CancellationToken ct) =>
+        {
+            if (!http.HasJsonContentType())
+                return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+            ObjectScriptRequest? request;
+            try
+            {
+                request = await http.ReadFromJsonAsync<ObjectScriptRequest>(json, ct);
+            }
+            catch (JsonException)
+            {
+                return Bad("The request could not be read: send the target, the object key and the dependencies as JSON.");
+            }
+
+            var session = sessions.Get(runId);
+            if (session is null) return Gone();
+            if (request is null) return Bad("Send the target and the object key.");
+            if (request.ProgressId is { } progressId && !ScriptProgressStore.IsValidId(progressId))
+                return Bad("The progress id must be 8 to 64 letters, digits or dashes.");
+            if (ObjectScripts.Check(session, request.Key, request.TargetIndex, out var row) is { } problem) return Bad(problem);
+
+            var result = session.Result!;
+            var index = request.TargetIndex!.Value;
+            var plan = ObjectScripts.Plan(result, row!, index, out var why);
+            if (plan is "identical" or "unavailable") return Bad(why!);
+            if (plan == "extra") return Results.Ok(ObjectScripts.ExtraOutcome(row!, result.Targets[index].Label));
+            if (ObjectScripts.CheckIncludes(session, row!, index, request.IncludeDependencies, out var included) is { } badDeps)
+                return Bad(badDeps);
+            if (session.SourceConnection is null || index >= session.TargetConnections.Count)
+                return Bad("That comparison no longer has its connection details - run the compare again.");
+
+            var source = Endpoint(session.SourceConnection, result.Source.Label);
+            var target = Endpoint(session.TargetConnections[index], result.Targets[index].Label);
+
+            ObjectScriptOutcome outcome;
+            using var progress = request.ProgressId is { } id ? progressStore.Track(id) : null;
+            try
+            {
+                outcome = await ObjectScripts.RunAsync(session, row!, index, included, source, target,
+                    FormattingCandidates(result, index), DifferentCandidates(result, index),
+                    new ScriptGenerator(), ObjectScripts.ScratchRoot, progress, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return Results.Empty;
+            }
+            catch (Exception ex)
+            {
+                // Log the scrubbed text only, never the exception: rule 5 covers logs too.
+                var message = Scrub(ex.Message, source, target);
+                loggers.CreateLogger("SchemaScope.Scripts").LogWarning("Object script failed: {Message}", message);
+                return Bad($"Script generation failed: {message}");
+            }
+            if (ct.IsCancellationRequested) return Results.Empty;
+
+            ScrubOutcome(outcome, source, target);
+            var offer = Offer(session, index, outcome.Generated,
+                outcome.Success && outcome.Validation.Passed && outcome.Parts.Count > 0, writeMode, plans, store);
+            outcome.PlanId = offer.PlanId;
+            outcome.ApplyTarget = offer.ApplyTarget;
+            outcome.PlanSections = offer.PlanSections;
             return Results.Ok(outcome);
         });
+    }
+
+    /// <summary>
+    /// The "Read &amp; write" switch. SchemaScope is read-only by default: the switch is held in memory only
+    /// (<see cref="WriteMode"/>), starts off on every launch and turns itself off when idle. Turning it on takes a
+    /// JSON body with the confirmation word - a cross-site form post gets 415, and POST/DELETE need the header token.
+    /// </summary>
+    private static void MapWriteMode(WebApplication app, JsonSerializerOptions json)
+    {
+        app.MapGet("/api/write-mode", (WriteMode writeMode) => Results.Ok(writeMode.State));
+
+        app.MapPost("/api/write-mode", async (HttpRequest http, WriteMode writeMode) =>
+        {
+            if (!http.HasJsonContentType())
+                return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+            WriteModeRequest? request;
+            try
+            {
+                request = await http.ReadFromJsonAsync<WriteModeRequest>(json);
+            }
+            catch (JsonException)
+            {
+                request = null;
+            }
+            if (request is not { Enabled: true, Confirm: "ENABLE" })
+                return Results.BadRequest(new { message = "Send { \"enabled\": true, \"confirm\": \"ENABLE\" } to turn on Read & write." });
+            return Results.Ok(writeMode.Enable());
+        });
+
+        app.MapDelete("/api/write-mode", (WriteMode writeMode) => Results.Ok(writeMode.Disable()));
+    }
+
+    private sealed record WriteModeRequest(bool Enabled, string? Confirm);
+
+    /// <summary>
+    /// "Apply to target": runs a plan made by POST .../scripts or .../object-script while write mode was on. Owner app
+    /// only - the LAN viewer (<see cref="ViewerHost"/>) has none of this. The checks run in a fixed order and each
+    /// refuses before anything touches the database; the target connection is the session's, never the request's.
+    /// </summary>
+    private static void MapApply(WebApplication app, JsonSerializerOptions json)
+    {
+        static IResult Refuse(int status, string message) => Results.Json(new { message }, statusCode: status);
+
+        app.MapPost("/api/compare/{runId}/apply", async (
+            string runId,
+            HttpRequest http,
+            CompareSessionStore sessions,
+            WriteMode writeMode,
+            ApplyPlanStore plans,
+            ApplyService applier,
+            SchemaScopeStore store,
+            ScriptProgressStore progressStore,
+            ILoggerFactory loggers) =>
+        {
+            if (!http.HasJsonContentType())
+                return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+            if (!writeMode.Enabled)
+                return Refuse(StatusCodes.Status403Forbidden, "Turn on Read & write to apply scripts.");
+
+            ApplyRequest? request;
+            try
+            {
+                request = await http.ReadFromJsonAsync<ApplyRequest>(json);
+            }
+            catch (JsonException)
+            {
+                return Refuse(StatusCodes.Status400BadRequest, "The request could not be read: send the plan, target, sections and database name as JSON.");
+            }
+
+            var session = sessions.Get(runId);
+            if (session is null)
+                return Refuse(StatusCodes.Status404NotFound, "That comparison is no longer in memory - run the compare again.");
+            if (request is null) return Refuse(StatusCodes.Status400BadRequest, "Send the plan, target, sections and database name.");
+            if (request.ProgressId is { } progressId && !ScriptProgressStore.IsValidId(progressId))
+                return Refuse(StatusCodes.Status400BadRequest, "The progress id must be 8 to 64 letters, digits or dashes.");
+            if ((CheckRun(session) ?? CheckTarget(session, request.TargetIndex)) is { } problem)
+                return Refuse(StatusCodes.Status400BadRequest, problem);
+            var index = request.TargetIndex!.Value;
+
+            var plan = plans.Get(request.PlanId);
+            if (plan is null)
+                return Refuse(StatusCodes.Status400BadRequest, "That apply plan is unknown or has expired - generate the scripts again.");
+            if (plan.RunId != runId || plan.TargetIndex != index)
+                return Refuse(StatusCodes.Status400BadRequest, "That apply plan was made for another comparison or target - generate the scripts again.");
+
+            var target = ApplyTargetOf(session, index, store);
+            if (!string.Equals(request.ConfirmDatabase, target.Database, StringComparison.OrdinalIgnoreCase))
+                return Refuse(StatusCodes.Status400BadRequest, $"Type the target database name, {target.Database}, to confirm.");
+            if (target.Protected)
+                return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is marked \"Protected - never apply scripts here\". Nothing was applied.");
+            if (IsSource(session, index))
+                return Refuse(StatusCodes.Status403Forbidden, "That is the source database of this comparison. SchemaScope never applies scripts to the source.");
+
+            var sections = (request.Sections ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (sections.Count == 0) return Refuse(StatusCodes.Status400BadRequest, "Tick at least one section.");
+            if (sections.FirstOrDefault(s => !plan.Sections.Any(p => string.Equals(p.Folder, s, StringComparison.OrdinalIgnoreCase))) is { } unknown)
+                return Refuse(StatusCodes.Status400BadRequest, $"{unknown} is not a section of this plan.");
+            if (sections.Contains(ApplyPlans.DestructiveFolder, StringComparer.OrdinalIgnoreCase) && !request.AcceptDataLoss)
+                return Refuse(StatusCodes.Status400BadRequest, "Tick \"I understand this can lose data\" to apply changes that can lose data.");
+
+            var connection = session.TargetConnections[index].ConnectionString;
+            var facts = await ApplyService.InspectAsync(connection);
+            // the name the server reports for itself, against the protected connections: an alias or address is no way round
+            if (facts is not null && OnProtectedServer(store, facts.Key[..facts.Key.IndexOf('|')]))
+                return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is on a server marked \"Protected - never apply scripts here\". Nothing was applied.");
+            var key = ApplyService.TargetKey(facts, target.Server, target.Database);
+            if (!applier.TryLock(key))
+                return Refuse(StatusCodes.Status409Conflict, $"An apply to {target.Label} is already running - wait for it to finish.");
+            try
+            {
+                // single use: a second request with the same plan finds nothing
+                if (!plans.Take(plan))
+                    return Refuse(StatusCodes.Status400BadRequest, "That apply plan is unknown or has expired - generate the scripts again.");
+
+                var files = plan.Files.Where(f => sections.Contains(f.Folder, StringComparer.OrdinalIgnoreCase)).ToList();
+                if (ApplyService.Verify(files, out var verified) is { } tampered)
+                    return Refuse(StatusCodes.Status400BadRequest, tampered);
+                if (facts is not null && ApplyService.MemoryOptimizedProblem(verified, facts.InMemory) is { } inMemory)
+                    return Refuse(StatusCodes.Status400BadRequest, inMemory);
+
+                var ordered = plan.Sections.Select(s => s.Folder).Where(f => sections.Contains(f, StringComparer.OrdinalIgnoreCase)).ToList();
+                using var progress = request.ProgressId is { } id ? progressStore.Track(id) : null;
+                try
+                {
+                    // run-scoped: closing the dialog does not cut a file off half-way; POST /api/apply/{id}/stop does stop it
+                    return Results.Ok(await applier.RunAsync(new ApplyJob(runId, connection, target, files, ordered, request.ProgressId), verified, progress));
+                }
+                catch (Exception ex)
+                {
+                    // the audit log could not be started (nothing ran), or a bug: log the scrubbed text only
+                    var message = SecretScrubber.Scrub(ex.Message, SecretScrubber.Secrets([connection]));
+                    loggers.CreateLogger("SchemaScope.Apply").LogWarning("Apply failed: {Message}", message);
+                    return Refuse(StatusCodes.Status500InternalServerError, $"Could not apply: {message}");
+                }
+            }
+            finally
+            {
+                applier.Unlock(key);
+            }
+        });
+
+        // Stops after the current file; ?now=true also cancels the current file, which is rolled back. Always allowed,
+        // write mode or not.
+        app.MapPost("/api/apply/{progressId}/stop", (string progressId, bool? now, ApplyService applier) =>
+            applier.Stop(progressId, now == true) ? Results.NoContent() : Results.NotFound());
+
+        app.MapGet("/api/apply-history", (SchemaScopeStore store) => Results.Ok(store.GetApplyRuns()));
+    }
+
+    /// <summary>
+    /// The plan fields of a script answer. The target and its sections are always described for a complete run; a plan
+    /// id is issued only while write mode is on, for a complete and validated run with files, against a target that is
+    /// neither protected nor the run's source.
+    /// </summary>
+    internal static PlanOffer Offer(CompareSession session, int index, ScriptOutcome? generated, bool complete,
+        WriteMode writeMode, ApplyPlanStore plans, SchemaScopeStore store)
+    {
+        if (generated is null || !complete) return PlanOffer.None;
+        List<PlanFile> files;
+        List<PlanSection> sections;
+        try
+        {
+            (files, sections) = ApplyPlans.Build(generated.Files, generated.Folders);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return PlanOffer.None;   // a file could not be hashed: nothing to offer
+        }
+
+        var target = ApplyTargetOf(session, index, store);
+        string? planId = null;
+        if (writeMode.Enabled && files.Count > 0 && !target.Protected && !IsSource(session, index))
+            planId = plans.Add(new ApplyPlan { RunId = session.Id, TargetIndex = index, Files = files, Sections = sections }).Id;
+        return new PlanOffer(planId, target, sections);
+    }
+
+    /// <summary>The target as the session really connects to it. The caller has checked the index.</summary>
+    private static ApplyTarget ApplyTargetOf(CompareSession session, int index, SchemaScopeStore store)
+    {
+        var source = session.TargetConnections[index];
+        var ep = Endpoint(source, session.Result!.Targets[index].Label);
+        return new ApplyTarget
+        {
+            Label = ep.Label,
+            Server = ep.Server,
+            Database = ep.Database,
+            Login = LoginOf(source.ConnectionString),
+            Protected = IsProtected(source, ep.Server, store),
+        };
+    }
+
+    /// <summary>
+    /// Protected when the connection was protected at compare time, when its saved connection is protected now, or
+    /// when any saved connection to the same server is. A store that cannot be read counts as protected.
+    /// </summary>
+    private static bool IsProtected(SchemaSource target, string server, SchemaScopeStore store)
+    {
+        if (target.ProtectedServer) return true;
+        try
+        {
+            if (target.ConnectionId is { } id && store.GetConnection(id) is { ProtectedServer: true }) return true;
+            return OnProtectedServer(store, server, target.Server);
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Any protected saved connection names one of <paramref name="servers"/>, compared as <see cref="ServerNames"/>
+    /// spells them ('.', localhost and the machine name are one server). A store that cannot be read counts as protected.
+    /// </summary>
+    internal static bool OnProtectedServer(SchemaScopeStore store, params string[] servers)
+    {
+        try
+        {
+            return store.GetConnections().Any(c => c.ProtectedServer && servers.Any(s => ServerNames.Same(SavedServer(c), s)));
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// The server a saved connection really connects to: a raw connection string's Data Source, since the form's Server box
+    /// is hidden then and may be empty or stale.
+    /// </summary>
+    private static string SavedServer(ConnectionSettings c)
+    {
+        if (c.UseRawConnectionString && !string.IsNullOrWhiteSpace(c.RawConnectionString))
+        {
+            try
+            {
+                return new SqlConnectionStringBuilder(c.RawConnectionString).DataSource.Trim();
+            }
+            catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
+            {
+                // fall back to the Server box
+            }
+        }
+        return c.Server.Trim();
+    }
+
+    /// <summary>The target is the very database the run read as its source.</summary>
+    private static bool IsSource(CompareSession session, int index)
+    {
+        if (session.SourceConnection is null) return true;
+        var s = Endpoint(session.SourceConnection, null);
+        var t = Endpoint(session.TargetConnections[index], null);
+        return string.Equals(s.Server.Trim(), t.Server.Trim(), StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(s.Database.Trim(), t.Database.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Who an apply signs in as: "Windows: DOMAIN\user" or "SQL login: name". Never the password.</summary>
+    private static string LoginOf(string connectionString)
+    {
+        try
+        {
+            var b = new SqlConnectionStringBuilder(connectionString);
+            if (b.IntegratedSecurity) return $"Windows: {Environment.UserDomainName}\\{Environment.UserName}";
+            if (b.Authentication is SqlAuthenticationMethod.NotSpecified or SqlAuthenticationMethod.SqlPassword)
+                return $"SQL login: {b.UserID}";
+            return string.IsNullOrEmpty(b.UserID) ? "Microsoft Entra ID" : $"Microsoft Entra ID: {b.UserID}";
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
+        {
+            return "Unknown";
+        }
     }
 
     /// <summary>
@@ -694,30 +1104,16 @@ public static class SchemaScopeApi
     /// </summary>
     private static string? CheckScriptRequest(CompareSession session, ScriptRequest? request)
     {
-        if (session.Status != "done" || session.Result is null)
-            return session.Status == "running"
-                ? "That comparison is still running - wait for it to finish."
-                : "That comparison did not finish - run the compare again.";
-
-        if (session.SourceConnection is null)
-            return "That comparison no longer has its connection details - run the compare again.";
+        var runProblem = CheckRun(session);
+        if (runProblem is not null) return runProblem;
 
         if (request is null) return "Send the target and the script options.";
 
         if (request.ProgressId is { } progressId && !ScriptProgressStore.IsValidId(progressId))
             return "The progress id must be 8 to 64 letters, digits or dashes.";
 
-        if (request.TargetIndex is not { } index)
-            return "Say which target to script: pick a target tile and try again.";
-        if (index < 0)
-            return "There is no target at that position - pick a target tile and try again.";
-        if (index >= session.Result.Targets.Count || index >= session.TargetConnections.Count)
-            return $"This comparison has no target number {index + 1}.";
-
-        var summary = session.Result.Targets[index];
-        if (summary.Failed)
-            return $"{summary.Label} could not be read in this comparison, so there is nothing to script against. " +
-                   "Fix the connection and run the compare again.";
+        var targetProblem = CheckTarget(session, request.TargetIndex);
+        if (targetProblem is not null) return targetProblem;
 
         var o = request.Options;
         if (o is null) return "Choose a folder to write the scripts into.";
@@ -731,6 +1127,38 @@ public static class SchemaScopeApi
         var unknown = o.Sections.Where(s => !Enum.IsDefined(s)).ToList();
         if (unknown.Count > 0)
             return $"Unknown section {(int)unknown[0]}. Known sections: {KnownSections}.";
+
+        return null;
+    }
+
+    /// <summary>The run must have finished and still hold its connections (scripts and apply alike).</summary>
+    private static string? CheckRun(CompareSession session)
+    {
+        if (session.Status != "done" || session.Result is null)
+            return session.Status == "running"
+                ? "That comparison is still running - wait for it to finish."
+                : "That comparison did not finish - run the compare again.";
+
+        if (session.SourceConnection is null)
+            return "That comparison no longer has its connection details - run the compare again.";
+
+        return null;
+    }
+
+    /// <summary>The target must be one of the run's, and one that could be read. Call after <see cref="CheckRun"/>.</summary>
+    private static string? CheckTarget(CompareSession session, int? targetIndex)
+    {
+        if (targetIndex is not { } index)
+            return "Say which target to script: pick a target tile and try again.";
+        if (index < 0)
+            return "There is no target at that position - pick a target tile and try again.";
+        if (index >= session.Result!.Targets.Count || index >= session.TargetConnections.Count)
+            return $"This comparison has no target number {index + 1}.";
+
+        var summary = session.Result.Targets[index];
+        if (summary.Failed)
+            return $"{summary.Label} could not be read in this comparison, so there is nothing to script against. " +
+                   "Fix the connection and run the compare again.";
 
         return null;
     }
@@ -880,6 +1308,26 @@ public static class SchemaScopeApi
             item.Reason = S(item.Reason);
         }
         foreach (var folder in outcome.Folders) folder.Notes = [.. folder.Notes.Select(S)];
+    }
+
+    /// <inheritdoc cref="ScrubOutcome(ScriptOutcome, ScriptEndpoint[])"/>
+    private static void ScrubOutcome(ObjectScriptOutcome outcome, params ScriptEndpoint[] endpoints)
+    {
+        var secrets = SecretScrubber.Secrets(endpoints.Select(e => e.ConnectionString));
+        if (secrets.Count == 0) return;
+
+        string S(string text) => SecretScrubber.Scrub(text, secrets);
+
+        outcome.Message = S(outcome.Message);
+        outcome.Script = S(outcome.Script);
+        if (outcome.Rollback is not null) outcome.Rollback = S(outcome.Rollback);
+        outcome.Warnings = [.. outcome.Warnings.Select(S)];
+        outcome.Validation.Summary = S(outcome.Validation.Summary);
+        foreach (var item in outcome.HeldBack)
+        {
+            item.ObjectName = S(item.ObjectName);
+            item.Reason = S(item.Reason);
+        }
     }
 
     private static string Scrub(string text, params ScriptEndpoint[] endpoints) =>

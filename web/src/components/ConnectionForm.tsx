@@ -219,8 +219,8 @@ export function ConnectionForm({
             <Toggle
               checked={!!form.protectedServer}
               onChange={(v) => set('protectedServer', v)}
-              label="Mark as protected"
-              hint="Flags a server you never want written to. SchemaScope never writes anyway."
+              label="Protected — never apply scripts here"
+              hint="Scripts for it are only written to disk. SchemaScope will not apply anything to it, even with Read & write on."
             />
             <div className="px-2 pt-1">
               <Field label="Connect timeout (seconds)">

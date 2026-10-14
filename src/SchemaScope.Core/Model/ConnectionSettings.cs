@@ -42,7 +42,10 @@ public sealed class ConnectionSettings
     public bool UseRawConnectionString { get; set; }
     public string? RawConnectionString { get; set; }
 
-    /// <summary>Marks a server the user never wants written to. v1 never writes at all.</summary>
+    /// <summary>
+    /// "Protected - never apply scripts here". SchemaScope is read-only by default; even with write mode on,
+    /// applying scripts to this server is refused outright.
+    /// </summary>
     public bool ProtectedServer { get; set; }
 
     public string Colour { get; set; } = "";

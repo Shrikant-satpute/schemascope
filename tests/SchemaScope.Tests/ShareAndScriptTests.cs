@@ -509,6 +509,12 @@ public sealed class OwnerRouteTests : IAsyncLifetime
         { "GET", "/api/scripts/last-folder" },
         { "GET", "/api/scripts/progress/abcdefgh" },
         { "GET", "/api/connections" },
+        { "GET", "/api/write-mode" },
+        { "POST", "/api/write-mode" },
+        { "DELETE", "/api/write-mode" },
+        { "POST", "/api/compare/abc/apply" },
+        { "POST", "/api/apply/abcdefgh/stop" },
+        { "GET", "/api/apply-history" },
     };
 
     [Theory]

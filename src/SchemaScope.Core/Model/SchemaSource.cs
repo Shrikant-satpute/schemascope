@@ -10,6 +10,12 @@ public sealed class SchemaSource
     public string Server { get; set; } = "";
     public string Database { get; set; } = "";
 
+    /// <summary>The saved connection this came from, if any: applying re-reads its "Protected" flag.</summary>
+    public string? ConnectionId { get; set; }
+
+    /// <summary>The connection was marked "Protected - never apply scripts here" when the compare started.</summary>
+    public bool ProtectedServer { get; set; }
+
     public string DisplayName =>
         string.IsNullOrWhiteSpace(Label) ? $"{Server}.{Database}" : Label;
 }

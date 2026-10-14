@@ -130,6 +130,9 @@ public sealed class ScriptGenerator
             if (ctx.Selected(ScriptSection.DifferentModules)) Report(P.Different, "10 Different code");
             if (ctx.Selected(ScriptSection.DifferentModules)) folders.AddRange(await new DifferentModulesGenerator().GenerateAsync(ctx));
             ct.ThrowIfCancellationRequested();
+            if (options.IncludeDestructive) Report(P.Destructive, "11 Changes that can lose data");
+            if (options.IncludeDestructive) folders.AddRange(await new DestructiveGenerator().GenerateAsync(ctx));
+            ct.ThrowIfCancellationRequested();
             Report(P.Review, "99_review reports");
             // an object script keeps flow_safety (it warns what this script breaks) and leaves out the whole-database reports
             folders.AddRange(await new ReviewReports().GenerateAsync(ctx));
@@ -232,6 +235,7 @@ public sealed class ScriptGenerator
         public const int Triggers = 76;
         public const int Formatting = 77;
         public const int Different = 84;
+        public const int Destructive = 85;
         public const int Review = 86;
         public const int Validate = 93;
         public const int Finish = 99;
@@ -375,6 +379,7 @@ public sealed class ScriptGenerator
         ["08_formatting_modules"] = "Replaces modules that differ only in formatting with the source text (DROP + CREATE in one transaction). Replaces existing code.",
         ["09_formatting_tables"] = "Renames tables, columns, constraints and indexes whose names differ only in letter case (sp_rename; no data moves).",
         ["10_different_modules"] = "Replaces procedures, views, functions and triggers whose code really differs with the source text (DROP + CREATE in one transaction). Replaces the target's own code, which may hold a fix made only there - read 99_review\\different_modules.md first.",
+        ["11_destructive"] = "**CAN LOSE DATA.** Drops what only the target has (tables with their rows, columns with their values, procedures, functions, views, triggers, synonyms, sequences, table types, and checks, foreign keys, unique keys and indexes), narrows columns or changes their type, turns NULL into NOT NULL, and replaces checks whose rule differs. Each change was checked against the data when generated; what could not be proven safe is held back in 99_review\\not_applied_destructive.md. Never run by RUN.ps1 - see the caution below.",
         ["99_review"] = "Reports only - no runnable scripts. Everything held back, and why.",
     };
 
@@ -424,10 +429,23 @@ public sealed class ScriptGenerator
         sb.Append("- **01 before 03**: new procedures read the new columns.\n");
         sb.Append("- **02 is opt-in** (`-WithTableTypes`, after 01 and before 03): it breaks the currently deployed application's table-valued parameters until the application is updated.\n");
         sb.Append("- **07, 08, 09 and 10 are never run by RUN.ps1.** Run each folder's `run_all.ps1` (or `_ALL.sql`) on its own when you have decided to.\n");
-        sb.Append("- **10 after RUN.ps1**: the replaced code may read the columns and objects 01 and 03 add. Each file is one transaction, so a file that fails leaves the old version in place.\n\n");
+        sb.Append("- **10 after RUN.ps1**: the replaced code may read the columns and objects 01 and 03 add. Each file is one transaction, so a file that fails leaves the old version in place.\n");
+        bool Has(string folder) => folders.Any(f => f.Files > 0 && string.Equals(f.Folder, folder, StringComparison.OrdinalIgnoreCase));
+        var destructive = Has(DestructiveGenerator.Folder);
+        if (destructive)
+            sb.Append("- **11 last, and only on purpose**: it is never run by RUN.ps1. Run it after everything else, on a target you have just backed up.\n");
+        sb.Append('\n');
+        if (destructive)
+        {
+            sb.Append("## 11_destructive - changes that can lose data\n\n");
+            sb.Append("> [!CAUTION]\n");
+            sb.Append($"> **11_destructive deletes things from {tgt.Label}.** Its files drop tables (with every row), columns (with every value) and ");
+            sb.Append("code that only the target has, and change column types and nullability. **Back up the target first** and run it on a rehearsal copy before the real one. ");
+            sb.Append("Dropped tables and columns cannot be rolled back; `rollback\\` only recreates the dropped procedures, functions, views and triggers. ");
+            sb.Append("Read each file's header: it says what goes and, for a table, how many rows it held when the script was generated.\n\n");
+        }
 
         sb.Append("## Undo\n\n");
-        bool Has(string folder) => folders.Any(f => f.Files > 0 && string.Equals(f.Folder, folder, StringComparison.OrdinalIgnoreCase));
         var withRollback = folders.Where(f => f.HasRollback).Select(f => f.Folder).ToList();
         if (withRollback.Count > 0)
         {
@@ -445,7 +463,10 @@ public sealed class ScriptGenerator
             sb.Append($"- {string.Join(", ", additive)} only add objects; to undo them, drop what was added or restore the backup.\n");
         if (Has("04_columntypes"))
             sb.Append("- 04_columntypes widens columns; narrowing back can lose data, so undo it by restoring the backup.\n");
-        sb.Append(Has(TableTypesFolder)
+        if (destructive)
+            sb.Append("- 11_destructive drops tables, columns and code that only the target has and changes column types: only the backup brings " +
+                      "the lost rows and values back. Its `rollback\\` recreates the dropped procedures, functions, views and triggers from their text.\n\n");
+        else sb.Append(Has(TableTypesFolder)
             ? "- Nothing in these scripts drops an object that only the target has, except 02_tabletypes: it drops and recreates the target's own modules that use a changed table type (recreated from their current text).\n\n"
             : "- Nothing in these scripts drops an object that only the target has.\n\n");
 

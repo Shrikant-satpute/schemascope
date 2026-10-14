@@ -87,16 +87,21 @@ public sealed class ReviewReports : IFolderGenerator
                 if (sameType && c.IsNullable == p.IsNullable) continue;
                 var (direction, narrows) = Direction(c, p, sameType, src, tgt);
                 var alter = alters.FirstOrDefault(a => a.Table.SameAs(k) && string.Equals(a.Column, c.Col, StringComparison.OrdinalIgnoreCase));
+                var by11 = ctx.Facts.DestructiveAlters.Any(a => a.Table.SameAs(k) && string.Equals(a.Column, p.Col, StringComparison.OrdinalIgnoreCase));
                 rows.Add(new TypeRow(narrows, ShowTable(k), c.Col, dc, NullText(c.IsNullable), dp, NullText(p.IsNullable),
-                    direction, alter is null ? "-" : $"04 ({alter.Group})"));
+                    direction, alter is not null ? $"04 ({alter.Group})" : by11 ? "11" : "-"));
             }
         }
 
-        var scripted = rows.Count(r => r.Scripted != "-");
+        var changedBy11 = rows.Count(r => r.Scripted == "11");
+        var scripted = rows.Count(r => r.Scripted != "-") - changedBy11;
         var sb = new StringBuilder();
         sb.Append($"# Columns where {src} and {tgt} disagree on the type\n\n");
         sb.Append($"{rows.Count} columns. ");
-        if (!ctx.Selected(ScriptSection.ColumnTypes))
+        if (changedBy11 > 0)
+            sb.Append($"{scripted} of them are changed by 04_columntypes and {changedBy11} by 11_destructive (marked in the Scripted column). " +
+                      "**No script is generated for the others.** Each one is a data decision.\n\n");
+        else if (!ctx.Selected(ScriptSection.ColumnTypes))
             sb.Append("04_columntypes was not generated in this run, so **no script is generated for any of these.** Each one is a data decision.\n\n");
         else if (scripted == 0)
             sb.Append("**No script is generated for any of these.** Each one is a data decision.\n\n");
@@ -104,7 +109,9 @@ public sealed class ReviewReports : IFolderGenerator
             sb.Append($"{scripted} of them are changed by 04_columntypes (marked in the Scripted column - it only widens a column or allows NULL). " +
                       "**No script is generated for the others.** Each one is a data decision.\n\n");
         sb.Append($"> Rows where {tgt} is wider or allows NULL come first. Making those match {src} would narrow the column " +
-                  "or forbid NULL on rows that may already hold it, so no generated script does that.\n\n");
+                  (ctx.Facts.DestructiveAlters.Count == 0
+                      ? "or forbid NULL on rows that may already hold it, so no generated script does that.\n\n"
+                      : "or forbid NULL on rows that may already hold it; only the rows marked `11` are changed, by 11_destructive, after a check that every row fits.\n\n"));
         sb.Append($"| Table | Column | {Cell(src)} type | {Cell(src)} null | {Cell(tgt)} type | {Cell(tgt)} null | Direction | Scripted |\n");
         sb.Append("|---|---|---|---|---|---|---|---|\n");
         foreach (var r in rows.OrderBy(r => !r.Narrows).ThenBy(r => r.Table, StringComparer.Ordinal).ThenBy(r => r.Column, StringComparer.Ordinal))
@@ -251,8 +258,10 @@ public sealed class ReviewReports : IFolderGenerator
         var tgt = ctx.TargetEndpoint.Label;
         var blockers = new HashSet<ObjectName>(ctx.Facts.TableTypesWritten ? ctx.Facts.TableTypeBlockers : [], ObjectName.IgnoreCase);
 
+        var dropped = new HashSet<ObjectName>(ctx.Facts.DestructiveDrops, ObjectName.IgnoreCase);
         string Note(ObjectName n)
         {
+            if (dropped.Contains(n)) return "11_destructive drops it";
             if (blockers.Contains(n))
                 return "02_tabletypes drops and recreates it from its current text (it uses a changed table type)";
             var rename = ctx.Facts.Renames.FirstOrDefault(r =>
@@ -266,7 +275,7 @@ public sealed class ReviewReports : IFolderGenerator
         foreach (var t in ctx.Target.SortedTables())
             if (!ctx.Source.Tables.Contains(t)) items.Add((t.ToString(), "Table", Note(t)));
         foreach (var t in ctx.Target.SortedTableTypes())
-            if (!ctx.Source.TableTypes.Contains(t)) items.Add((t.ToString(), "Table type", ""));
+            if (!ctx.Source.TableTypes.Contains(t)) items.Add((t.ToString(), "Table type", dropped.Contains(t) ? "11_destructive drops it" : ""));
         foreach (var k in ctx.Target.SortedModules())
             if (!ctx.Source.Modules.ContainsKey(k)) items.Add((k.ToString(), TypeName(ctx.Target.Modules[k].OType), Note(k)));
 

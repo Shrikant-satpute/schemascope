@@ -133,15 +133,15 @@ internal sealed partial class CoreRun
 
     // ------------------------------------------------------------------ 04 compute
 
-    private static readonly Dictionary<string, int> IntSize = new(StringComparer.Ordinal)
+    internal static readonly Dictionary<string, int> IntSize = new(StringComparer.Ordinal)
     {
         ["tinyint"] = 1, ["smallint"] = 2, ["int"] = 4, ["bigint"] = 8,
     };
 
-    private static readonly HashSet<string> CharTypes = new(StringComparer.Ordinal) { "char", "varchar", "nchar", "nvarchar" };
+    internal static readonly HashSet<string> CharTypes = new(StringComparer.Ordinal) { "char", "varchar", "nchar", "nvarchar" };
 
     /// <summary>generate.py <c>col_width</c>: characters for the char family (2^31 for max), bytes for the int family, else null.</summary>
-    private static long? Width(ColumnRow c)
+    internal static long? Width(ColumnRow c)
     {
         var t = c.Dt.ToLowerInvariant();
         if (CharTypes.Contains(t))

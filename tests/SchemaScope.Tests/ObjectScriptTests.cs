@@ -377,7 +377,7 @@ public class ObjectDependencyTests
         Assert.Equal("create", deps.Plan);
         var dep = Assert.Single(deps.Dependencies);
         Assert.Equal("dbo.T_for_view", dep.DisplayName);
-        Assert.True(dep.Required);
+        Assert.False(dep.Required);   // not a prerequisite: ticked by default, the user may untick it
         Assert.True(dep.DefaultIncluded);
     }
 
@@ -399,7 +399,7 @@ public class ObjectDependencyTests
         var dep = Assert.Single(Deps(Session(), DbObjectType.StoredProcedure, "p_col").Dependencies);
 
         Assert.Equal("dbo.T_changed", dep.DisplayName);
-        Assert.True(dep.Required);
+        Assert.True(dep.DefaultIncluded);
         Assert.Contains("new_col", dep.Reason);
     }
 
@@ -488,7 +488,7 @@ public sealed class ObjectScriptRouteTests : IAsyncLifetime
         Assert.Equal("missingInTarget", body.GetProperty("status").GetString());
         var dep = Assert.Single(body.GetProperty("dependencies").EnumerateArray());
         Assert.Equal("dbo.NewT", dep.GetProperty("displayName").GetString());
-        Assert.True(dep.GetProperty("required").GetBoolean());
+        Assert.False(dep.GetProperty("required").GetBoolean());   // only prerequisites are required
         Assert.True(dep.GetProperty("defaultIncluded").GetBoolean());
     }
 

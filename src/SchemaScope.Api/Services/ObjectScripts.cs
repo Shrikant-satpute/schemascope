@@ -170,7 +170,7 @@ public static partial class ObjectScripts
                     DisplayName = dep.FullName,
                     Type = dep.TypeLabel,
                     Status = StatusOf(dep, index),
-                    Required = required,
+                    Required = required && IsPrerequisite(dep.Type),   // the server adds these itself
                     DefaultIncluded = required,
                     Reason = direct ? reason : $"{obj.FullName} needs it: {reason}",
                 };
@@ -180,7 +180,7 @@ public static partial class ObjectScripts
             }
         }
         deps.Warnings.AddRange(RuntimeWarnings(session, row, subject, index, deferred));
-        deps.Dependencies = [.. found.Values.OrderByDescending(d => d.Required).ThenBy(d => d.DisplayName, StringComparer.OrdinalIgnoreCase)];
+        deps.Dependencies = [.. found.Values.OrderByDescending(d => d.Required).ThenByDescending(d => d.DefaultIncluded).ThenBy(d => d.DisplayName, StringComparer.OrdinalIgnoreCase)];
         return deps;
     }
 

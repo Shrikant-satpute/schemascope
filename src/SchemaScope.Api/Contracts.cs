@@ -153,8 +153,9 @@ public sealed class ObjectDependency
     /// <summary>The type label the grid shows ("Table", "Procedure", ...).</summary>
     public string Type { get; set; } = "";
     public ObjectStatus Status { get; set; }
-    /// <summary>The object's CREATE fails without it.</summary>
+    /// <summary>A prerequisite (schema, alias type, sequence, synonym): the server scripts it whether or not it is sent.</summary>
     public bool Required { get; set; }
+    /// <summary>The object's CREATE fails without it, so the UI ticks it by default; the user may untick it.</summary>
     public bool DefaultIncluded { get; set; }
     public string Reason { get; set; } = "";
 }

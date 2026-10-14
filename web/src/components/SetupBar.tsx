@@ -1,8 +1,8 @@
-import { useState } from 'react'
-import { ArrowRight, ChevronDown, Play, Plus, Settings2, Square, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowLeftRight, ArrowRight, ChevronDown, Play, Plus, Settings2, Square, X } from 'lucide-react'
 import type { ConnectionSettings } from '../types'
 import { connectionColour, type DbColour } from '../dbColour'
-import { Button, Spinner } from './ui'
+import { Button, Modal, Spinner } from './ui'
 import { ConnectionPicker, type PickedConnection } from './ConnectionPicker'
 
 export interface TargetSlot {
@@ -26,6 +26,8 @@ export function SetupBar({
   onSourceChange,
   onTargetsChange,
   onRun,
+  onSwap,
+  swapPreferred,
   onCancel,
   onOpenOptions,
   optionCount,
@@ -39,12 +41,38 @@ export function SetupBar({
   onSourceChange: (s: TargetSlot | null) => void
   onTargetsChange: (t: TargetSlot[]) => void
   onRun: () => void
+  /** Make target `index` the source (the old source takes its place) and compare. */
+  onSwap: (index: number) => void
+  /** Target to preselect when there are several to choose from. */
+  swapPreferred: number | null
   onCancel: () => void
   onOpenOptions: () => void
   optionCount: number
   onConnectionsChanged: () => void
 }) {
   const [picking, setPicking] = useState<'source' | 'target' | null>(null)
+  /** Target chosen in the "which becomes the source" picker, or null when closed. */
+  const [swapChoice, setSwapChoice] = useState<number | null>(null)
+
+  const canSwap = !running && !!source && targets.length > 0
+
+  function startSwap() {
+    if (!canSwap) return
+    if (targets.length === 1) onSwap(0)
+    else setSwapChoice(swapPreferred !== null && swapPreferred < targets.length ? swapPreferred : 0)
+  }
+
+  // Alt+Shift+S, from anywhere on the compare screen.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && e.shiftKey && !e.ctrlKey && e.code === 'KeyS') {
+        e.preventDefault()
+        startSwap()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
 
   const byId = new Map(connections.map((c) => [c.id, c]))
 
@@ -93,6 +121,16 @@ export function SetupBar({
           onClick={() => setPicking('source')}
           onClear={() => onSourceChange(null)}
         />
+
+        <Button
+          size="sm"
+          onClick={startSwap}
+          disabled={!canSwap}
+          aria-label="Swap source and target"
+          title="Swap source and target, then compare (Alt+Shift+S)"
+        >
+          <ArrowLeftRight size={14} />
+        </Button>
 
         <ArrowRight size={16} style={{ color: 'var(--text-3)' }} />
 
@@ -181,6 +219,49 @@ export function SetupBar({
           onPick={handlePick}
           onConnectionsChanged={onConnectionsChanged}
         />
+      )}
+
+      {swapChoice !== null && (
+        <Modal
+          title="Which target becomes the source?"
+          subtitle="The current source takes its place in the list. The other targets stay as they are."
+          width={440}
+          onClose={() => setSwapChoice(null)}
+          footer={
+            <>
+              <Button variant="outline" onClick={() => setSwapChoice(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setSwapChoice(null)
+                  onSwap(swapChoice)
+                }}
+              >
+                <ArrowLeftRight size={14} /> Swap and compare
+              </Button>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-1">
+            {targets.map((t, i) => {
+              const { name, detail } = describe(t)
+              return (
+                <label
+                  key={`${t.connectionId}-${t.database ?? ''}-${i}`}
+                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12.5px] hover:bg-[var(--raised)]"
+                >
+                  <input type="radio" name="swap-target" checked={swapChoice === i} onChange={() => setSwapChoice(i)} />
+                  <span className="flex-1">{name}</span>
+                  <span className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>
+                    {detail}
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+        </Modal>
       )}
     </>
   )

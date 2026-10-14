@@ -44,6 +44,7 @@ export function ResultsWorkspace({
   onShare,
   sharing,
   onCreateScripts,
+  onFocusedTargetChange,
 }: {
   result: CompareResult
   theme: 'dark' | 'light'
@@ -61,6 +62,8 @@ export function ResultsWorkspace({
    * the tile button does not exist on a shared link.
    */
   onCreateScripts?: (targetIndex: number) => void
+  /** Owner only: which target the grid is narrowed to, so a swap can preselect it. */
+  onFocusedTargetChange?: (targetIndex: number | null) => void
 }) {
   const [filters, setFilters] = useState<MatrixFilters>(EMPTY_FILTERS)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -80,6 +83,8 @@ export function ResultsWorkspace({
   const [reveal, setReveal] = useState<RevealTarget | null>(null)
 
   const rows = useMemo(() => filterRows(result, filters), [result, filters])
+
+  useEffect(() => onFocusedTargetChange?.(filters.targetIndex), [filters.targetIndex, onFocusedTargetChange])
 
   // One tint per database, worked out once and handed down, so the dashboard
   // tile, the matrix column and the diff tab all agree on what colour a

@@ -1,4 +1,4 @@
-import type { ObjectStatus } from './types'
+import type { CompareRow, ObjectStatus, TypeBreakdown } from './types'
 
 /**
  * One place that decides how a status looks and reads.
@@ -81,6 +81,33 @@ export function cellText(status: ObjectStatus, changedLines: number): string {
   const style = statusOf(status)
   if (status === 'different' && changedLines > 0) return `${style.symbol} ${changedLines}`
   return style.symbol
+}
+
+/** The non-identical statuses a type's count is split into, in bar order. */
+export const TYPE_COUNT_ORDER = [
+  'different',
+  'missingInTarget',
+  'onlyInTarget',
+  'formattingOnly',
+  'unavailable',
+] as const
+
+export type TypeCounts = Record<(typeof TYPE_COUNT_ORDER)[number], number>
+
+/**
+ * A type's non-identical rows split by each row's worst status, so a missing or
+ * extra object is not called a difference. Snapshots saved before the server
+ * sent the split carry none (or zeros), so it is rebuilt from the rows.
+ */
+export function typeCounts(b: TypeBreakdown, rows: CompareRow[]): TypeCounts {
+  const counts = Object.fromEntries(TYPE_COUNT_ORDER.map((s) => [s, b[s] ?? 0])) as TypeCounts
+  if (TYPE_COUNT_ORDER.reduce((n, s) => n + counts[s], 0) === b.withDifferences) return counts
+
+  for (const s of TYPE_COUNT_ORDER) counts[s] = 0
+  for (const r of rows) {
+    if (r.type === b.type && r.worst !== 'same') counts[r.worst]++
+  }
+  return counts
 }
 
 export const TYPE_ORDER = [

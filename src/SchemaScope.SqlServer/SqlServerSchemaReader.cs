@@ -266,7 +266,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 IsPadded = r.GetBoolean(9),
                 IgnoreDupKey = r.GetBoolean(10),
                 FilterDefinition = r.IsDBNull(11) ? null : r.GetString(11),
-                DataSpace = r.IsDBNull(12) ? null : r.GetString(12)
+                DataSpace = r.IsDBNull(12) ? null : r.GetString(12),
+                IsSystemNamed = r.GetBoolean(13)
             };
 
             if (!raw.Indexes.TryGetValue(objectId, out var map))

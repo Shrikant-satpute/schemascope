@@ -88,6 +88,60 @@ public static class TSqlText
         return isAlter ? string.Concat(sql[..i], "CREATE ", sql[j..]) : sql;
     }
 
+    /// <summary>
+    /// Rewrites the object name in the CREATE header to [schema].[name]. sp_rename
+    /// leaves the old name in sys.sql_modules, so the header can disagree with the
+    /// catalog; the catalog name is the one that counts. Only the header name
+    /// token is touched.
+    /// </summary>
+    public static string CanonicalHeaderName(string sql, string schema, string name)
+    {
+        sql = FoldCreateOrAlter(sql);
+        var i = SkipLeadingTrivia(sql, 0);
+        var (verb, afterVerb) = ReadWord(sql, i);
+        if (!verb.Equals("CREATE", StringComparison.OrdinalIgnoreCase)) return sql;
+
+        var (kw, afterKw) = ReadWord(sql, SkipLeadingTrivia(sql, afterVerb));
+        if (!IsModuleKeyword(kw)) return sql;
+
+        // multi-part name: part ( . part )*
+        var start = SkipLeadingTrivia(sql, afterKw);
+        var end = start;
+        while (true)
+        {
+            var partEnd = ReadIdentifier(sql, end);
+            if (partEnd == end) return sql;
+            end = partEnd;
+            var dot = SkipLeadingTrivia(sql, end);
+            if (dot >= sql.Length || sql[dot] != '.') break;
+            end = SkipLeadingTrivia(sql, dot + 1);
+        }
+
+        return string.Concat(sql[..start], "[", schema.Replace("]", "]]"), "].[", name.Replace("]", "]]"), "]", sql[end..]);
+    }
+
+    /// <summary>End of one [bracketed], "quoted" or regular identifier at <paramref name="i"/>; i itself when there is none.</summary>
+    private static int ReadIdentifier(string s, int i)
+    {
+        if (i >= s.Length) return i;
+
+        if (s[i] is '[' or '"')
+        {
+            var close = s[i] == '[' ? ']' : '"';
+            for (var j = i + 1; j < s.Length; j++)
+            {
+                if (s[j] != close) continue;
+                if (j + 1 < s.Length && s[j + 1] == close) { j++; continue; }
+                return j + 1;
+            }
+            return i;
+        }
+
+        var k = i;
+        while (k < s.Length && (char.IsLetterOrDigit(s[k]) || s[k] is '_' or '@' or '#' or '$')) k++;
+        return k;
+    }
+
     private static bool IsModuleKeyword(string w) =>
         w.Equals("PROC", StringComparison.OrdinalIgnoreCase) ||
         w.Equals("PROCEDURE", StringComparison.OrdinalIgnoreCase) ||

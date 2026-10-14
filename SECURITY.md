@@ -16,9 +16,11 @@ in the release notes unless you would rather not be.
 
 ## What SchemaScope guarantees
 
-**It never writes to your databases.** There is no code path in SchemaScope that
-issues anything but a read. Comparison output is a report; applying it is your
-decision, in your own tools.
+**Read-only by default.** Every time SchemaScope starts, it only reads.
+Comparing, creating scripts, exporting and sharing issue nothing but reads
+against your databases. The one path that changes a database is the opt-in,
+session-only **Read & write mode** described [below](#write-mode); until you
+turn it on in the running app, that path refuses to run.
 
 **Nothing leaves your machine unless you share it.** This is enforced rather
 than promised:
@@ -90,6 +92,59 @@ web page you merely visit can reach it by DNS rebinding. So:
 - Folder exports and generated scripts are never written to a network
   (`\\host\share`) path, because probing one offers your Windows credentials to
   that host.
+
+## Write mode
+
+From 1.2, SchemaScope can apply the scripts it generates instead of leaving that
+to you. This is the deliberate exception to "read-only", and it is gated:
+
+**What it can do.** Run the generated script files of one comparison against
+one of that comparison's targets, using that target's connection exactly as you
+set it up. Nothing else: there is no free-form query box, the source database is
+never an apply target, and anything held back in `99_review` is never applied.
+
+**The gates, in the order the server checks them:**
+
+- **Write mode is on.** It lives only in the running app's memory: off on every
+  launch, never saved to disk, switched on through a confirmation dialog, and
+  off again after 30 idle minutes or when you press **Turn off** on the amber
+  strip that shows while it is on. Turning it on is a JSON `POST` that carries
+  the startup token in its header, so a web page cannot do it.
+- **The plan is the one you reviewed.** An apply names a plan the server made
+  when it generated the scripts, for that comparison and that target, and plans
+  expire after two hours. Each file's SHA-256 is recorded when it is written and
+  checked again before anything runs; one edited file and nothing runs.
+- **You typed the database name.** It must match the target connection's
+  database, and is checked again with `SELECT DB_NAME()` on the opened
+  connection before the first statement.
+- **The server is not protected.** A connection marked
+  **Protected — never apply scripts here** is refused, re-read from your saved
+  connections at the moment of the apply.
+- **Data loss is a separate opt-in.** Changes that can lose data are only
+  generated when you ask, which needs write mode on, and applying them needs a
+  second explicit acceptance.
+- **One apply per target at a time.** A second one is refused while the first
+  runs.
+
+**How it runs.** Each file runs in its own transaction; the first error rolls
+that file back and stops the run. Files that already committed stay applied,
+and the app says so plainly. Stopping a run takes effect after the current file.
+
+**What is recorded.** Every apply is written to the local settings database:
+when, the target's label, server, database and login, the sections, and each
+file's result. Error text is scrubbed; no password or connection string is
+stored.
+
+**What a shared link gets.** Nothing. The LAN viewer on port 5280 has no write
+routes and never shows the write controls, whether or not write mode is on.
+
+**Residual risk.** An apply runs DDL as the target connection's login, so it
+can do anything that login can. Use a login with no more rights than the
+change needs, and rehearse on a restored copy first. While write mode is on,
+malware already running as your Windows user could in principle drive the same
+local API the window uses — the same exposure as an open SSMS session under
+your account. Write mode being off on every launch and timing out when idle
+keeps that window short.
 
 ## Known accepted risks
 

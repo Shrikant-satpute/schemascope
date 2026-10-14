@@ -54,7 +54,7 @@ public sealed class FormattingGenerator : IFolderGenerator
         foreach (var k in ctx.Source.SortedModules())
         {
             ct.ThrowIfCancellationRequested();
-            if (!ctx.FormattingCandidates.Contains(k.ToString())) continue;
+            if (!ctx.FormattingCandidates.Contains(k.ToString()) || !ctx.InScope(k)) continue;
             var src = ctx.Source.Modules[k];
             if (ctx.Target.FindModule(k) is not { } tgt) continue;
             if (src.Definition is null || tgt.Definition is null)
@@ -320,7 +320,7 @@ public sealed class FormattingGenerator : IFolderGenerator
         foreach (var t in raw.SortedTables())
         {
             ct.ThrowIfCancellationRequested();
-            if (!srcTables.TryGetValue(t, out var hit)) continue;
+            if (!srcTables.TryGetValue(t, out var hit) || !ctx.InScope(hit)) continue;
             var found = new List<Rename>();
             if (!string.Equals(hit.Name, t.Name, StringComparison.Ordinal))
                 found.Add(new Rename("table", t.Schema, t.Name, t.Name, hit.Name));

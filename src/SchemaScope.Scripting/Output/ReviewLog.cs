@@ -94,8 +94,11 @@ public sealed class ReviewLog
     public IReadOnlyList<ReviewItem> ItemsFor(string file) =>
         Items.Where(i => string.Equals(i.File, file, StringComparison.OrdinalIgnoreCase)).ToList();
 
-    /// <summary>The held items as API rows. Object = "table.name" when a table is known and not already part of the name.</summary>
-    public List<HeldBackItem> ToHeldBack() => Items.Where(i => !i.IsNote).Select(i => new HeldBackItem
+    /// <summary>
+    /// The held items as API rows (<paramref name="notes"/>: the scripted-but-noted rows instead). Object = "table.name"
+    /// when a table is known and not already part of the name.
+    /// </summary>
+    public List<HeldBackItem> ToHeldBack(bool notes = false) => Items.Where(i => i.IsNote == notes).Select(i => new HeldBackItem
     {
         Section = i.Section,
         Object = i.Table is { Length: > 0 } t && !i.Name.Contains('.') ? $"{t}.{i.Name}" : i.Name,
@@ -105,7 +108,9 @@ public sealed class ReviewLog
     /// <summary>
     /// Writes every document and every held-items file to <c>99_review\</c> (UTF-8, no BOM, LF).
     /// Each held-items file is a table: Kind | Name | Table | Why it is held back (Table is dropped when
-    /// no row has one). Pipes inside cells become '/', as the Python did.
+    /// no row has one). Pipes inside cells become '/', as the Python did. Rows that were scripted anyway
+    /// (<see cref="Note"/>) follow in a section of their own, so the count and the intro speak only of what
+    /// was really held back.
     /// </summary>
     public void WriteAll(ScriptWriter writer)
     {
@@ -124,6 +129,8 @@ public sealed class ReviewLog
         {
             var sb = new StringBuilder();
             var rows = all.Where(i => string.Equals(i.File, file, StringComparison.OrdinalIgnoreCase)).ToList();
+            var held = rows.Where(i => !i.IsNote).ToList();
+            var notes = rows.Where(i => i.IsNote).ToList();
             if (docs.TryGetValue(file, out var doc))
             {
                 sb.Append(doc);
@@ -136,18 +143,28 @@ public sealed class ReviewLog
                     ? h
                     : (DefaultTitle(file), "Each item below needs a decision, so no script was generated for it.");
                 sb.Append("# ").Append(title).Append("\n\n");
-                sb.Append(rows.Count).Append(rows.Count == 1 ? " item. " : " items. ").Append(intro).Append("\n\n");
+                if (held.Count > 0 || notes.Count == 0)
+                    sb.Append(held.Count).Append(held.Count == 1 ? " item. " : " items. ").Append(intro).Append("\n\n");
+                else sb.Append("Nothing was held back.\n\n");
             }
-            if (rows.Count > 0) AppendTable(sb, rows);
+            if (held.Count > 0) AppendTable(sb, held, "Why it is held back");
+            if (notes.Count > 0)
+            {
+                if (held.Count > 0) sb.Append('\n');
+                sb.Append("## Scripted, but check these\n\n");
+                sb.Append(notes.Count).Append(notes.Count == 1 ? " item was" : " items were")
+                  .Append(" scripted anyway; each is listed because it changes or may affect something worth a look.\n\n");
+                AppendTable(sb, notes, "What to check");
+            }
             writer.WriteMarkdown(Folder, file, sb.ToString());
         }
     }
 
-    private static void AppendTable(StringBuilder sb, List<ReviewItem> rows)
+    private static void AppendTable(StringBuilder sb, List<ReviewItem> rows, string why)
     {
         var withTable = rows.Any(r => !string.IsNullOrEmpty(r.Table));
-        sb.Append(withTable ? "| Kind | Name | Table | Why it is held back |\n|---|---|---|---|\n"
-                            : "| Kind | Name | Why it is held back |\n|---|---|---|\n");
+        sb.Append(withTable ? $"| Kind | Name | Table | {why} |\n|---|---|---|---|\n"
+                            : $"| Kind | Name | {why} |\n|---|---|---|\n");
         foreach (var r in rows)
         {
             sb.Append("| ").Append(Cell(r.Kind)).Append(" | ").Append(Cell(r.Name));

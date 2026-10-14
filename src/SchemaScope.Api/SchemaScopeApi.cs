@@ -108,6 +108,10 @@ public static class SchemaScopeApi
         MapCompare(app, json);
         MapExport(app);
         MapScripts(app, json);
+        MapObjectScripts(app, json);
+
+        // Object scripts are scratch output: last week's runs go at start.
+        ObjectScripts.Prune(ObjectScripts.ScratchRoot, DateTime.UtcNow, ObjectScripts.KeepFor);
 
         // Anything that is not an API call falls through to the single page app.
         app.MapFallbackToFile("index.html");
@@ -689,6 +693,98 @@ public static class SchemaScopeApi
     }
 
     /// <summary>
+    /// "Generate script" for one object of a finished compare against one target: the same generator as
+    /// "Create scripts", limited to that object and the dependencies picked with it, written under the scratch
+    /// folder (<see cref="ObjectScripts.ScratchRoot"/>). Owner app only, like the routes above; the databases
+    /// come from the session, never from the request.
+    /// </summary>
+    private static void MapObjectScripts(WebApplication app, JsonSerializerOptions json)
+    {
+        static IResult Bad(string message) => Results.BadRequest(new { error = message, message });
+        static IResult Gone() => Results.NotFound(new
+        {
+            error = "That comparison is no longer in memory - run the compare again.",
+            message = "That comparison is no longer in memory - run the compare again.",
+        });
+
+        // Read-only and quick: works from the compare's snapshots in memory, no database is touched.
+        app.MapGet("/api/compare/{runId}/object-script/dependencies", (
+            string runId, string? key, string? targetIndex, CompareSessionStore sessions) =>
+        {
+            var session = sessions.Get(runId);
+            if (session is null) return Gone();
+            int? index = int.TryParse(targetIndex, out var i) ? i : null;
+            if (ObjectScripts.Check(session, key, index, out var row) is { } problem) return Bad(problem);
+            return Results.Ok(ObjectScripts.Dependencies(session, row!, index!.Value));
+        });
+
+        app.MapPost("/api/compare/{runId}/object-script", async (
+            string runId,
+            HttpRequest http,
+            CompareSessionStore sessions,
+            ScriptProgressStore progressStore,
+            ILoggerFactory loggers,
+            CancellationToken ct) =>
+        {
+            if (!http.HasJsonContentType())
+                return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+            ObjectScriptRequest? request;
+            try
+            {
+                request = await http.ReadFromJsonAsync<ObjectScriptRequest>(json, ct);
+            }
+            catch (JsonException)
+            {
+                return Bad("The request could not be read: send the target, the object key and the dependencies as JSON.");
+            }
+
+            var session = sessions.Get(runId);
+            if (session is null) return Gone();
+            if (request is null) return Bad("Send the target and the object key.");
+            if (request.ProgressId is { } progressId && !ScriptProgressStore.IsValidId(progressId))
+                return Bad("The progress id must be 8 to 64 letters, digits or dashes.");
+            if (ObjectScripts.Check(session, request.Key, request.TargetIndex, out var row) is { } problem) return Bad(problem);
+
+            var result = session.Result!;
+            var index = request.TargetIndex!.Value;
+            var plan = ObjectScripts.Plan(result, row!, index, out var why);
+            if (plan is "identical" or "unavailable") return Bad(why!);
+            if (plan == "extra") return Results.Ok(ObjectScripts.ExtraOutcome(row!, result.Targets[index].Label));
+            if (ObjectScripts.CheckIncludes(session, row!, index, request.IncludeDependencies, out var included) is { } badDeps)
+                return Bad(badDeps);
+            if (session.SourceConnection is null || index >= session.TargetConnections.Count)
+                return Bad("That comparison no longer has its connection details - run the compare again.");
+
+            var source = Endpoint(session.SourceConnection, result.Source.Label);
+            var target = Endpoint(session.TargetConnections[index], result.Targets[index].Label);
+
+            ObjectScriptOutcome outcome;
+            using var progress = request.ProgressId is { } id ? progressStore.Track(id) : null;
+            try
+            {
+                outcome = await ObjectScripts.RunAsync(session, row!, index, included, source, target,
+                    FormattingCandidates(result, index), DifferentCandidates(result, index),
+                    new ScriptGenerator(), ObjectScripts.ScratchRoot, progress, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return Results.Empty;
+            }
+            catch (Exception ex)
+            {
+                // Log the scrubbed text only, never the exception: rule 5 covers logs too.
+                var message = Scrub(ex.Message, source, target);
+                loggers.CreateLogger("SchemaScope.Scripts").LogWarning("Object script failed: {Message}", message);
+                return Bad($"Script generation failed: {message}");
+            }
+            if (ct.IsCancellationRequested) return Results.Empty;
+
+            ScrubOutcome(outcome, source, target);
+            return Results.Ok(outcome);
+        });
+    }
+
+    /// <summary>
     /// The 400 rules of DESIGN §6, in the order a user would hit them. Null means the request
     /// can go ahead. Messages say what to do next, because they are shown as they are.
     /// </summary>
@@ -880,6 +976,26 @@ public static class SchemaScopeApi
             item.Reason = S(item.Reason);
         }
         foreach (var folder in outcome.Folders) folder.Notes = [.. folder.Notes.Select(S)];
+    }
+
+    /// <inheritdoc cref="ScrubOutcome(ScriptOutcome, ScriptEndpoint[])"/>
+    private static void ScrubOutcome(ObjectScriptOutcome outcome, params ScriptEndpoint[] endpoints)
+    {
+        var secrets = SecretScrubber.Secrets(endpoints.Select(e => e.ConnectionString));
+        if (secrets.Count == 0) return;
+
+        string S(string text) => SecretScrubber.Scrub(text, secrets);
+
+        outcome.Message = S(outcome.Message);
+        outcome.Script = S(outcome.Script);
+        if (outcome.Rollback is not null) outcome.Rollback = S(outcome.Rollback);
+        outcome.Warnings = [.. outcome.Warnings.Select(S)];
+        outcome.Validation.Summary = S(outcome.Validation.Summary);
+        foreach (var item in outcome.HeldBack)
+        {
+            item.ObjectName = S(item.ObjectName);
+            item.Reason = S(item.Reason);
+        }
     }
 
     private static string Scrub(string text, params ScriptEndpoint[] endpoints) =>

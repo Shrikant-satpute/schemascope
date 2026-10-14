@@ -75,23 +75,20 @@ public sealed class ScriptGenerator
             await Task.WhenAll(srcTask, tgtTask);
             var src = srcTask.Result;
             var tgt = tgtTask.Result;
+            var renamed = new List<(string Side, ObjectName Module, string Was)>();
             foreach (var (ep, schema) in new[] { (source, src), (target, tgt) })
                 foreach (var (m, was) in schema.FixRenamedHeaders())
-                    review.Note(ReviewLog.RenamedHeaders, "module", m.ToString(), null,
-                        $"{ep.Label}'s text says CREATE ... {was} (renamed with sp_rename since) - the scripts use {m.Bracketed}");
-            if (review.ItemsFor(ReviewLog.RenamedHeaders).Count > 0)
-                review.Describe(ReviewLog.RenamedHeaders, "Module headers rewritten to the catalog name",
-                    "sp_rename changes a module's name but not its stored text, so replaying the text would create the old name. " +
-                    "Every script that writes one of these modules has only the name in its CREATE header changed.");
+                    renamed.Add((ep.Label, m, was));
             var rawTarget = tgt.Clone();
 
-            writer = new ScriptWriter(NewRunRoot(options.OutputFolder, target.Label));
+            writer = new ScriptWriter(NewRunRoot(options.OutputFolder, options.RunFolderName ?? $"{target.Label}_{DateTime.Now:yyyyMMdd-HHmm}"));
             outcome.Path = writer.Root;
 
             if (src.IsCaseInsensitive && tgt.IsCaseInsensitive)
             {
                 foreach (var r in tgt.AlignCase(src))
-                    review.Warn($"same object, different case: {target.Label} {r.Old} = {source.Label} {r.New}");
+                    if (options.OnlyObjects is null)   // an object script does not list the whole database
+                        review.Warn($"same object, different case: {target.Label} {r.Old} = {source.Label} {r.New}");
             }
             else
             {
@@ -117,6 +114,8 @@ public sealed class ScriptGenerator
                 Ct = ct,
                 Progress = progress,
             };
+            var shownRenames = renamed.Where(r => ctx.InScope(r.Module)).ToList();
+            if (shownRenames.Count > 0) review.SetDocument(ReviewLog.RenamedHeaders, RenamedHeadersReport(shownRenames));
 
             // 3. generators, fixed order
             var folders = new List<FolderResult>();
@@ -132,7 +131,8 @@ public sealed class ScriptGenerator
             if (ctx.Selected(ScriptSection.DifferentModules)) folders.AddRange(await new DifferentModulesGenerator().GenerateAsync(ctx));
             ct.ThrowIfCancellationRequested();
             Report(P.Review, "99_review reports");
-            folders.AddRange(await new ReviewReports().GenerateAsync(ctx));
+            // whole-database reports: an object script keeps only the review files of what it was asked for
+            if (!ctx.Scoped) folders.AddRange(await new ReviewReports().GenerateAsync(ctx));
             ct.ThrowIfCancellationRequested();
             folders = folders.OrderBy(f => f.Folder, StringComparer.Ordinal).ToList();
 
@@ -153,15 +153,21 @@ public sealed class ScriptGenerator
             var runAll = RunAllFolders.Where(Runs).ToList();
             var withTypes = Runs(TableTypesFolder) ? TableTypesFolder : null;
             var runWithTypes = withTypes is null ? null : RunAllFoldersWithTableTypes.Where(Runs).ToList();
-            writer.WriteRootFile("RUN.ps1", ScriptText.RootRunner(RunnerServer(target), runAll, runWithTypes), bom: true, WrittenFileKind.Runner);
+            // an object script is run from SchemaScope part by part: no RUN.ps1 or README of its own
+            if (!ctx.Scoped)
+                writer.WriteRootFile("RUN.ps1", ScriptText.RootRunner(RunnerServer(target), runAll, runWithTypes), bom: true, WrittenFileKind.Runner);
 
             outcome.Folders = folders;
             outcome.HeldBack = review.ToHeldBack();
             outcome.Warnings = review.Warnings.ToList();
+            // scripted, but listed in 99_review for a look (a weakened constraint, a deferred reference): with one
+            // object in the run, its result must say so itself
+            if (ctx.Scoped)
+                outcome.Warnings.AddRange(review.ToHeldBack(notes: true).Select(n => $"{n.Object}: {n.Reason}"));
             if (!outcome.Validation.Passed)
                 outcome.Warnings.Add("Validation found problems - read 99_review\\validation.md before running anything.");
 
-            writer.WriteMarkdown("", "README.md", Readme(ctx, folders, runAll, withTypes, outcome));
+            if (!ctx.Scoped) writer.WriteMarkdown("", "README.md", Readme(ctx, folders, runAll, withTypes, outcome));
 
             outcome.FileCount = writer.Files.Count;
             outcome.Success = true;
@@ -198,7 +204,11 @@ public sealed class ScriptGenerator
         }
         finally
         {
-            if (writer is not null) outcome.FileCount = writer.Files.Count;
+            if (writer is not null)
+            {
+                outcome.FileCount = writer.Files.Count;
+                outcome.Files = writer.Files;
+            }
             outcome.ElapsedMs = sw.ElapsedMilliseconds;
         }
         return outcome;
@@ -244,16 +254,16 @@ public sealed class ScriptGenerator
     private static readonly object RunRootLock = new();
 
     /// <summary>
-    /// <c>OutputFolder\Safe(label_yyyyMMdd-HHmm)</c>, with _2, _3 ... appended while that name is taken.
+    /// <c>OutputFolder\Safe(name)</c> (<c>label_yyyyMMdd-HHmm</c>, or an object script's own name), with _2, _3 ... appended while that name is taken.
     /// Directory.CreateDirectory does not fail on an existing folder, so the test and the create must be
     /// one step: two runs for the same target in the same minute (double click, two tabs) would otherwise
     /// both get the same folder and the second would overwrite the first. A process-wide lock covers the
     /// API host; a named mutex covers a second SchemaScope process on the same machine.
     /// </summary>
-    private static string NewRunRoot(string outputFolder, string label)
+    private static string NewRunRoot(string outputFolder, string name)
     {
         Directory.CreateDirectory(outputFolder);
-        var baseName = ScriptText.Safe($"{label}_{DateTime.Now:yyyyMMdd-HHmm}");
+        var baseName = ScriptText.Safe(name);
         lock (RunRootLock)
         {
             using var mutex = new Mutex(false, @"Local\SchemaScope.Scripting.RunRoot");
@@ -275,10 +285,14 @@ public sealed class ScriptGenerator
         }
     }
 
+    /// <summary>Tests only: the catalog of an endpoint from memory instead of the server.</summary>
+    internal Func<ScriptEndpoint, ScriptSchema>? CatalogOverride { get; init; }
+
     private async Task<ScriptSchema> ReadSideAsync(ScriptEndpoint ep, string side, Action queryDone, CancellationToken ct)
     {
         try
         {
+            if (CatalogOverride is not null) return CatalogOverride(ep);
             return await Reader.ReadAsync(ep, ct, queryDone);
         }
         catch (SqlException ex)
@@ -332,6 +346,19 @@ public sealed class ScriptGenerator
         o.Message = message;
         o.ElapsedMs = sw.ElapsedMilliseconds;
         return o;
+    }
+
+    /// <summary>99_review\renamed_module_headers.md: modules whose CREATE header was rewritten - scripted, not held back.</summary>
+    private static string RenamedHeadersReport(List<(string Side, ObjectName Module, string Was)> rows)
+    {
+        var sb = new StringBuilder();
+        sb.Append("# Module headers rewritten to the catalog name\n\n");
+        sb.Append($"{rows.Count} module(s). sp_rename changes a module's name but not its stored text, so replaying the text would create the old name. ");
+        sb.Append("Every script that writes one of these modules has only the name in its CREATE header changed; nothing here is held back.\n\n");
+        sb.Append("| Database | Module | Its text says CREATE ... | The scripts create |\n|---|---|---|---|\n");
+        foreach (var (side, m, was) in rows)
+            sb.Append($"| {ReviewLog.Cell(side)} | {ReviewLog.Cell(m.ToString())} | {ReviewLog.Cell(was)} | {ReviewLog.Cell(m.Bracketed)} |\n");
+        return sb.ToString();
     }
 
     // ------------------------------------------------------------------ README

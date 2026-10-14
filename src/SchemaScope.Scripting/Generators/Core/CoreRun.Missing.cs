@@ -202,15 +202,16 @@ internal sealed partial class CoreRun
             if (r.Note is not null) compileNotes.Add((m, r));
             creatable.Add(m.Name);
         }
-        await HoldUnbindableAsync(candidates, creatable, objects, synonyms, write);
-        compileNotes.RemoveAll(c => !creatable.Contains(c.Module.Name));
-
+        // before the modules: a module whose table-type parameter is held here cannot be created either
         facts.MissingTypes.RemoveAll(k =>
         {
             if (AliasNotCreated(src.ColumnsOfType(k)) is not { } why) return false;
             HoldMissing("table type", k, why);
             return true;
         });
+
+        await HoldUnbindableAsync(candidates, creatable, objects, synonyms, write);
+        compileNotes.RemoveAll(c => !creatable.Contains(c.Module.Name));
 
         // check constraints that call a user function must wait until 03 has created the functions (05 adds them)
         var callsFn = CallsFunctionRegex();
@@ -271,6 +272,8 @@ internal sealed partial class CoreRun
     /// Holds back the 03 modules whose CREATE would fail on the target although they compile on the source
     /// (the compile check only sees the source):
     /// <list type="bullet">
+    /// <item>a module with a table-valued parameter whose type the target lacks and 03 does not create (held,
+    /// excluded, or left out of an object script): CREATE fails (Msg 2715);</item>
     /// <item>a module that names a column the target will not have after 01 (blocked, or on an excluded table)
     /// together with that column's table: SQL Server checks the columns of an existing table when any module is
     /// created (Msg 207). Matched on the words of the body, so a body that names both is held even when the
@@ -288,6 +291,15 @@ internal sealed partial class CoreRun
             creatable.Remove(m.Name);
             missingHeld++;
             if (write) Hold(ReviewLog.NotApplied, Kind(m.OType)!, m.Name.ToString(), null, why, CoreFoldersGenerator.MissingFolder);
+        }
+
+        var newTypes = new HashSet<ObjectName>(facts.MissingTypes, src.NameComparer);
+        foreach (var m in candidates)
+        {
+            if (!creatable.Contains(m.Name)) continue;
+            if (src.TtParams.FirstOrDefault(p => src.NameComparer.Equals(p.Module, m.Name) &&
+                                                 !tgt.TableTypes.Contains(p.Type) && !newTypes.Contains(p.Type)) is { } tt)
+                HoldModule(m, $"takes table type {tt.Type}, which {tgtLabel} does not have and 03_missing does not create - CREATE would fail (Msg 2715)");
         }
 
         if (facts.UnavailableColumns.Count > 0)

@@ -71,7 +71,8 @@ export function ObjectScriptDialog({
 
   const [deps, setDeps] = useState<ObjectScriptDependencies | null>(null)
   const [depsError, setDepsError] = useState<string | null>(null)
-  const [includeOptional, setIncludeOptional] = useState(false)
+  /** The keys of the dependencies to script with it; ticked to start with only where CREATE fails without them. */
+  const [ticked, setTicked] = useState<Set<string>>(() => new Set())
 
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<ScriptProgress | null>(null)
@@ -88,7 +89,7 @@ export function ObjectScriptDialog({
       .then((d) => {
         if (!live) return
         setDeps(d)
-        setIncludeOptional(d.dependencies.some((x) => !x.required && x.defaultIncluded))
+        setTicked(new Set(d.dependencies.filter((x) => !x.required && x.defaultIncluded).map((x) => x.key)))
       })
       .catch((e) => {
         if (live) setDepsError(e instanceof Error ? e.message : String(e))
@@ -114,7 +115,18 @@ export function ObjectScriptDialog({
   const plan = deps?.plan
   const required = deps?.dependencies.filter((d) => d.required) ?? []
   const optional = deps?.dependencies.filter((d) => !d.required) ?? []
-  const createFailsWithout = optional.some((d) => d.defaultIncluded)
+  const unticked = optional.filter((d) => !ticked.has(d.key))
+  // CREATE fails without these; the missing others only fail it at run time (a differing one's reason says why to wait)
+  const blocking = unticked.filter((d) => d.defaultIncluded)
+  const runtimeOnly = unticked.filter((d) => !d.defaultIncluded && d.status === 'missingInTarget')
+  const names = (list: typeof optional) => list.map((d) => d.displayName).join(', ')
+  const toggle = (key: string, on: boolean) =>
+    setTicked((old) => {
+      const next = new Set(old)
+      if (on) next.add(key)
+      else next.delete(key)
+      return next
+    })
   const canScript = !!deps && plan !== 'identical' && plan !== 'unavailable' && plan !== 'extra'
 
   async function generate() {
@@ -143,7 +155,7 @@ export function ObjectScriptDialog({
         {
           targetIndex,
           key: objectKey,
-          includeDependencies: [...required, ...(includeOptional ? optional : [])].map((d) => d.key),
+          includeDependencies: [...required, ...optional.filter((d) => ticked.has(d.key))].map((d) => d.key),
           progressId,
         },
         controller.signal,
@@ -371,6 +383,18 @@ export function ObjectScriptDialog({
                     <ul className="flex flex-col gap-1">
                       {deps.dependencies.map((d) => (
                         <li key={d.key} className="flex items-start gap-2 text-[12px]">
+                          {d.required ? (
+                            <span className="w-[13px] shrink-0" />
+                          ) : (
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 shrink-0"
+                              checked={ticked.has(d.key)}
+                              disabled={running}
+                              onChange={(e) => toggle(d.key, e.target.checked)}
+                              aria-label={`Also script ${d.displayName}`}
+                            />
+                          )}
                           <StatusChip status={d.status} />
                           <span className="min-w-0">
                             <span className="font-mono">{d.displayName}</span>
@@ -391,30 +415,24 @@ export function ObjectScriptDialog({
                     </ul>
 
                     {optional.length > 0 && (
-                      <label className="mt-2 flex cursor-pointer items-center gap-2 text-[12.5px]">
-                        <input
-                          type="checkbox"
-                          checked={includeOptional}
-                          disabled={running}
-                          onChange={(e) => setIncludeOptional(e.target.checked)}
-                        />
-                        Also script these dependencies
-                      </label>
+                      <div className="mt-1.5 text-[11.5px]" style={{ color: 'var(--text-3)' }}>
+                        Ticked items are scripted with it.
+                      </div>
                     )}
 
-                    {optional.length > 0 && !includeOptional && (
+                    {blocking.length > 0 && (
                       <div className="mt-1.5">
-                        {createFailsWithout ? (
-                          <Banner tone="error">
-                            Without them the CREATE fails on {targetLabel}: it refers to objects {targetLabel} does not
-                            have yet.
-                          </Banner>
-                        ) : (
-                          <Banner tone="warning">
-                            It will be created, but fails when it runs until these exist in {targetLabel}. SQL Server
-                            only checks those names at run time.
-                          </Banner>
-                        )}
+                        <Banner tone="error">
+                          Without {names(blocking)} the CREATE fails on {targetLabel}.
+                        </Banner>
+                      </div>
+                    )}
+                    {runtimeOnly.length > 0 && (
+                      <div className="mt-1.5">
+                        <Banner tone="warning">
+                          It will be created, but fails when it runs until {names(runtimeOnly)} exist in {targetLabel}.
+                          SQL Server only checks those names at run time.
+                        </Banner>
                       </div>
                     )}
                   </>
@@ -486,7 +504,8 @@ function PlanBanner({ plan, target }: { plan?: ObjectScriptPlan; target: string 
     return (
       <Banner tone="error">
         A table type cannot be altered, so this drops it and every procedure or function that uses it, then creates them
-        again. Anything calling them in {target} fails while it runs - do it in a quiet window.
+        again. Anything calling them in {target} fails while it runs, and the deployed application's table-valued
+        parameters fail until the application is updated - do it with the new release, in a quiet window.
       </Banner>
     )
   }

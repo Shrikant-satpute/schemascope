@@ -30,7 +30,7 @@ internal static class ObjectFixture
     private static ColumnRow Col(string tbl, int id, string col, string dt = "int", int len = 4, bool nullable = true) =>
         new("dbo", tbl, id, col, dt, len, 10, 0, nullable, false, false, null, null, false, null, null, false);
 
-    private static ModuleRow Mod(string name, string otype, string def) => new("dbo", name, otype, true, true, def);
+    public static ModuleRow Mod(string name, string otype, string def) => new("dbo", name, otype, true, true, def);
 
     /// <summary>The source: dbo.A gains a column, a wider column, an index and a disabled check; dbo.B gains a column, a check and a foreign key; plus new tables and modules.</summary>
     public static ScriptSchema Src() => ScriptSchema.FromRows("src", Coll,
@@ -64,8 +64,8 @@ internal static class ObjectFixture
         [], [], [], []);
 
     /// <summary>The target: older dbo.A and dbo.B, the old dbo.p_diff, the check on dbo.A enabled.</summary>
-    public static ScriptSchema Tgt() => ScriptSchema.FromRows("tgt", Coll,
-        [Mod("p_diff", "P", "CREATE PROCEDURE dbo.p_diff AS SELECT 1")],
+    public static ScriptSchema Tgt(params ModuleRow[] more) => ScriptSchema.FromRows("tgt", Coll,
+        [Mod("p_diff", "P", "CREATE PROCEDURE dbo.p_diff AS SELECT 1"), .. more],
         [new("dbo", "A"), new("dbo", "B")],
         [
             Col("A", 1, "a_id", nullable: false), Col("A", 2, "a_wide", "varchar", 50),
@@ -76,7 +76,8 @@ internal static class ObjectFixture
         [new KeyRow("dbo", "A", "PK_A", "PK", false, "CLUSTERED", "[a_id] ASC")],
         [], [], [], [], [], []);
 
-    public static ScriptGenerator Generator() => new() { CatalogOverride = ep => ep == Source ? Src() : Tgt() };
+    public static ScriptGenerator Generator(ScriptSchema? src = null, ScriptSchema? tgt = null) =>
+        new() { CatalogOverride = ep => ep == Source ? src ?? Src() : tgt ?? Tgt() };
 
     public static ScriptOptions Options(string folder, params ObjectName[] only) => new()
     {
@@ -181,7 +182,52 @@ public class ObjectScriptGeneratorTests
                 Assert.DoesNotContain(other, text);
         }
         Assert.DoesNotContain(outcome.Files, f => f.RelativePath is "RUN.ps1" or "README.md");
-        Assert.DoesNotContain(outcome.Files, f => f.RelativePath.EndsWith(ReviewReports.FlowSafetyFile, StringComparison.Ordinal));
+        // flow_safety stays (it warns what this script breaks); the whole-database reports do not
+        Assert.Contains(outcome.Files, f => f.RelativePath.EndsWith(ReviewReports.FlowSafetyFile, StringComparison.Ordinal));
+        foreach (var whole in new[] { ReviewReports.ColumnTypesFile, ReviewReports.DriftedModulesFile, ReviewReports.TargetOnlyFile })
+            Assert.DoesNotContain(outcome.Files, f => f.RelativePath.EndsWith(whole, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_scoped_table_script_warns_about_target_code_its_new_column_breaks()
+    {
+        using var temp = new TempFolder();
+        var tgt = ObjectFixture.Tgt(ObjectFixture.Mod("p_ins", "P", "CREATE PROCEDURE dbo.p_ins AS INSERT INTO dbo.B SELECT 1, 2"));
+        var outcome = await ObjectFixture.Generator(tgt: tgt).GenerateAsync(ObjectFixture.Source, ObjectFixture.Target,
+            ObjectFixture.Options(temp.Path, new ObjectName("dbo", "B")), new HashSet<string>(), CancellationToken.None);
+
+        Assert.Contains(outcome.Files, f => f.Folder == "01_columns" && f.IsObjectFile);
+        Assert.Contains(outcome.Warnings, w => w.Contains("dbo.p_ins inserts into dbo.B") && w.Contains("Msg 213"));
+    }
+
+    [Fact]
+    public async Task A_missing_procedure_whose_missing_table_type_is_left_out_is_held_back_not_scripted()
+    {
+        var src = ScriptSchema.FromRows("src", ObjectFixture.Coll,
+            [ObjectFixture.Mod("p_tt", "P", "CREATE PROCEDURE dbo.p_tt @rows dbo.TT1 READONLY AS SELECT 1")],
+            [], [], [], [], [], [], [],
+            [new ObjectName("dbo", "TT1")],
+            [new TtColumnRow("dbo", "TT1", 1, "id", "int", 4, 10, 0, false, false, null, null, null)],
+            [], [new TtParamRow("TT1", "dbo", "p_tt", "dbo")]);
+        var tgt = ScriptSchema.FromRows("tgt", ObjectFixture.Coll, [], [], [], [], [], [], [], [], [], [], [], []);
+        async Task<ScriptOutcome> Run(string folder, params ObjectName[] only) =>
+            await ObjectFixture.Generator(src, tgt).GenerateAsync(ObjectFixture.Source, ObjectFixture.Target,
+                ObjectFixture.Options(folder, only), new HashSet<string>(), CancellationToken.None);
+
+        using (var temp = new TempFolder())
+        {
+            var alone = await Run(temp.Path, new ObjectName("dbo", "p_tt"));
+            Assert.DoesNotContain(alone.Files, f => f.IsObjectFile);
+            var held = Assert.Single(alone.HeldBack);
+            Assert.Contains("p_tt", held.Object);
+            Assert.Contains("Msg 2715", held.Reason);
+        }
+        using (var temp = new TempFolder())
+        {
+            var both = await Run(temp.Path, new ObjectName("dbo", "p_tt"), new ObjectName("dbo", "TT1"));
+            Assert.Equal(2, both.Files.Count(f => f.IsObjectFile && f.Folder == CoreFoldersGenerator.MissingFolder));
+            Assert.Empty(both.HeldBack);
+        }
     }
 
     [Fact]
@@ -310,6 +356,30 @@ public class ObjectScriptPlanTests
         Assert.Equal("", outcome.Path);
     }
 
+    [Fact]
+    public async Task A_line_break_in_an_object_name_never_ends_a_comment_line()
+    {
+        const string evil = "p\r\nDROP TABLE dbo.A --";
+        var row = new CompareRow { Key = "x", Type = DbObjectType.StoredProcedure, Schema = "dbo", Name = evil };
+        var drop = ObjectScripts.DropPreview(row, "Client");
+        // the comment line stays one line; the name's line break survives only inside the DROP's brackets
+        Assert.Contains($"-- {row.TypeLabel} dbo.p DROP TABLE dbo.A -- exists only in Client.\r\nDROP PROCEDURE [dbo].[p\r\nDROP TABLE dbo.A --];\r\n", drop);
+
+        var proc = new DbObject { Type = DbObjectType.StoredProcedure, Schema = "dbo", Name = evil };
+        var s = ObjectFixture.Session((proc, null, ObjectStatus.MissingInTarget));
+        var src = ScriptSchema.FromRows("src", ObjectFixture.Coll,
+            [ObjectFixture.Mod(evil, "P", "CREATE PROCEDURE [dbo].[p\r\nDROP TABLE dbo.A --] AS SELECT 1")],
+            [], [], [], [], [], [], [], [], [], [], []);
+        using var temp = new TempFolder();
+        var outcome = await ObjectScripts.RunAsync(s, s.Result!.Rows[0], Index, [], ObjectFixture.Source, ObjectFixture.Target,
+            new HashSet<string>(), new Dictionary<string, LineChange>(), ObjectFixture.Generator(src, ObjectFixture.Tgt()), temp.Path, null, CancellationToken.None);
+
+        Assert.True(outcome.Success, outcome.Message);
+        Assert.NotEmpty(outcome.Parts);
+        // the module's own text keeps the name inside its brackets; the separator above it is one comment line
+        Assert.StartsWith("-- 03_missing: dbo.p DROP TABLE dbo.A --\r\n", outcome.Script);
+    }
+
     [Theory]
     [InlineData(ObjectStatus.Same, "identical")]
     [InlineData(ObjectStatus.Unavailable, "unavailable")]
@@ -390,7 +460,31 @@ public class ObjectDependencyTests
         Assert.Equal("dbo.T_for_proc", dep.DisplayName);
         Assert.False(dep.Required);
         Assert.False(dep.DefaultIncluded);
-        Assert.Contains(deps.Warnings, w => w.Contains("is created without dbo.T_for_proc") && w.Contains("fails when it runs"));
+        Assert.Contains("fails when it runs", dep.Reason);
+        // the pre-check does not warn in a fixed text what the dialog's ticks can change; the run's answer does
+        Assert.DoesNotContain(deps.Warnings, w => w.Contains("is created without"));
+    }
+
+    [Fact]
+    public async Task A_procedure_run_without_its_unticked_missing_table_warns_it_fails_when_it_runs()
+    {
+        var s = Session();
+        using var temp = new TempFolder();
+        var outcome = await ObjectScripts.RunAsync(s, s.RowIndex[ObjectFixture.KeyOf(DbObjectType.StoredProcedure, "p_dep")], 0, [],
+            ObjectFixture.Source, ObjectFixture.Target, new HashSet<string>(), new Dictionary<string, LineChange>(),
+            ObjectFixture.Generator(), temp.Path, null, CancellationToken.None);
+
+        Assert.Contains(outcome.Warnings, w => w.Contains("is created without dbo.T_for_proc") && w.Contains("fails when it runs"));
+    }
+
+    [Fact]
+    public void Plan_risks_are_left_to_the_dialog_so_they_are_not_said_twice()
+    {
+        var s = ObjectFixture.FixtureSession();
+        var deps = ObjectScripts.Dependencies(s, s.RowIndex[ObjectFixture.KeyOf(DbObjectType.StoredProcedure, "p_diff")], 0);
+
+        Assert.Equal("alter", deps.Plan);
+        Assert.Empty(deps.Warnings);
     }
 
     [Fact]

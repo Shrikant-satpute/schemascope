@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -165,6 +165,38 @@ export function Modal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // aria-modal promises that nothing behind the dialog can be reached: move focus in on open, keep Tab inside,
+  // and give focus back to whatever had it when the dialog closes.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  // read while rendering: by the time an effect runs, an autoFocus field inside already has focus
+  const [opener] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null))
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.contains(document.activeElement)) dialog.focus()
+    return () => opener?.focus()
+  }, [opener])
+
+  function keepTabInside(e: ReactKeyboardEvent) {
+    const dialog = dialogRef.current
+    if (e.key !== 'Tab' || !dialog) return
+    const items = [...dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )]
+    if (items.length === 0) {
+      e.preventDefault()
+      return
+    }
+    const first = items[0]
+    const last = items[items.length - 1]
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-6"
@@ -175,7 +207,10 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="ss-fade my-auto w-full rounded-xl border shadow-2xl"
+        ref={dialogRef}
+        tabIndex={-1}
+        onKeyDown={keepTabInside}
+        className="ss-fade my-auto w-full rounded-xl border shadow-2xl outline-none"
         style={{ background: 'var(--surface)', borderColor: 'var(--line)', maxWidth: width }}
         onMouseDown={(e) => e.stopPropagation()}
       >

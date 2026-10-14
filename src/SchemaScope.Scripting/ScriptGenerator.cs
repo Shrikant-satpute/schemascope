@@ -131,8 +131,8 @@ public sealed class ScriptGenerator
             if (ctx.Selected(ScriptSection.DifferentModules)) folders.AddRange(await new DifferentModulesGenerator().GenerateAsync(ctx));
             ct.ThrowIfCancellationRequested();
             Report(P.Review, "99_review reports");
-            // whole-database reports: an object script keeps only the review files of what it was asked for
-            if (!ctx.Scoped) folders.AddRange(await new ReviewReports().GenerateAsync(ctx));
+            // an object script keeps flow_safety (it warns what this script breaks) and leaves out the whole-database reports
+            folders.AddRange(await new ReviewReports().GenerateAsync(ctx));
             ct.ThrowIfCancellationRequested();
             folders = folders.OrderBy(f => f.Folder, StringComparer.Ordinal).ToList();
 

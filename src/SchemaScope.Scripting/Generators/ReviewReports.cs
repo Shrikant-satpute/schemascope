@@ -46,9 +46,12 @@ public sealed class ReviewReports : IFolderGenerator
 
     public async Task<IReadOnlyList<FolderResult>> GenerateAsync(ScriptContext ctx)
     {
-        ctx.Review.SetDocument(ColumnTypesFile, ColumnTypeReport(ctx));
-        ctx.Review.SetDocument(DriftedModulesFile, DriftedModuleReport(ctx));
-        ctx.Review.SetDocument(TargetOnlyFile, TargetOnlyReport(ctx));
+        if (!ctx.Scoped)   // whole-database reports: an object script is about its own objects
+        {
+            ctx.Review.SetDocument(ColumnTypesFile, ColumnTypeReport(ctx));
+            ctx.Review.SetDocument(DriftedModulesFile, DriftedModuleReport(ctx));
+            ctx.Review.SetDocument(TargetOnlyFile, TargetOnlyReport(ctx));
+        }
         ctx.Ct.ThrowIfCancellationRequested();
         ctx.Review.SetDocument(FlowSafetyFile, await new FlowSafetyCheck(ctx).BuildAsync());
         return [];
@@ -533,7 +536,8 @@ public sealed class ReviewReports : IFolderGenerator
 
         private void TableTypes()
         {
-            var drifted = ctx.Facts.DriftedTableTypes;
+            // DriftedTableTypes is every drifted type (10 needs them all); an object script reports only its own
+            var drifted = ctx.Facts.DriftedTableTypes.Where(ctx.InScope).ToList();
             var generated = ctx.Facts.TableTypesWritten || ctx.Selected(ScriptSection.TableTypes);
 
             if (drifted.Count == 0)

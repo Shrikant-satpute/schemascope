@@ -128,32 +128,16 @@ public static partial class ObjectScripts
     public static ObjectDependencies Dependencies(CompareSession session, CompareRow row, int index)
     {
         var result = session.Result!;
-        var label = result.Targets[index].Label;
         var plan = Plan(result, row, index, out var why);
         var deps = new ObjectDependencies { Key = row.Key, Status = StatusOf(row, index), Plan = plan };
         if (why is not null) deps.Warnings.Add(why);
-        switch (plan)
-        {
-            case "tableType":
-                deps.Warnings.Add($"Rebuilding a table type drops and recreates every {label} module that uses it, and the deployed " +
-                                  "application's table-valued parameters fail until the application is updated.");
-                break;
-            case "trigger":
-                deps.Warnings.Add($"A trigger changes what every write to its table does in {label}.");
-                break;
-            case "alter":
-                deps.Warnings.Add($"This replaces {label}'s own code, which may hold a fix made only there - the rollback has its current text.");
-                break;
-            case "extra":
-                deps.Warnings.Add(DropWarning);
-                break;
-        }
+        // the risk of a table-type rebuild, a trigger or an overwrite comes with the plan: the dialog states it once
+        if (plan == "extra") deps.Warnings.Add(DropWarning);
         if (plan is "identical" or "unavailable" or "extra" || !session.SourceIndex.TryGetValue(row.Key, out var subject))
             return deps;
 
         var candidates = Candidates(session, index);
         var found = new Dictionary<string, ObjectDependency>(StringComparer.Ordinal);
-        var deferred = new List<string>();
         var queue = new Queue<DbObject>([subject]);
         var queued = new HashSet<string>(StringComparer.Ordinal) { subject.Key };
         while (queue.Count > 0 && found.Count < MaxDependencies)
@@ -174,12 +158,12 @@ public static partial class ObjectScripts
                     DefaultIncluded = required,
                     Reason = direct ? reason : $"{obj.FullName} needs it: {reason}",
                 };
-                if (!required && StatusOf(dep, index) == ObjectStatus.MissingInTarget) deferred.Add(dep.FullName);
                 if (required && queued.Add(dep.Key) && session.SourceIndex.TryGetValue(dep.Key, out var next)) queue.Enqueue(next);
                 if (found.Count >= MaxDependencies) break;
             }
         }
-        deps.Warnings.AddRange(RuntimeWarnings(session, row, subject, index, deferred));
+        // what is left unticked is the dialog's to warn about, as the ticks change; the run's answer names it again
+        deps.Warnings.AddRange(RuntimeWarnings(session, row, subject, index, []));
         deps.Dependencies = [.. found.Values.OrderByDescending(d => d.Required).ThenByDescending(d => d.DefaultIncluded).ThenBy(d => d.DisplayName, StringComparer.OrdinalIgnoreCase)];
         return deps;
     }
@@ -198,7 +182,7 @@ public static partial class ObjectScripts
                          "so nothing can script them - the statements that use them fail when they run, whatever is scripted here.");
         if (deferred.Count > 0)
             warnings.Add($"{row.FullName} is created without {string.Join(", ", deferred)} ({label} lacks {(deferred.Count == 1 ? "it" : "them")}), " +
-                         "but it fails when it runs until they exist - SQL Server resolves those names only at run time. Tick them to script them too.");
+                         "but it fails when it runs until they exist - SQL Server resolves those names only at run time.");
         return warnings;
     }
 
@@ -374,7 +358,7 @@ public static partial class ObjectScripts
             DbObjectType.Synonym => "SYNONYM",
             _ => "SCHEMA",
         };
-        return $"-- {DropWarning}\r\n-- {row.TypeLabel} {row.FullName} exists only in {targetLabel.ReplaceLineEndings(" ")}.\r\nDROP {word} {name};\r\nGO\r\n";
+        return $"-- {DropWarning}\r\n-- {row.TypeLabel} {row.FullName.ReplaceLineEndings(" ")} exists only in {targetLabel.ReplaceLineEndings(" ")}.\r\nDROP {word} {name};\r\nGO\r\n";
     }
 
     /// <summary>The answer for an object only the target has: nothing generated, nothing written, the DROP to copy.</summary>
@@ -466,6 +450,7 @@ public static partial class ObjectScripts
         int Order(WrittenFile f) => Array.FindIndex(RunOrder, r => string.Equals(r, f.Folder, StringComparison.OrdinalIgnoreCase));
         static bool Sql(WrittenFile f) => f.RelativePath.EndsWith(".sql", StringComparison.OrdinalIgnoreCase);
         static string Name(WrittenFile f) => f.Object?.ToString() ?? Path.GetFileNameWithoutExtension(f.RelativePath);
+        static string OneLine(string s) => s.ReplaceLineEndings(" ");   // a name with a line break would end the comment it is in
 
         var script = new StringBuilder();
         foreach (var f in outcome.Files.Where(f => f.IsObjectFile && Sql(f) && Order(f) >= 0)
@@ -478,7 +463,7 @@ public static partial class ObjectScripts
                 ObjectName = Name(f),
                 Kind = JsonNamingPolicy.CamelCase.ConvertName(f.Kind.ToString()),
             });
-            script.Append($"-- {f.Folder}: {Name(f)}\r\n").Append(WithGo(ScriptWriter.ReadBack(f.FullPath)));
+            script.Append($"-- {f.Folder}: {OneLine(Name(f))}\r\n").Append(WithGo(ScriptWriter.ReadBack(f.FullPath)));
         }
         result.Script = script.ToString();
 
@@ -487,7 +472,7 @@ public static partial class ObjectScripts
         foreach (var f in outcome.Files.Where(f => f.IsRollback && Sql(f) && Order(f) >= 0 &&
                                                    !f.RelativePath.EndsWith("_ALL.sql", StringComparison.OrdinalIgnoreCase))
                      .OrderByDescending(Order).ThenBy(f => f.RelativePath, StringComparer.Ordinal))
-            rollback.Append($"-- {f.Folder} rollback: {Name(f)}\r\n").Append(WithGo(ScriptWriter.ReadBack(f.FullPath)));
+            rollback.Append($"-- {f.Folder} rollback: {OneLine(Name(f))}\r\n").Append(WithGo(ScriptWriter.ReadBack(f.FullPath)));
         result.Rollback = rollback.Length > 0 ? rollback.ToString() : null;
 
         var held = result.HeldBack.Count;

@@ -64,6 +64,7 @@ export function DiffPanel({
   highlight,
   onGenerateScript,
   targetErrors,
+  preferredTargetIndex,
 }: {
   detail: ObjectDetail | null
   loading: boolean
@@ -84,6 +85,8 @@ export function DiffPanel({
   onGenerateScript?: (targetIndex: number) => void
   /** Per target, why it could not be read, or null. Disables the button for that tab. */
   targetErrors?: (string | null)[]
+  /** The target tab a new object opens on - the one the grid is narrowed to - instead of the first. */
+  preferredTargetIndex?: number | null
 }) {
   const [targetIndex, setTargetIndex] = useState(0)
   const [view, setView] = useState<'text' | 'grid'>('text')
@@ -111,7 +114,8 @@ export function DiffPanel({
   contextRef.current = onContextMenu
 
   useEffect(() => {
-    setTargetIndex(0)
+    const preferred = preferredTargetIndex ?? 0
+    setTargetIndex(detail && preferred < detail.targets.length ? preferred : 0)
     autoJumped.current = false
     if (detail && !detail.isModule && detail.hasStructure) setView('grid')
     else setView('text')
@@ -479,18 +483,19 @@ export function DiffPanel({
         )}
 
         {onGenerateScript && (
-          // The title sits on a wrapper: a disabled button shows no tooltip of its own.
-          <span title={scriptBlocked ?? `Script just this object for ${target?.label} (Ctrl+Shift+G)`}>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!!scriptBlocked}
-              onClick={() => onGenerateScript(targetIndex)}
-            >
-              <FileCode size={13} />
-              {detail.targets.length > 1 && target ? `Generate script for ${target.label}` : 'Generate script'}
-            </Button>
-          </span>
+          // aria-disabled, not disabled: a blocked button stays focusable, so its reason (the title) reaches keyboard
+          // and screen-reader users too.
+          <Button
+            size="sm"
+            variant="outline"
+            aria-disabled={!!scriptBlocked}
+            className={scriptBlocked ? 'cursor-not-allowed opacity-40' : undefined}
+            title={scriptBlocked ?? `Script just this object for ${target?.label} (Ctrl+Shift+G)`}
+            onClick={() => !scriptBlocked && onGenerateScript(targetIndex)}
+          >
+            <FileCode size={13} />
+            {detail.targets.length > 1 && target ? `Generate script for ${target.label}` : 'Generate script'}
+          </Button>
         )}
 
         <Button size="sm" onClick={() => copy('source')} title="Copy the source definition">

@@ -378,6 +378,7 @@ export function ResultsWorkspace({
                   : undefined
               }
               targetErrors={targetErrors}
+              preferredTargetIndex={filters.targetIndex}
             />
           </div>
         </div>

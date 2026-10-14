@@ -391,6 +391,24 @@ public sealed class ScriptSchema
     }
 
     /// <summary>
+    /// Puts each module's catalog name into its CREATE header where sp_rename left the old one
+    /// (<see cref="ModuleHeader.WithCatalogName"/>), so every folder that replays a definition creates the object
+    /// under the name it has. Call right after reading, before <see cref="AlignCase"/> and <see cref="Clone"/>.
+    /// Returns each rewritten module with the name its header had, sorted.
+    /// </summary>
+    public IReadOnlyList<(ObjectName Module, string Was)> FixRenamedHeaders()
+    {
+        var fixedHeaders = new List<(ObjectName, string)>();
+        foreach (var (k, m) in modules.ToList())
+        {
+            if (ModuleHeader.WithCatalogName(m) is not { } f) continue;
+            modules[k] = m with { Definition = f.Definition };
+            fixedHeaders.Add((k, f.Was));
+        }
+        return fixedHeaders.OrderBy(h => h.Item1, ObjectName.Ordinal).ToList();
+    }
+
+    /// <summary>
     /// Port of <c>meta.Schema.align_case</c>: respells every name in this snapshot the way
     /// <paramref name="reference"/> spells it, wherever the two differ only by case.
     /// Called as <c>target.AlignCase(source)</c>. The namespace is one flat map built from the

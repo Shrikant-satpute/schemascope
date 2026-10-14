@@ -38,6 +38,8 @@ public sealed class ReviewLog
     public const string DifferentNotApplied = "different_not_applied.md";
     /// <summary>Every module 10_different_modules replaces, with what to check before running it.</summary>
     public const string DifferentModulesFile = "different_modules.md";
+    /// <summary>Modules whose CREATE header named an old (sp_rename'd) name; the scripts use the catalog name.</summary>
+    public const string RenamedHeaders = "renamed_module_headers.md";
 
     private readonly object gate = new();
     private readonly List<ReviewItem> items = [];

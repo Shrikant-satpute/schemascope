@@ -44,6 +44,66 @@ internal sealed partial class CoreRun
             .ToList();
     }
 
+    /// <summary>
+    /// Source rows the target also has (same key), each with its target row, sorted by key. A repeated source key
+    /// keeps the last row, as in <see cref="Todo{T}"/>; of several target rows under one key, one already in the
+    /// source's state is preferred.
+    /// </summary>
+    private static List<(T Source, T Target)> Pairs<T>(IEnumerable<T> source, IEnumerable<T> target, Func<T, RowKey> kf)
+        where T : class, INamedConstraint
+    {
+        var have = target.GroupBy(r => kf(r).Eq, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+        var keyed = new Dictionary<string, (string Sort, T Row)>(StringComparer.Ordinal);
+        foreach (var r in source)
+        {
+            var k = kf(r);
+            keyed[k.Eq] = (keyed.TryGetValue(k.Eq, out var old) ? old.Sort : k.Sort, r);
+        }
+        return keyed.Where(e => have.ContainsKey(e.Key))
+            .OrderBy(e => e.Value.Sort, StringComparer.Ordinal)
+            .Select(e => (e.Value.Row, have[e.Key].FirstOrDefault(t => State(t) == State(e.Value.Row)) ?? have[e.Key][0]))
+            .ToList();
+    }
+
+    /// <summary>A check's or foreign key's (is_disabled, is_not_trusted).</summary>
+    private static (bool Disabled, bool NotTrusted) State(INamedConstraint r) => r switch
+    {
+        CheckRow c => (c.IsDisabled, c.IsNotTrusted),
+        ForeignKeyRow f => (f.IsDisabled, f.IsNotTrusted),
+        _ => (false, false),
+    };
+
+    private static string StateWord((bool Disabled, bool NotTrusted) s) =>
+        s.Disabled ? "disabled" : s.NotTrusted ? "enabled but not trusted" : "enabled and trusted";
+
+    /// <summary>What 05 runs to give an existing target check / foreign key the source's state.</summary>
+    /// <param name="Sql">The statement(s), naming the TARGET's constraint.</param>
+    /// <param name="Retrusts">WITH CHECK: every existing row is validated, so the target data is probed first.</param>
+    /// <param name="Weakens">Source untrusted, target trusted: mirrored, and listed in review because it weakens the target.</param>
+    internal sealed record StateFix(string Sql, bool Retrusts, bool Weakens);
+
+    /// <summary>
+    /// The statement that brings <paramref name="target"/> to the source's state, or null when the states match.
+    /// A disabled constraint is never trusted, so each side is enabled+trusted, enabled+untrusted or disabled.
+    /// </summary>
+    internal static StateFix? StateFixFor((bool Disabled, bool NotTrusted) source, INamedConstraint target)
+    {
+        var t = State(target);
+        var enable = Ddl.TrustConstraint(target.Sch, target.Tbl, target.CName, isNotTrusted: false);   // CHECK CONSTRAINT, no re-validation
+        if (source.Disabled) return t.Disabled ? null : new StateFix(Ddl.DisableConstraint(target), false, false);
+        if (!source.NotTrusted) return t.Disabled || t.NotTrusted ? new StateFix(Ddl.RetrustConstraint(target), true, false) : null;
+        if (t.Disabled) return new StateFix(enable, false, false);
+        return t.NotTrusted ? null : new StateFix(Ddl.DisableConstraint(target) + ScriptText.Go + enable, false, true);
+    }
+
+    /// <summary>Why a WITH CHECK re-trust is held back after its data probe, or null when no row breaks it.</summary>
+    internal static string? RetrustHoldReason(ProbeCount probe, string tgtLabel) =>
+        probe.Count > 0
+            ? $"{tgtLabel} data has {Num(probe.Count.Value)} row(s) that break it - WITH CHECK CHECK CONSTRAINT would fail; fix the rows, then re-enable it by hand"
+            : !probe.Checked
+                ? $"existing {tgtLabel} rows could not be checked ({probe.NotCheckedReason}) - WITH CHECK CHECK CONSTRAINT may fail, so it is not scripted"
+                : null;
+
     /// <summary>Tables 03 creates, for "is this table new" tests (source spelling).</summary>
     private HashSet<ObjectName> NewTables() => new(facts.MissingTables, src.NameComparer);
 
@@ -109,7 +169,8 @@ internal sealed partial class CoreRun
     /// it is held back). Also held: a primary key on a column the target has as NULL (Msg 8111), a default or check
     /// on a function or sequence nobody creates (Msg 4121), and a foreign key whose referenced columns carry no
     /// primary key or unique key when 05 runs (Msg 1776). Defaults of new tables deferred by 03 (they use a function
-    /// 03 creates after its tables) come last in the default group.
+    /// 03 creates after its tables) come last in the default group. Last, the "state" statements: checks and foreign
+    /// keys both sides have whose enabled / trusted state differs (<see cref="StateFixFor"/>).
     /// </summary>
     private async Task ComputeConstraintsAsync()
     {
@@ -244,8 +305,46 @@ internal sealed partial class CoreRun
             }
         }
 
+        // checks and foreign keys both sides have whose enabled / trusted state differs: the target's own
+        // constraint is brought to the source's state, after the rows a re-trust would validate are counted
+        var states = 0;
+        foreach (var (s, t) in Pairs<INamedConstraint>(src.Checks, tgt.Checks, r => KCk((CheckRow)r))
+                     .Concat(Pairs<INamedConstraint>(src.FKeys, tgt.FKeys, r => KFk((ForeignKeyRow)r))))
+        {
+            Ct.ThrowIfCancellationRequested();
+            if (StateFixFor(State(s), t) is not { } fix) continue;
+            var table = new ObjectName(t.Sch, t.Tbl);
+            var label = t is CheckRow ? "check" : "foreignkey";
+            var why = Excluded(table, s.CName) ?? Excluded(table, t.CName)
+                ?? (fix.Retrusts && t is ForeignKeyRow { Nfr: true }
+                    ? $"NOT FOR REPLICATION in {tgtLabel} - SQL Server never trusts such a foreign key, so WITH CHECK cannot make it match"
+                    : null);
+            if (why is null && fix.Retrusts)
+            {
+                var probe = t is ForeignKeyRow f
+                    ? await ctx.Probes.ForeignKeyOrphansAsync(table, Ddl.BracketedNames(f.Cols), f.Referenced, Ddl.BracketedNames(f.RCols), Ct)
+                    : await ctx.Probes.CheckViolationsAsync(table, ((CheckRow)t).Definition, Ct);
+                why = RetrustHoldReason(probe, tgtLabel);
+            }
+            var stateText = $"{StateWord(State(s))} in {srcLabel}, {StateWord(State(t))} in {tgtLabel}";
+            if (why is not null)
+            {
+                if (write) Hold(ReviewLog.NotAppliedConstraints, label, t.CName, t.Tbl, $"{stateText}: {why}", CoreFoldersGenerator.ConstraintsFolder);
+                continue;
+            }
+            if (fix.Weakens && write)
+                ctx.Review.Note(ReviewLog.NotAppliedConstraints, label, t.CName, t.Tbl,
+                    $"{stateText}: scripted anyway (NOCHECK then CHECK) to match, which weakens {tgtLabel} - existing rows are no longer known to obey it",
+                    CoreFoldersGenerator.ConstraintsFolder);
+            n++;
+            states++;
+            facts.Constraints.Add(new EmittedStatement(n, $"{N3(n)}_state_{ScriptText.Safe(t.Tbl)}.sql", "state", table, t.CName, fix.Sql));
+        }
+
         if (notChecked > 0)
             constraintNotes.Add($"{notChecked} unique key(s) were not checked against existing {tgtLabel} data ({notCheckedWhy}).");
+        if (states > 0)
+            constraintNotes.Add($"{states} existing check(s) / foreign key(s) are enabled, disabled or re-trusted to match {srcLabel} (*_state_*.sql).");
         var disabledCount = facts.Constraints.Count(s => s.Check is { IsDisabled: true } || s.ForeignKey is { IsDisabled: true });
         if (disabledCount > 0)
             constraintNotes.Add($"{disabledCount} constraint(s) are disabled in {srcLabel}; each is disabled again right after it is added.");
@@ -311,7 +410,7 @@ internal sealed partial class CoreRun
     private FolderResult WriteConstraints()
     {
         var notes = new List<string>(constraintNotes);
-        var held = ctx.Review.ItemsFor(ReviewLog.NotAppliedConstraints).Count(i => i.Section == CoreFoldersGenerator.ConstraintsFolder);
+        var held = ctx.Review.ItemsFor(ReviewLog.NotAppliedConstraints).Count(i => i.Section == CoreFoldersGenerator.ConstraintsFolder && !i.IsNote);
         if (held > 0) notes.Insert(0, $"{held} held back (99_review\\{ReviewLog.NotAppliedConstraints}).");
         return WriteStatementsFolder(CoreFoldersGenerator.ConstraintsFolder, "Constraints",
             facts.Constraints.Select(s => (s.File, s.Sql, (ObjectName?)s.Table)), notes);

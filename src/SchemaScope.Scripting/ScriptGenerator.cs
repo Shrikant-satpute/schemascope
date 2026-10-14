@@ -75,6 +75,14 @@ public sealed class ScriptGenerator
             await Task.WhenAll(srcTask, tgtTask);
             var src = srcTask.Result;
             var tgt = tgtTask.Result;
+            foreach (var (ep, schema) in new[] { (source, src), (target, tgt) })
+                foreach (var (m, was) in schema.FixRenamedHeaders())
+                    review.Note(ReviewLog.RenamedHeaders, "module", m.ToString(), null,
+                        $"{ep.Label}'s text says CREATE ... {was} (renamed with sp_rename since) - the scripts use {m.Bracketed}");
+            if (review.ItemsFor(ReviewLog.RenamedHeaders).Count > 0)
+                review.Describe(ReviewLog.RenamedHeaders, "Module headers rewritten to the catalog name",
+                    "sp_rename changes a module's name but not its stored text, so replaying the text would create the old name. " +
+                    "Every script that writes one of these modules has only the name in its CREATE header changed.");
             var rawTarget = tgt.Clone();
 
             writer = new ScriptWriter(NewRunRoot(options.OutputFolder, target.Label));

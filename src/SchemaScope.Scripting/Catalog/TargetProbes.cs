@@ -651,9 +651,30 @@ public sealed class SourceProbes : CatalogProbes
     /// Measured on Platform_Core: 47 modules raise a bare 2020 (e.g. dbo.get_shift reads a table "shifts"
     /// that does not exist) and the Python created them; only kn_ZN_COM_FMEA_Functional_Items_Crud (207) is
     /// really broken - exactly the Python's BROKEN_IN_DEV.
+    /// Also always a failure: the compile errors in <see cref="CompileErrors"/> (213 insert column count,
+    /// 4104 unbound multi-part identifier, 102/156 syntax) - SQL Server raises them for a statement whose
+    /// tables all exist, which is exactly when CREATE compiles it too.
     /// </summary>
     public static bool IsCreateFailure(int errorNumber, string objectType) =>
-        errorNumber == 207 || (errorNumber is 208 or 2020 && (objectType ?? "").Trim().ToUpperInvariant() is "V" or "IF");
+        errorNumber == 207 || CompileErrors.Contains(errorNumber) ||
+        (errorNumber is 208 or 2020 && (objectType ?? "").Trim().ToUpperInvariant() is "V" or "IF");
+
+    /// <summary>Errors besides <see cref="BindingErrors"/> that mean the CREATE fails for every module kind (see <see cref="IsCreateFailure"/>).</summary>
+    public static IReadOnlySet<int> CompileErrors { get; } = new HashSet<int> { 102, 156, 213, 4104 };
+
+    /// <summary>
+    /// Judges the errors <c>sys.dm_sql_referenced_entities</c> raised: a CREATE failure gives Compiles false, a
+    /// deferred-resolution binding error gives true with a note, and null means none of them is an answer (not checked).
+    /// </summary>
+    internal static CompileCheck? Judge(IReadOnlyList<(int Number, string Message)> errors, string objectType)
+    {
+        var fatal = errors.FirstOrDefault(e => IsCreateFailure(e.Number, objectType));
+        if (fatal.Message is not null) return new CompileCheck(false, fatal.Number, fatal.Message);
+        var deferred = errors.FirstOrDefault(e => BindingErrors.Contains(e.Number));
+        if (deferred.Message is null) return null;
+        return new CompileCheck(true, deferred.Number, null,
+            "references an object that does not exist - its CREATE succeeds (deferred name resolution), but it fails when run");
+    }
 
     /// <summary>
     /// Asks SQL Server to bind the module's references:
@@ -680,14 +701,9 @@ public sealed class SourceProbes : CatalogProbes
             await r.CloseAsync();
             return new CompileCheck(true);
         }
-        catch (SqlException ex) when (ex.Errors.Cast<SqlError>().Any(e => BindingErrors.Contains(e.Number)))
+        catch (SqlException ex) when (Judge(ex.Errors.Cast<SqlError>().Select(e => (e.Number, e.Message)).ToList(), objectType) is { } judged)
         {
-            var errors = ex.Errors.Cast<SqlError>().ToList();
-            var fatal = errors.FirstOrDefault(e => IsCreateFailure(e.Number, objectType));
-            if (fatal is not null) return new CompileCheck(false, fatal.Number, fatal.Message);
-            var deferred = errors.First(e => BindingErrors.Contains(e.Number));
-            return new CompileCheck(true, deferred.Number, null,
-                "references an object that does not exist - its CREATE succeeds (deferred name resolution), but it fails when run");
+            return judged;
         }
         catch (Exception ex) when (ex is SqlException or InvalidOperationException or IOException
                                    || (ex is OperationCanceledException && !ct.IsCancellationRequested))

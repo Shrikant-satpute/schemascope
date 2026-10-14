@@ -264,6 +264,7 @@ internal sealed partial class CoreRun
             {
                 Ct.ThrowIfCancellationRequested();
                 var table = new ObjectName(r.Sch, r.Tbl);
+                if (!ctx.InScope(table)) continue;
                 if (r is DefaultRow d0 && inlineDefaults.Contains(ColumnKey(d0.Sch, d0.Tbl, d0.Col))) continue;   // 01 attached it
 
                 var fk = r as ForeignKeyRow;
@@ -338,8 +339,9 @@ internal sealed partial class CoreRun
                      .Concat(Pairs<INamedConstraint>(src.FKeys, tgt.FKeys, r => KFk((ForeignKeyRow)r), names)))
         {
             Ct.ThrowIfCancellationRequested();
-            if (StateFixFor(State(s), t) is not { } fix || MirrorsNfr(s, fix)) continue;
             var table = new ObjectName(t.Sch, t.Tbl);
+            if (!ctx.InScope(table)) continue;
+            if (StateFixFor(State(s), t) is not { } fix || MirrorsNfr(s, fix)) continue;
             var label = t is CheckRow ? "check" : "foreignkey";
             var why = Excluded(table, s.CName) ?? Excluded(table, t.CName) ?? NfrHoldReason(t, fix, tgtLabel);
             if (why is null && fix.Retrusts)
@@ -400,6 +402,7 @@ internal sealed partial class CoreRun
         {
             Ct.ThrowIfCancellationRequested();
             var table = r.Table;
+            if (!ctx.InScope(table)) continue;
             var nk = NameKey(r.Sch, r.Tbl, r.IName);
             var why = Ddl.UnscriptableIndexReason(r)
                 ?? Excluded(table, r.IName)

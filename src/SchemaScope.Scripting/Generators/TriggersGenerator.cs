@@ -29,7 +29,7 @@ public sealed partial class TriggersGenerator : IFolderGenerator
         var missing = ctx.Source.SortedModules()
             .Select(k => ctx.Source.Modules[k])
             .Where(m => string.Equals(m.OType, "TR", StringComparison.OrdinalIgnoreCase))
-            .Where(m => !ctx.Target.Modules.ContainsKey(m.Name))
+            .Where(m => !ctx.Target.Modules.ContainsKey(m.Name) && ctx.InScope(m.Name))
             .ToList();
 
         if (missing.Count == 0)

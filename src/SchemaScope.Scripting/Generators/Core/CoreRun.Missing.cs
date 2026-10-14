@@ -61,14 +61,14 @@ internal sealed partial class CoreRun
         var modules = new List<ObjectName>();
         foreach (var k in src.SortedModules())
         {
-            if (tgt.Modules.ContainsKey(k)) continue;
+            if (tgt.Modules.ContainsKey(k) || !ctx.InScope(k)) continue;
             if (HeldReason(k) is { } why) Held(k, src.Modules[k].OType, why);
             else modules.Add(k);
         }
         var tables = new List<ObjectName>();
         foreach (var k in src.SortedTables())
         {
-            if (tgt.Tables.Contains(k)) continue;
+            if (tgt.Tables.Contains(k) || !ctx.InScope(k)) continue;
             if (HeldReason(k) is { } why) Held(k, "U", why);
             else tables.Add(k);
         }
@@ -85,7 +85,7 @@ internal sealed partial class CoreRun
 
         foreach (var k in src.SortedTableTypes())
         {
-            if (tgt.TableTypes.Contains(k)) continue;
+            if (tgt.TableTypes.Contains(k) || !ctx.InScope(k)) continue;
             if (ctx.IsExcluded(k)) Held(k, "TT", ExcludedReason);
             else facts.MissingTypes.Add(k);
         }
@@ -100,6 +100,7 @@ internal sealed partial class CoreRun
         var aliasTypes = new List<AliasTypeRow>();
         foreach (var a in pre.AliasTypes)
         {
+            if (!ctx.InScope(a.Key)) continue;
             if (ctx.IsExcluded(a.Key)) Held(a.Key, "alias type", ExcludedReason);
             else if (tgt.TableTypes.Contains(a.Key)) HoldMissing("alias type", a.Key, $"{tgtLabel} already has a table type named {a.Key} (Msg 219)");
             else aliasTypes.Add(a);
@@ -107,6 +108,7 @@ internal sealed partial class CoreRun
         var sequences = new List<SequenceRow>();
         foreach (var s in pre.Sequences)
         {
+            if (!ctx.InScope(s.Key)) continue;
             if (ctx.IsExcluded(s.Key)) Held(s.Key, "SO", ExcludedReason);
             else if (Collision(s.Key) is { } why) HoldMissing("sequence", s.Key, why);
             else sequences.Add(s);
@@ -114,6 +116,7 @@ internal sealed partial class CoreRun
         var synonyms = new List<SynonymRow>();
         foreach (var s in pre.Synonyms)
         {
+            if (!ctx.InScope(s.Key)) continue;
             if (ctx.IsExcluded(s.Key)) Held(s.Key, "SN", ExcludedReason);
             else if (Collision(s.Key) is { } why) HoldMissing("synonym", s.Key, why);
             else synonyms.Add(s);
@@ -222,7 +225,8 @@ internal sealed partial class CoreRun
             if (sql is not null) missingSql[n] = sql;
         }
 
-        foreach (var s in pre.Schemas) Add("schema", new ObjectName(s, ""), null, Ddl.CreateSchema(s), s);
+        foreach (var s in pre.Schemas)
+            if (ctx.InScope(new ObjectName(s, ""))) Add("schema", new ObjectName(s, ""), null, Ddl.CreateSchema(s), s);
         foreach (var a in aliasTypes) Add("aliastype", a.Key, null, Ddl.CreateAliasType(a));
         foreach (var s in sequences) Add("sequence", s.Key, null, Ddl.CreateSequence(s));
 
@@ -612,6 +616,7 @@ internal sealed partial class CoreRun
         var chosen = new Dictionary<ObjectName, ModuleRow>(tgt.NameComparer);
         foreach (var k in facts.DriftedTableTypes)
         {
+            if (!ctx.InScope(k)) continue;
             if (ctx.IsExcluded(k))
             {
                 if (write) Hold(ReviewLog.NotApplied, "table type", k.ToString(), null, ExcludedReason, CoreFoldersGenerator.TableTypesFolder);

@@ -21,8 +21,9 @@ const noop = () => undefined
 const headingClass = 'text-[11px] font-semibold uppercase tracking-wide'
 
 /** What each plan writes, in a sentence. */
-const PLAN_TEXT: Record<ObjectScriptPlan, (target: string) => string> = {
-  create: (t) => `Creates it in ${t}. A new table also gets its checks, foreign keys and indexes.`,
+const PLAN_TEXT: Record<ObjectScriptPlan, (target: string, typeLabel: string) => string> = {
+  create: (t, type) =>
+    type === 'Table' ? `Creates it in ${t}, with its checks, foreign keys and indexes.` : `Creates it in ${t}.`,
   alter: (t) => `Replaces ${t}'s version with the source's.`,
   tableChanges: (t) =>
     `Changes the table in ${t} in place: new and changed columns, keys and checks (and whether they are enabled and trusted), and indexes.`,
@@ -186,7 +187,7 @@ export function ObjectScriptDialog({
     return (
       <Modal title={title} onClose={running ? noop : close} width={760} footer={<Button onClick={close}>Close</Button>}>
         <div className="flex flex-col gap-3">
-          <Header status={status} text={PLAN_TEXT.extra(targetLabel)} />
+          <Header status={status} text={PLAN_TEXT.extra(targetLabel, row?.typeLabel ?? '')} />
           {depsError && <Banner tone="error">{depsError}</Banner>}
           {error && <Banner tone="error">{error}</Banner>}
           {outcome?.dropPreview ? (
@@ -262,7 +263,7 @@ export function ObjectScriptDialog({
         }
       >
         <div className="flex flex-col gap-3">
-          <Header status={status} text={plan ? PLAN_TEXT[plan](targetLabel) : ''} />
+          <Header status={status} text={plan ? PLAN_TEXT[plan](targetLabel, row?.typeLabel ?? '') : ''} />
           <PlanBanner plan={plan} target={targetLabel} />
 
           {!outcome.script.trim() && (
@@ -337,7 +338,7 @@ export function ObjectScriptDialog({
       }
     >
       <div className="flex flex-col gap-3">
-        <Header status={status} text={plan ? PLAN_TEXT[plan](targetLabel) : ''} />
+        <Header status={status} text={plan ? PLAN_TEXT[plan](targetLabel, row?.typeLabel ?? '') : ''} />
         {error && <Banner tone="error">{error}</Banner>}
         {depsError && <Banner tone="error">{depsError}</Banner>}
 

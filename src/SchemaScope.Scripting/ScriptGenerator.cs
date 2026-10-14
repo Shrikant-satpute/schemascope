@@ -9,8 +9,8 @@ namespace SchemaScope.Scripting;
 /// generators in a fixed order, validates the output offline, and writes RUN.ps1 and README.md.
 ///
 /// Read-only toward every database: the only statements sent are catalog SELECTs and the
-/// read-only probes in <see cref="TargetProbes"/>/<see cref="SourceProbes"/>. Nothing generated is
-/// ever sent to a server. Output goes to a fresh, uniquely named subfolder; nothing is deleted.
+/// read-only probes in <see cref="TargetProbes"/>/<see cref="SourceProbes"/>. The generator never sends
+/// what it writes to a server (only the API's opt-in apply does). Output goes to a fresh, uniquely named subfolder; nothing is deleted.
 /// </summary>
 public sealed class ScriptGenerator
 {

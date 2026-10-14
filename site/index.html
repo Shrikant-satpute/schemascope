@@ -562,8 +562,9 @@
       SchemaScope compares the SQL Server database you trust against <strong>every other environment at once</strong>
       — Staging, UAT, Production, every client's copy — and shows you what drifted, where, and by how much
       in about a second. Then it writes the scripts that close the gap — and, when you switch on
-      <strong>Read &amp; write mode</strong>, applies them and compares again, until every difference that
-      can be scripted matches. Anything that needs your decision is listed, not guessed.
+      <strong>Read &amp; write mode</strong>, applies them and compares again. A default apply runs the same
+      safe set as <code>RUN.ps1</code>; table types, triggers, formatting, renames, changed code and changes
+      that can lose data are yours to tick. Anything held back is listed with the reason, not guessed.
     </p>
     <div class="cta">
       <a class="btn btn-primary btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe">
@@ -644,7 +645,7 @@
         </span>
       </button>
     </div>
-    <p class="player-meta"><span>Narrated, with on-screen text and an English captions track.</span><a href="/media/schemascope-explainer.mp4">Download MP4</a></p>
+    <p class="player-meta"><span>Narrated, with on-screen text and an English captions track. The tour shows version 1.1, which only wrote scripts; 1.2 can also apply them when you switch on Read &amp; write mode.</span><a href="/media/schemascope-explainer.mp4">Download MP4</a></p>
   </div>
 </section>
 
@@ -810,7 +811,7 @@
     <div class="reveal">
       <p class="eyebrow"><span class="tag">New in 1.2</span></p>
       <h2 id="new-h">From "here's the fix" to <span class="grad">"it's fixed".</span></h2>
-      <p class="sub">Version 1.2 can apply the scripts it writes, then compares again, so every difference that can be scripted ends up the same as the source. What needs your decision stays yours: changes that can lose data are opt-in, and code that is broken in the source is held back, with the reason.</p>
+      <p class="sub">Version 1.2 can apply the scripts it writes, then compares again. A default apply runs the same safe set as <code>RUN.ps1</code>: new columns, missing objects, widened columns, constraints and indexes. What needs your decision stays yours: table types, triggers, formatting, case renames and changed code start unticked; changes that can lose data are opt-in with their own tick; and anything held back, such as code broken in the source or a change existing data would break, is listed with the reason.</p>
     </div>
 
     <div class="spot">

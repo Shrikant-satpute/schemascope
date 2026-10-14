@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 
 namespace SchemaScope.Scripting;
@@ -44,6 +45,11 @@ public sealed record WrittenFile(string Folder, string RelativePath, string Full
     public ObjectName? Object { get; init; }
     /// <summary>True for files under a rollback\ folder.</summary>
     public bool IsRollback { get; init; }
+    /// <summary>
+    /// SHA-256 (lower-case hex) of the exact bytes written, BOM included - taken from memory as the file was written,
+    /// never read back, so a file changed on disk later cannot become the trusted version.
+    /// </summary>
+    public string? Sha256 { get; init; }
     /// <summary>"objects\…", "rollback\…" or a root file of the folder.</summary>
     public bool IsObjectFile => RelativePath.StartsWith("objects\\", StringComparison.OrdinalIgnoreCase);
 }
@@ -116,16 +122,14 @@ public sealed class ScriptWriter
             ExpectedModules = expectedModules ?? [],
             IsRollback = rel.StartsWith("rollback\\", StringComparison.OrdinalIgnoreCase),
         };
-        Save(f, text, Bom);
-        return f;
+        return Save(f, text, Bom);
     }
 
     /// <summary>Writes the folder's <c>run_all.ps1</c> (<see cref="ScriptText.Runner"/>, BOM).</summary>
     public WrittenFile WriteRunner(string folder, string server)
     {
         var f = new WrittenFile(folder, "run_all.ps1", Resolve(folder, "run_all.ps1"), WrittenFileKind.Runner);
-        Save(f, ScriptText.Runner(server), Bom);
-        return f;
+        return Save(f, ScriptText.Runner(server), Bom);
     }
 
     /// <summary>Writes a markdown file (UTF-8, no BOM, LF as given), e.g. folder "99_review", "flow_safety.md"; folder "" for README.md.</summary>
@@ -133,8 +137,7 @@ public sealed class ScriptWriter
     {
         var rel = NormalizeRelative(relativePath);
         var f = new WrittenFile(folder, rel, Resolve(folder, rel), WrittenFileKind.Markdown);
-        Save(f, text, NoBom);
-        return f;
+        return Save(f, text, NoBom);
     }
 
     /// <summary>Writes a file at the run root (RUN.ps1 with BOM). <paramref name="kind"/> is normally Runner.</summary>
@@ -142,8 +145,7 @@ public sealed class ScriptWriter
     {
         var rel = NormalizeRelative(fileName);
         var f = new WrittenFile("", rel, Resolve("", rel), kind);
-        Save(f, text, bom ? Bom : NoBom);
-        return f;
+        return Save(f, text, bom ? Bom : NoBom);
     }
 
     /// <summary>Reads a written file back exactly as the validator should see it (BOM removed, no newline translation).</summary>
@@ -165,7 +167,7 @@ public sealed class ScriptWriter
         return full;
     }
 
-    private void Save(WrittenFile f, string text, UTF8Encoding enc)
+    private WrittenFile Save(WrittenFile f, string text, UTF8Encoding enc)
     {
         byte[] body;
         try
@@ -186,11 +188,18 @@ public sealed class ScriptWriter
             fs.Write(pre);
             fs.Write(body);
         }
+        using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        {
+            sha.AppendData(pre);
+            sha.AppendData(body);
+            f = f with { Sha256 = Convert.ToHexStringLower(sha.GetHashAndReset()) };
+        }
         lock (files)
         {
             files.RemoveAll(x => string.Equals(x.FullPath, f.FullPath, StringComparison.OrdinalIgnoreCase));
             files.Add(f);
         }
+        return f;
     }
 
     private static string NormalizeRelative(string p) => (p ?? "").Replace('/', '\\').TrimStart('\\');

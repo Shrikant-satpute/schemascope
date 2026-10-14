@@ -170,7 +170,7 @@ public sealed class ObjectScriptOutcome
     public string Script { get; set; } = "";
     /// <summary>The rollback\ files of the parts that replace or create code (10, 08, 07, 02), or null.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public string? Rollback { get; set; }
-    /// <summary>For an object only the target has: the DROP statement, to copy. SchemaScope never runs it.</summary>
+    /// <summary>For an object only the target has: the DROP statement, to copy. Generate script never runs it (Create scripts can put it in 11_destructive).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public string? DropPreview { get; set; }
     public List<ObjectScriptPart> Parts { get; set; } = [];
     public List<ObjectScriptHeld> HeldBack { get; set; } = [];

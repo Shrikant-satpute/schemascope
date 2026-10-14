@@ -350,7 +350,7 @@ public class ObjectScriptPlanTests
         var outcome = ObjectScripts.ExtraOutcome(row, "Client");
 
         Assert.Contains("DROP PROCEDURE [dbo].[p_extra]]x];", outcome.DropPreview);
-        Assert.Contains("SchemaScope never runs this", outcome.DropPreview);
+        Assert.Contains("Generate script does not run this", outcome.DropPreview);
         Assert.Empty(outcome.Parts);
         Assert.Equal("", outcome.Script);
         Assert.Equal("", outcome.Path);

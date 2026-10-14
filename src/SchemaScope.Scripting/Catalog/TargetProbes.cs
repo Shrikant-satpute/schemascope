@@ -458,6 +458,17 @@ public sealed partial class TargetProbes : CatalogProbes
         CancellationToken ct = default)
     {
         if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        if (ColumnFitPredicate(column, oldType, newType, notNull) is not { } misfit) return Task.FromResult(new ProbeCount(0));
+        return CountAsync($"rows of {table}.{column} against its new type",
+            $"SELECT COUNT_BIG(*) FROM {table.Bracketed} WHERE {misfit}", ct, readUncommitted: true);
+    }
+
+    /// <summary>
+    /// The WHERE condition of <see cref="ColumnFitViolationsAsync"/>: true for a row that would not survive the change.
+    /// Null when there is nothing to check. 11_destructive also writes it into the file, to run again when the file runs.
+    /// </summary>
+    public static string? ColumnFitPredicate(string column, string oldType, string? newType, bool notNull)
+    {
         var c = Ddl.Bracket(column);
         var parts = new List<string>();
         if (notNull) parts.Add($"{c} IS NULL");
@@ -466,9 +477,7 @@ public sealed partial class TargetProbes : CatalogProbes
             var back = $"TRY_CONVERT({oldType}, TRY_CONVERT({newType}, {c}))";
             parts.Add($"({c} IS NOT NULL AND ({back} IS NULL OR CONVERT(varbinary(max), {back}) <> CONVERT(varbinary(max), {c})))");
         }
-        if (parts.Count == 0) return Task.FromResult(new ProbeCount(0));
-        return CountAsync($"rows of {table}.{column} against its new type",
-            $"SELECT COUNT_BIG(*) FROM {table.Bracketed} WHERE {string.Join(" OR ", parts)}", ct, readUncommitted: true);
+        return parts.Count == 0 ? null : string.Join(" OR ", parts);
     }
 
     // ------------------------------------------------------------------ catalog probes (§6C, §6D)

@@ -119,16 +119,22 @@ never an apply target, and anything held back in `99_review` is never applied.
   connection before the first statement.
 - **The server is not protected.** A connection marked
   **Protected — never apply scripts here** is refused, re-read from your saved
-  connections at the moment of the apply.
+  connections at the moment of the apply, and so is any target on the same
+  server as a protected connection (for a raw connection string, the server
+  named in it).
 - **Data loss is a separate opt-in.** Changes that can lose data are only
   generated when you ask, which needs write mode on, and applying them needs a
   second explicit acceptance.
 - **One apply per target at a time.** A second one is refused while the first
-  runs.
+  runs, however the server's name is spelled: the lock uses the name the server
+  reports for itself.
 
 **How it runs.** Each file runs in its own transaction; the first error rolls
 that file back and stops the run. Files that already committed stay applied,
-and the app says so plainly. Stopping a run takes effect after the current file.
+and the app says so plainly. **Stop** takes effect after the current file;
+**Cancel this file now**, or turning write mode off, also cancels the file that
+is running, which is rolled back - nothing commits once the app says read-only.
+If a file cannot be written to the apply log, the run stops after it.
 
 **What is recorded.** Every apply is written to the local settings database:
 when, the target's label, server, database and login, the sections, and each

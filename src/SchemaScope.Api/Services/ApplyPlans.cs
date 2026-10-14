@@ -52,7 +52,7 @@ public sealed record PlanOffer(string? PlanId, ApplyTarget? ApplyTarget, IReadOn
 
 /// <summary>
 /// Turns a generated run into an apply plan: the objects\*.sql files of each runnable folder, in the order RUN.ps1
-/// runs them (plus the opt-in folders), each hashed so a file edited on disk afterwards is refused.
+/// runs them (plus the opt-in folders), each with the hash the writer took, so a file edited on disk afterwards is refused.
 /// </summary>
 public static class ApplyPlans
 {
@@ -102,13 +102,14 @@ public static class ApplyPlans
                         f.RelativePath.EndsWith(".sql", StringComparison.OrdinalIgnoreCase) &&
                         f.RelativePath.Count(c => c == '\\') == 1)
             .OrderBy(f => Order(f.Folder))
+            .ThenBy(f => NumberOf(f.RelativePath))   // "1000_x" after "999_x", not before "101_x"
             .ThenBy(f => f.RelativePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var files = runnable.Select(f => new PlanFile(
             RunOrder[Order(f.Folder)], f.RelativePath, f.FullPath,
             f.Object?.ToString() ?? Path.GetFileNameWithoutExtension(f.RelativePath),
-            Hash(f.FullPath))).ToList();
+            TrustedHash(f))).ToList();
 
         var sections = files.GroupBy(f => f.Folder).Select(g =>
         {
@@ -131,6 +132,27 @@ public static class ApplyPlans
         folder == DestructiveFolder ? Destructive
         : ScriptGenerator.RunAllFolders.Contains(folder, StringComparer.OrdinalIgnoreCase) ? Normal
         : ChangesCode;
+
+    /// <summary>
+    /// The hash the writer took from the bytes it wrote. A file whose disk content no longer matches it (changed while
+    /// the run was still validating and writing reports) is refused here, so it never gets a plan.
+    /// </summary>
+    private static string TrustedHash(WrittenFile f)
+    {
+        if (f.Sha256 is not { } written)
+            throw new IOException($"{f.Folder}\\{f.RelativePath} has no hash from when it was written.");
+        if (!string.Equals(Hash(f.FullPath), written, StringComparison.Ordinal))
+            throw new IOException($"{f.Folder}\\{f.RelativePath} was changed after it was written.");
+        return written;
+    }
+
+    /// <summary>The file name's leading number ("objects\1000_x.sql" is 1000); files without one sort last.</summary>
+    private static long NumberOf(string relativePath)
+    {
+        var name = Path.GetFileName(relativePath);
+        var digits = name.TakeWhile(char.IsAsciiDigit).Count();
+        return digits is > 0 and <= 18 ? long.Parse(name.AsSpan(0, digits), System.Globalization.CultureInfo.InvariantCulture) : long.MaxValue;
+    }
 
     public static string Hash(string path)
     {

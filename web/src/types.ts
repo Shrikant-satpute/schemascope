@@ -548,7 +548,7 @@ export interface ObjectScriptOutcome {
   /** Every part in the order it runs, with "-- <folder>: <object>" separators. */
   script: string
   rollback: string | null
-  /** Extras only: the DROP statement to copy. SchemaScope never runs it. */
+  /** Extras only: the DROP statement to copy. Generate script never runs it (Create scripts can put it in 11_destructive). */
   dropPreview: string | null
   parts: ObjectScriptPart[]
   heldBack: { objectName: string; reason: string }[]

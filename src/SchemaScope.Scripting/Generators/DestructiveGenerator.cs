@@ -87,6 +87,16 @@ public sealed class DestructiveGenerator : IFolderGenerator
 
         var common = src.SortedTables().Where(t => tgt.Tables.Contains(t) && ctx.InScope(t)).ToList();
 
+        // Whether the source has an object is decided the way 01, 03 and 04 decide it - with the target's comparer - so 11
+        // never drops what they treat as common. A name the source has only in another letter case (one side case-sensitive,
+        // so AlignCase did not run) is held: it is the same object to one side and another to the other.
+        var srcModules = new HashSet<ObjectName>(src.Modules.Keys, cmp);
+        var srcTables = new HashSet<ObjectName>(src.Tables, cmp);
+        var srcTypes = new HashSet<ObjectName>(src.TableTypes, cmp);
+        var srcAnyCase = new HashSet<ObjectName>(src.Modules.Keys.Concat(src.Tables).Concat(src.TableTypes), ObjectName.IgnoreCase);
+        string OtherCase(string what) =>
+            $"{srcLabel} has {what} spelled in another letter case, and one of the two databases is case-sensitive - decide by hand";
+
         // ---- checks, foreign keys, unique keys and indexes on tables both sides have
         foreach (var k in common)
         {
@@ -150,7 +160,11 @@ public sealed class DestructiveGenerator : IFolderGenerator
             {
                 if (srcIx.Contains(IxKey(x))) continue;
                 var i = Constraint(Kind.DropIndex, "index", x.IName, "drop_index");
-                i.Statements.Add($"DROP INDEX {Ddl.Bracket(x.IName)} ON {k.Bracketed}");
+                var drop = $"DROP INDEX {Ddl.Bracket(x.IName)} ON {k.Bracketed}";
+                // a primary XML index takes its secondary XML indexes with it, whichever file runs first
+                i.Statements.Add(string.Equals(x.TypeDesc, "XML", StringComparison.OrdinalIgnoreCase)
+                    ? $"IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID({ScriptText.Lit(k.Bracketed)}) AND name = {ScriptText.Lit(x.IName)}) {drop}"
+                    : drop);
                 i.Header.Add($"Drops {(x.IsUnique ? "UNIQUE " : "")}{x.TypeDesc} INDEX {x.IName} on {k} ({x.Cols}): {srcLabel} has no such index.");
             }
         }
@@ -158,12 +172,13 @@ public sealed class DestructiveGenerator : IFolderGenerator
         // ---- target-only modules
         foreach (var k in tgt.SortedModules())
         {
-            if (src.Modules.ContainsKey(k) || !ctx.InScope(k)) continue;
+            if (srcModules.Contains(k) || !ctx.InScope(k)) continue;
             var m = tgt.Modules[k];
             var word = FormattingGenerator.KindWord(m.OType);
             var i = new Item { Kind = Kind.DropModule, Name = k.ToString(), Word = word, Table = k, Module = m, FileWord = "drop_" + ScriptText.Safe(word) };
             items.Add(i);
             if (ctx.IsExcluded(k)) Hold(i, "matches an exclude pattern");
+            else if (srcAnyCase.Contains(k)) Hold(i, OtherCase(k.ToString()));
             else if (Ddl.DropWord(m.OType) is not { } dw) Hold(i, $"object type {m.OType.Trim()} - drop it by hand");
             else if (m.Definition is null) Hold(i, "no text (encrypted), so no rollback could be written - drop it by hand if you are sure");
             else
@@ -178,10 +193,12 @@ public sealed class DestructiveGenerator : IFolderGenerator
         {
             foreach (var p in tgt.ColumnsOf(k))
             {
-                if (src.FindColumn(k, p.Col) is not null) continue;
+                var srcCols = src.ColumnsOf(k);
+                if (srcCols.Any(c => names.Equals(c.Col, p.Col))) continue;
                 var i = new Item { Kind = Kind.DropColumn, Name = $"{k.Name}.{p.Col}", Word = "column", Table = k, Sub = p.Col, FileWord = "drop_column" };
                 items.Add(i);
                 if (ctx.IsExcluded(k)) Hold(i, "matches an exclude pattern");
+                if (srcCols.Any(c => string.Equals(c.Col, p.Col, StringComparison.OrdinalIgnoreCase))) Hold(i, OtherCase($"column {k.Name}.{p.Col}"));
                 if (Special(k) is { } sp) Hold(i, sp);
                 foreach (var d in tgt.Defaults.Where(d => cmp.Equals(d.Table, k) && names.Equals(d.Col, p.Col)))
                     i.Statements.Add(DropConstraint(k, d.CName));
@@ -193,10 +210,11 @@ public sealed class DestructiveGenerator : IFolderGenerator
         // ---- target-only tables, synonyms, sequences, table types
         foreach (var k in tgt.SortedTables())
         {
-            if (src.Tables.Contains(k) || !ctx.InScope(k)) continue;
+            if (srcTables.Contains(k) || !ctx.InScope(k)) continue;
             var i = new Item { Kind = Kind.DropTable, Name = k.ToString(), Word = "table", Table = k, FileWord = "drop_table" };
             items.Add(i);
             if (ctx.IsExcluded(k)) Hold(i, "matches an exclude pattern");
+            if (srcAnyCase.Contains(k)) Hold(i, OtherCase(k.ToString()));
             if (Special(k) is { } sp) Hold(i, sp);
             i.Statements.Add($"DROP TABLE {k.Bracketed}");
         }
@@ -218,8 +236,12 @@ public sealed class DestructiveGenerator : IFolderGenerator
                     $"Drops sequence {s.Key}: {srcLabel} does not have it. Its current value is lost: {Ddl.CreateSequence(s)}"));
         }
         foreach (var k in tgt.SortedTableTypes())
-            if (!src.TableTypes.Contains(k) && ctx.InScope(k))
-                items.Add(ObjectDrop(ctx, Kind.DropTableType, k, "table type", "TYPE", $"Drops table type {k}: {srcLabel} does not have it."));
+            if (!srcTypes.Contains(k) && ctx.InScope(k))
+            {
+                var i = ObjectDrop(ctx, Kind.DropTableType, k, "table type", "TYPE", $"Drops table type {k}: {srcLabel} does not have it.");
+                if (srcAnyCase.Contains(k)) Hold(i, OtherCase(k.ToString()));
+                items.Add(i);
+            }
 
         // ---- what has to go first
         var objects = new Dictionary<ObjectName, Item>(cmp);
@@ -310,6 +332,10 @@ public sealed class DestructiveGenerator : IFolderGenerator
             {
                 case Kind.DropModule or Kind.DropSynonym or Kind.DropSequence:
                     AddRefs(i, i.Table);
+                    // a view's INSTEAD OF trigger goes with the view: drop it first, so its own DROP still finds it
+                    if (i.Kind == Kind.DropModule)
+                        foreach (var (trigger, _) in parents.Where(p => cmp.Equals(p.Value, i.Table)))
+                            i.Deps.Add(new Dep($"trigger {trigger} is on it", objects.TryGetValue(trigger, out var t) ? t : null));
                     break;
                 case Kind.DropTable:
                     AddRefs(i, i.Table);
@@ -439,11 +465,12 @@ public sealed class DestructiveGenerator : IFolderGenerator
         var all = new StringBuilder(ScriptText.HdrTbl);
         var rollbacks = new List<(string File, ModuleRow Module)>();
         var n = 0;
+        var width = Math.Max(3, kept.Count.ToString(CultureInfo.InvariantCulture).Length);
         foreach (var i in kept)
         {
             ct.ThrowIfCancellationRequested();
             n++;
-            var file = $"{n:000}_{i.FileWord}_{ScriptText.Safe(i.IsObject ? i.Table.Name : $"{i.Table.Name}_{i.Sub}")}.sql";
+            var file = $"{n.ToString(new string('0', width), CultureInfo.InvariantCulture)}_{i.FileWord}_{ScriptText.Safe(i.IsObject ? i.Table.Name : $"{i.Table.Name}_{i.Sub}")}.sql";
             var body = Body(i);
             ctx.Writer.WriteSql(Folder, "objects\\" + file, ScriptText.HdrTbl + body, WrittenFileKind.Statements, i.Table);
             all.Append(body);
@@ -583,6 +610,14 @@ public sealed class DestructiveGenerator : IFolderGenerator
             return;
         }
         i.Header.Add($"Checked when generated: every row of {tgtLabel} fits.");
+        // SQL Server rounds or substitutes some values without an error (decimal scale, datetime2 precision, Unicode to
+        // non-Unicode, ...): the same check runs again when the file runs, holding the rows, and stops it if one no longer fits
+        if (typeDiffers && !IsWidening(c, p) && TargetProbes.ColumnFitPredicate(p.Col, Bare(p), Bare(c), notNull: false) is { } misfit)
+        {
+            i.Header.Add("Checked again when this file runs: it stops, changing nothing, if a row no longer fits.");
+            i.Statements.Add($"IF EXISTS (SELECT 1 FROM {k.Bracketed} WITH (UPDLOCK, HOLDLOCK) WHERE {misfit}) " +
+                             $"THROW 50000, {ScriptText.Lit($"Rows of {k}.{p.Col} no longer fit {to}; nothing was changed. Generate the scripts again.")}, 1");
+        }
         i.Statements.AddRange(drop);
         i.Statements.Add(Ddl.AlterColumn(k.Schema, k.Name, p.Col, newType, c.IsNullable));
         i.Statements.AddRange(add);

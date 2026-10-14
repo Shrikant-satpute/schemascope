@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- Builds the "Create scripts" output: numbered folders of .sql files that make a
-       compare target look like its source. Reads catalogs only; never writes to a server. -->
+       compare target look like its source. Reads catalogs only; it never runs what it writes
+       (applying scripts is the API's ApplyService, gated by Read & write mode). -->
 
   <ItemGroup>
     <InternalsVisibleTo Include="SchemaScope.Tests" />

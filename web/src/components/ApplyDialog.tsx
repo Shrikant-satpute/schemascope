@@ -49,6 +49,7 @@ export function ApplyDialog({
 
   const [running, setRunning] = useState(false)
   const [stopping, setStopping] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const [progress, setProgress] = useState<ScriptProgress | null>(null)
   /** Every step the server reported, in order: the live per-file log. */
   const [log, setLog] = useState<string[]>([])
@@ -77,6 +78,14 @@ export function ApplyDialog({
     void api.apply.stop(id).catch(() => undefined)
   }, [])
 
+  // For a file that does not finish (waiting on locks, say): cancel it now - it is rolled back.
+  const cancelNow = useCallback(() => {
+    const id = progressIdRef.current
+    if (!id) return
+    setCancelling(true)
+    void api.apply.stop(id, true).catch(() => undefined)
+  }, [])
+
   const chosen = plan.planSections.filter((s) => sections.has(s.folder))
   const fileCount = chosen.reduce((n, s) => n + s.files, 0)
   const destructiveChosen = sections.has(DESTRUCTIVE)
@@ -91,6 +100,7 @@ export function ApplyDialog({
     progressIdRef.current = progressId
     setRunning(true)
     setStopping(false)
+    setCancelling(false)
     setProgress(null)
     setLog([])
     setError(null)
@@ -156,7 +166,9 @@ export function ApplyDialog({
               {outcome.applied.length === 1 ? '' : 's'} applied.
               {!outcome.success &&
                 ok > 0 &&
-                ' The files before the one that stopped stay applied - only that file was rolled back.'}
+                (failed
+                  ? ' The files before the one that stopped stay applied - only that file was rolled back.'
+                  : ' They stay applied; the files after them were not run.')}
             </div>
             {outcome.stoppedAt && (
               <div className="mt-0.5">
@@ -201,7 +213,8 @@ export function ApplyDialog({
           </section>
 
           <div className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-            Recorded in the apply history as <span className="font-mono">{outcome.auditId}</span>.
+            Recorded in the apply log in SchemaScope's local settings database as{' '}
+            <span className="font-mono">{outcome.auditId}</span>.
           </div>
         </div>
       </Modal>
@@ -224,9 +237,13 @@ export function ApplyDialog({
         ) : (
           <>
             {running ? (
-              <Button onClick={stop} disabled={stopping}>
-                {stopping ? 'Stopping after this file…' : 'Stop'}
-              </Button>
+              stopping ? (
+                <Button onClick={cancelNow} disabled={cancelling} title="Cancels the file that is running; it is rolled back">
+                  {cancelling ? 'Cancelling this file…' : 'Cancel this file now (roll it back)'}
+                </Button>
+              ) : (
+                <Button onClick={stop}>Stop after this file</Button>
+              )
             ) : (
               <Button onClick={close}>Cancel</Button>
             )}
@@ -357,6 +374,13 @@ export function ApplyDialog({
             </label>
 
             {running && <ApplyProgress progress={progress} log={log} />}
+            {running && stopping && (
+              <div className="text-[12px]" style={{ color: 'var(--st-diff)' }} role="status">
+                {cancelling
+                  ? 'Cancelling the file that is running - it will be rolled back.'
+                  : 'Stopping after this file. If it does not finish (it may be waiting on locks), cancel it now.'}
+              </div>
+            )}
           </>
         )}
       </div>

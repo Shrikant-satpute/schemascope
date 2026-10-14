@@ -76,4 +76,4 @@ Type: filesandordirs; Name: "{localappdata}\SchemaScope\cache"
 
 [Messages]
 ; Shown on the "ready to install" page.
-ReadyLabel2b=SchemaScope installs for your account only and needs no administrator rights.%n%nIt reads database schemas and never writes to them.
+ReadyLabel2b=SchemaScope installs for your account only and needs no administrator rights.%n%nIt is read-only by default: it changes a database only when you turn on write mode for a session and apply scripts to it.

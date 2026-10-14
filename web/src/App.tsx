@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Database, History, Lock, Moon, Pencil, Server, Share2, Sun, Zap } from 'lucide-react'
 import { api } from './api'
 import type {
@@ -54,6 +54,8 @@ export default function App() {
   const [showOptions, setShowOptions] = useState(false)
 
   const [runId, setRunId] = useState<string | null>(null)
+  /** The pair and options each run compared, by run id: the compare after an apply re-runs those, not the picker's. */
+  const ranWith = useRef(new Map<string, { source: TargetSlot; targets: TargetSlot[]; options: CompareOptions }>())
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<ProgressEvent[]>([])
   const [result, setResult] = useState<CompareResult | null>(null)
@@ -225,8 +227,8 @@ export default function App() {
 
   // Takes the pair explicitly: a swap sets new state and runs in the same tick,
   // so reading `source`/`targets` here would compare the old direction.
-  async function runCompare(source: TargetSlot | null, targets: TargetSlot[]) {
-    if (!source || targets.length === 0 || !options) return
+  async function runCompare(source: TargetSlot | null, targets: TargetSlot[], runOptions = options) {
+    if (!source || targets.length === 0 || !runOptions) return
 
     setRunning(true)
     setError(null)
@@ -242,8 +244,9 @@ export default function App() {
       const { runId: id } = await api.compare.start({
         source: { connectionId: source.connectionId, database: source.database },
         targets: targets.map((t) => ({ connectionId: t.connectionId, database: t.database })),
-        options,
+        options: runOptions,
       })
+      ranWith.current.set(id, { source, targets, options: runOptions })
       setRunId(id)
 
       const stop = api.compare.events(id, (e) => {
@@ -596,8 +599,10 @@ export default function App() {
           compareResult={result}
           compareError={error}
           onRecompare={() => {
-            if (!source || targets.length === 0 || !options) return false
-            void runCompare(source, targets)
+            // the comparison the plan was made from, even if the picker has changed since
+            const ran = ranWith.current.get(applyPlan.runId)
+            if (!ran) return false
+            void runCompare(ran.source, ran.targets, ran.options)
             return true
           }}
           onClose={closeApply}

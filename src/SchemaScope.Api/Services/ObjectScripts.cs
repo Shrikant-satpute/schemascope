@@ -25,7 +25,9 @@ public static partial class ObjectScripts
     /// <summary>How long a run folder under <see cref="ScratchRoot"/> is kept.</summary>
     public static readonly TimeSpan KeepFor = TimeSpan.FromDays(7);
 
-    public const string DropWarning = "SchemaScope never runs this; dropping can break apps and lose data.";
+    public const string DropWarning =
+        "Generate script does not run this; Create scripts can include it in 11_destructive, which is applied only with Read & write on. " +
+        "Dropping can break apps and lose data.";
 
     /// <summary>The order an object script's folders run in; its text is assembled in this order.</summary>
     internal static readonly string[] RunOrder =

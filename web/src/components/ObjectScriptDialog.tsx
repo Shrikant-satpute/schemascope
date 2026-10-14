@@ -214,7 +214,8 @@ export function ObjectScriptDialog({
           {outcome?.dropPreview ? (
             <>
               <Banner tone="error">
-                SchemaScope never runs this; dropping can break apps and lose data. Check who uses it first.
+                Generate script does not run this. Create scripts can include it in 11_destructive, which is applied
+                only with Read & write on. Dropping can break apps and lose data - check who uses it first.
               </Banner>
               <pre
                 className="max-h-72 overflow-auto rounded-md border px-3 py-2 font-mono text-[12px]"

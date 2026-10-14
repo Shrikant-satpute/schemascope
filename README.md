@@ -445,15 +445,22 @@ accident:
   are ticked. Table types, triggers, formatting and different code start
   unticked, each with its warning. Anything held back in `99_review` is never
   applied.
-- **Data loss is a separate decision.** *Allow changes that can lose data* is
-  off by default and only exists while Read & write mode is on. The
-  `11_destructive` section then starts unticked and needs a second
-  *I understand this can lose data* tick.
+- **Data loss is a separate decision.** *Include changes that can lose data*
+  (in **Create scripts**) is off by default and only shows while Read & write
+  mode is on. The `11_destructive` section then starts unticked and needs a
+  second *I understand this can lose data* tick. Each column change in it checks
+  the data again when it runs and stops, changing nothing, if a row written
+  since no longer fits.
 - **One transaction per file.** Each script file runs in its own transaction.
   The first error rolls that file back and stops the run. **Files before it
   stay applied** — SchemaScope says so, and shows you which ones. Every file is
-  re-checked against the hash recorded when it was generated before anything
-  runs, so an edited script is refused.
+  re-checked against the hash recorded when it was written before anything
+  runs, so an edited script is refused. Files that touch memory-optimized
+  tables or natively compiled code cannot run inside a transaction, so an
+  apply that includes them is refused; run those with `run_all.ps1`.
+- **Stop, or cancel now.** *Stop after this file* lets the running file finish.
+  *Cancel this file now* — or turning Read & write mode off — cancels the
+  running file too, and it is rolled back, for a file stuck waiting on locks.
 - **Compare again, automatically.** When the apply finishes, the compare runs
   again, so you see the new score straight away.
 - **An audit trail.** Every apply — when, which server, database and login,
@@ -464,10 +471,13 @@ Applying runs DDL as the target connection's own login, so it can do what that
 login can do. Rehearse on a restored copy first, exactly as with `RUN.ps1`. The
 details are in [SECURITY.md](SECURITY.md#write-mode).
 
-What an apply gets you: every difference that can be scripted ends at the same
-state as the source. What still needs you is listed rather than guessed —
-changes that can lose data stay opt-in, and code that is broken in the source
-(for example, it does not compile) is held back in `99_review`.
+What a default apply gets you: the `RUN.ps1` set — new columns, missing
+objects, widened columns, constraints and indexes. What still needs you is
+listed rather than guessed: table types, triggers, formatting, case renames and
+different code are opt-in sections; changes that can lose data need their own
+tick; and anything held back in `99_review` is never applied — code that is
+broken in the source, a NOT NULL column with no default, a key existing data
+would break, a module that reads a column the target will not get.
 
 ---
 

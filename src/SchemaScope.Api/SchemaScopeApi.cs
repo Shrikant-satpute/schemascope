@@ -926,7 +926,9 @@ public static class SchemaScopeApi
             if (sections.Contains(ApplyPlans.DestructiveFolder, StringComparer.OrdinalIgnoreCase) && !request.AcceptDataLoss)
                 return Refuse(StatusCodes.Status400BadRequest, "Tick \"I understand this can lose data\" to apply changes that can lose data.");
 
-            var key = ApplyService.TargetKey(target.Server, target.Database);
+            var connection = session.TargetConnections[index].ConnectionString;
+            var facts = await ApplyService.InspectAsync(connection);
+            var key = ApplyService.TargetKey(facts, target.Server, target.Database);
             if (!applier.TryLock(key))
                 return Refuse(StatusCodes.Status409Conflict, $"An apply to {target.Label} is already running - wait for it to finish.");
             try
@@ -938,8 +940,9 @@ public static class SchemaScopeApi
                 var files = plan.Files.Where(f => sections.Contains(f.Folder, StringComparer.OrdinalIgnoreCase)).ToList();
                 if (ApplyService.Verify(files, out var verified) is { } tampered)
                     return Refuse(StatusCodes.Status400BadRequest, tampered);
+                if (facts is not null && ApplyService.MemoryOptimizedProblem(verified, facts.InMemory) is { } inMemory)
+                    return Refuse(StatusCodes.Status400BadRequest, inMemory);
 
-                var connection = session.TargetConnections[index].ConnectionString;
                 var ordered = plan.Sections.Select(s => s.Folder).Where(f => sections.Contains(f, StringComparer.OrdinalIgnoreCase)).ToList();
                 using var progress = request.ProgressId is { } id ? progressStore.Track(id) : null;
                 try
@@ -961,9 +964,10 @@ public static class SchemaScopeApi
             }
         });
 
-        // Stops after the current file. Always allowed, write mode or not.
-        app.MapPost("/api/apply/{progressId}/stop", (string progressId, ApplyService applier) =>
-            applier.Stop(progressId) ? Results.NoContent() : Results.NotFound());
+        // Stops after the current file; ?now=true also cancels the current file, which is rolled back. Always allowed,
+        // write mode or not.
+        app.MapPost("/api/apply/{progressId}/stop", (string progressId, bool? now, ApplyService applier) =>
+            applier.Stop(progressId, now == true) ? Results.NoContent() : Results.NotFound());
 
         app.MapGet("/api/apply-history", (SchemaScopeStore store) => Results.Ok(store.GetApplyRuns()));
     }
@@ -1021,13 +1025,33 @@ public static class SchemaScopeApi
         {
             if (target.ConnectionId is { } id && store.GetConnection(id) is { ProtectedServer: true }) return true;
             return store.GetConnections().Any(c => c.ProtectedServer &&
-                (string.Equals(c.Server.Trim(), server.Trim(), StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(c.Server.Trim(), target.Server.Trim(), StringComparison.OrdinalIgnoreCase)));
+                (string.Equals(SavedServer(c), server.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(SavedServer(c), target.Server.Trim(), StringComparison.OrdinalIgnoreCase)));
         }
         catch (Exception)
         {
             return true;
         }
+    }
+
+    /// <summary>
+    /// The server a saved connection really connects to: a raw connection string's Data Source, since the form's Server box
+    /// is hidden then and may be empty or stale.
+    /// </summary>
+    private static string SavedServer(ConnectionSettings c)
+    {
+        if (c.UseRawConnectionString && !string.IsNullOrWhiteSpace(c.RawConnectionString))
+        {
+            try
+            {
+                return new SqlConnectionStringBuilder(c.RawConnectionString).DataSource.Trim();
+            }
+            catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
+            {
+                // fall back to the Server box
+            }
+        }
+        return c.Server.Trim();
     }
 
     /// <summary>The target is the very database the run read as its source.</summary>

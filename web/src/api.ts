@@ -186,9 +186,12 @@ export const api = {
   },
 
   apply: {
-    /** Stops a running apply after the file it is on. Earlier files stay applied. */
-    stop: (progressId: string) =>
-      req<void>(`/api/apply/${encodeURIComponent(progressId)}/stop`, { method: 'POST' }),
+    /**
+     * Stops a running apply after the file it is on. Earlier files stay applied.
+     * With `now`, the file it is on is cancelled as well and rolled back.
+     */
+    stop: (progressId: string, now = false) =>
+      req<void>(`/api/apply/${encodeURIComponent(progressId)}/stop${now ? '?now=true' : ''}`, { method: 'POST' }),
   },
 
   scripts: {

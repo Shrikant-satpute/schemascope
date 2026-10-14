@@ -30,7 +30,11 @@ internal static class PlanFiles
         var full = Path.Combine(root, folder, "objects", file);
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
         File.WriteAllText(full, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-        return new WrittenFile(folder, rel, full, WrittenFileKind.Statements) { Object = obj is null ? null : new ObjectName("dbo", obj) };
+        return new WrittenFile(folder, rel, full, WrittenFileKind.Statements)
+        {
+            Object = obj is null ? null : new ObjectName("dbo", obj),
+            Sha256 = ApplyPlans.Hash(full),
+        };
     }
 
     public static PlanFile Plan(WrittenFile f) =>
@@ -130,6 +134,43 @@ public class ApplyPlanTests
         Assert.Null(sections[0].Warning);
         Assert.NotNull(sections[2].Warning);
         Assert.Equal(2, sections[1].Files);
+    }
+
+    [Fact]
+    public void The_plan_hash_is_the_one_taken_as_the_file_was_written_and_a_file_changed_since_gets_no_plan()
+    {
+        using var temp = new TempFolder();
+        var writer = new ScriptWriter(temp.Path);
+        var f = writer.WriteSql("01_columns", "objects\\001_c.sql", "ALTER TABLE dbo.A ADD b int\r\nGO\r\n");
+        Assert.Equal(ApplyPlans.Hash(f.FullPath), f.Sha256);
+        Assert.Equal(f.Sha256, Assert.Single(writer.Files).Sha256);
+        Assert.Equal(f.Sha256, Assert.Single(ApplyPlans.Build(writer.Files, []).Files).Sha256);
+
+        // swapped on disk while the run was still validating: the swapped text never becomes the trusted version
+        File.WriteAllText(f.FullPath, "EXEC sp_addsrvrolemember 'evil', 'sysadmin'", new UTF8Encoding(true));
+        Assert.Throws<IOException>(() => ApplyPlans.Build(writer.Files, []));
+
+        using var store = new TempStore();
+        var mode = new WriteMode();
+        mode.Enable();
+        var offer = SchemaScopeApi.Offer(Session(), 0, new ScriptOutcome { Success = true, Files = [.. writer.Files] }, true, mode, new ApplyPlanStore(), store.Store);
+        Assert.Null(offer.PlanId);
+    }
+
+    [Fact]
+    public void Files_sort_by_their_number_so_a_thousandth_file_runs_after_the_hundred_and_first()
+    {
+        using var temp = new TempFolder();
+        var written = new[]
+        {
+            PlanFiles.Write(temp.Path, "11_destructive", "1000_drop_table_X.sql", "SELECT 1"),
+            PlanFiles.Write(temp.Path, "11_destructive", "101_drop_fk_Y.sql", "SELECT 2"),
+            PlanFiles.Write(temp.Path, "11_destructive", "999_drop_index_Z.sql", "SELECT 3"),
+        };
+
+        var (files, _) = ApplyPlans.Build(written, []);
+
+        Assert.Equal(["objects\\101_drop_fk_Y.sql", "objects\\999_drop_index_Z.sql", "objects\\1000_drop_table_X.sql"], files.Select(f => f.RelativePath));
     }
 
     private static CompareSession Session(string targetDb = "Client")
@@ -336,6 +377,25 @@ public sealed class ApplyRouteTests : IAsyncLifetime
         var saved = _temp.Store.SaveConnection(new ConnectionSettings { Server = "elsewhere", Database = "Client", ProtectedServer = true });
         _session.TargetConnections[0].ConnectionId = saved.Id;
         var r = await Apply(Body(NewPlan()));
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+        Assert.Contains("Protected", await Message(r));
+    }
+
+    [Fact]
+    public async Task A_protected_connection_saved_as_a_raw_connection_string_protects_its_server()
+    {
+        Mode.Enable();
+        // the Server box is hidden in raw mode, so it is empty here; the server is in the string
+        _temp.Store.SaveConnection(new ConnectionSettings
+        {
+            Server = "",
+            UseRawConnectionString = true,
+            RawConnectionString = "Data Source=tcp:127.0.0.1,1;Initial Catalog=Other;Integrated Security=true",
+            ProtectedServer = true,
+        });
+
+        var r = await Apply(Body(NewPlan()));
+
         Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
         Assert.Contains("Protected", await Message(r));
     }

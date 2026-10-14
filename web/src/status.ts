@@ -94,6 +94,15 @@ export const TYPE_COUNT_ORDER = [
 
 export type TypeCounts = Record<(typeof TYPE_COUNT_ORDER)[number], number>
 
+/** How each type count reads in a tooltip or legend. */
+export const TYPE_COUNT_WORD: Record<keyof TypeCounts, string> = {
+  different: 'differ',
+  missingInTarget: 'missing',
+  onlyInTarget: 'extra',
+  formattingOnly: 'formatting only',
+  unavailable: 'unreadable',
+}
+
 /**
  * A type's non-identical rows split by each row's worst status, so a missing or
  * extra object is not called a difference. Snapshots saved before the server

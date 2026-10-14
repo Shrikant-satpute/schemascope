@@ -28,6 +28,7 @@ export function SetupBar({
   onRun,
   onSwap,
   swapPreferred,
+  blocked,
   onCancel,
   onOpenOptions,
   optionCount,
@@ -45,6 +46,8 @@ export function SetupBar({
   onSwap: (index: number) => void
   /** Target to preselect when there are several to choose from. */
   swapPreferred: number | null
+  /** A dialog is open over the compare screen: the swap shortcut must not act behind it. */
+  blocked: boolean
   onCancel: () => void
   onOpenOptions: () => void
   optionCount: number
@@ -62,11 +65,12 @@ export function SetupBar({
     else setSwapChoice(swapPreferred !== null && swapPreferred < targets.length ? swapPreferred : 0)
   }
 
-  // Alt+Shift+S, from anywhere on the compare screen.
+  // Alt+Shift+S, from anywhere on the compare screen - but not behind an open dialog.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.altKey && e.shiftKey && !e.ctrlKey && e.code === 'KeyS') {
         e.preventDefault()
+        if (e.repeat || blocked || picking !== null || swapChoice !== null) return
         startSwap()
       }
     }

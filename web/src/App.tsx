@@ -127,6 +127,7 @@ export default function App() {
       setTargets(nextTargets)
       setOptions(entry.options)
       setResult(null)
+      setFocusedTarget(null)
       setError(null)
       setHint(null)
       setView('compare')
@@ -160,6 +161,9 @@ export default function App() {
     setError(null)
     setHint(null)
     setResult(null)
+    // a new run has new targets: a script dialog or focused target from the old one must not carry over
+    setScriptTarget(null)
+    setFocusedTarget(null)
     setProgress([])
 
     try {
@@ -355,10 +359,14 @@ export default function App() {
             running={running}
             elapsedMs={result?.totalMs ?? null}
             onSourceChange={setSource}
-            onTargetsChange={setTargets}
+            onTargetsChange={(t) => {
+              setTargets(t)
+              setFocusedTarget(null)
+            }}
             onRun={() => void runCompare(source, targets)}
             onSwap={swapAndRun}
             swapPreferred={focusedTarget}
+            blocked={showOptions || scriptTarget !== null}
             onCancel={cancelCompare}
             onOpenOptions={() => setShowOptions(true)}
             optionCount={optionBadge}

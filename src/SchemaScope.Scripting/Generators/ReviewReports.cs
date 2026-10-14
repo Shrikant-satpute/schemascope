@@ -324,6 +324,15 @@ public sealed class ReviewReports : IFolderGenerator
         return n;
     }
 
+    /// <summary>
+    /// Whether a 05 statement reads every row: a rule added WITH NOCHECK, a default, and a state change that only
+    /// enables or disables (no WITH CHECK re-trust) touch metadata only.
+    /// </summary>
+    internal static bool ScansTable(EmittedStatement s) =>
+        s.Kind == "state"
+            ? s.Sql.Contains("WITH CHECK CHECK CONSTRAINT", StringComparison.OrdinalIgnoreCase)
+            : s.Default is null && !s.Sql.Contains("WITH NOCHECK", StringComparison.OrdinalIgnoreCase);
+
     // ------------------------------------------------------------------ flow_safety.md
 
     /// <summary>
@@ -722,7 +731,7 @@ public sealed class ReviewReports : IFolderGenerator
             body.Append("Not a logic risk - a locking one. Each statement below holds the table while it " +
                         "runs; if the application writes to these tables continuously, plan a window. " +
                         $"Listed: tables with at least {N(threshold)} rows (row counts from sys.partitions). " +
-                        "05 rules added `WITH NOCHECK` and defaults change metadata only and are not listed.\n\n");
+                        "05 rules added `WITH NOCHECK`, defaults and state changes that do not re-trust change metadata only and are not listed.\n\n");
             if (rowCounts is null)
             {
                 body.Append($"Row counts of {Tgt} could not be read, so this check did not run.\n\n");
@@ -735,8 +744,7 @@ public sealed class ReviewReports : IFolderGenerator
                 foreach (var a in ctx.Facts.IntendedAlters) big.Add(("04", a.File, a.Table, RowsOf(a.Table) ?? 0));
             if (ctx.Selected(ScriptSection.Constraints))
                 foreach (var s in ctx.Facts.Constraints)
-                    if (s.Default is null && !s.Sql.Contains("WITH NOCHECK", StringComparison.OrdinalIgnoreCase))
-                        big.Add(("05", s.File, s.Table, RowsOf(s.Table) ?? 0));
+                    if (ScansTable(s)) big.Add(("05", s.File, s.Table, RowsOf(s.Table) ?? 0));
             if (ctx.Selected(ScriptSection.Indexes))
                 foreach (var s in ctx.Facts.Indexes) big.Add(("06", s.File, s.Table, RowsOf(s.Table) ?? 0));
             var hits = big.Where(b => b.Rows >= threshold).OrderByDescending(b => b.Rows).ToList();

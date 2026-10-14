@@ -130,9 +130,9 @@ public sealed record DefaultRow(string Sch, string Tbl, string Col, string CName
     public ObjectName Table => new(Sch, Tbl);
 }
 
-/// <summary>A row of <c>Q_CHECKS</c>.</summary>
+/// <summary>A row of <c>Q_CHECKS</c>. <see cref="Nfr"/> is is_not_for_replication (added column; meta.py never looked).</summary>
 public sealed record CheckRow(
-    string Sch, string Tbl, string CName, string Definition, bool IsSystemNamed, bool IsNotTrusted, bool IsDisabled)
+    string Sch, string Tbl, string CName, string Definition, bool IsSystemNamed, bool IsNotTrusted, bool IsDisabled, bool Nfr = false)
     : INamedConstraint
 {
     public ObjectName Table => new(Sch, Tbl);

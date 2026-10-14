@@ -48,6 +48,7 @@ public class GeneratorFixTests
         Assert.NotNull(fix);
         Assert.Equal("ALTER TABLE [dbo].[orders] NOCHECK CONSTRAINT [CK__orders__qty__1A2B3C]", fix.Sql);
         Assert.False(fix.Retrusts);
+        Assert.True(fix.Weakens);   // the target stops enforcing it: listed in review
     }
 
     [Fact]
@@ -73,6 +74,57 @@ public class GeneratorFixTests
         var fix = CoreRun.StateFixFor((true, true), Fk(false, false, name: "FK_orders_customers_client"));
         Assert.Contains("[FK_orders_customers_client]", fix!.Sql);
     }
+
+    private static CheckRow NamedCk(string name, bool disabled, bool nfr = false) =>
+        new("dbo", "T", name, "([a]>(0))", false, disabled, disabled, nfr);
+
+    [Fact]
+    public void Same_definition_constraints_pair_by_name_and_only_the_differing_one_is_fixed()
+    {
+        CheckRow[] src = [NamedCk("CK_a", false), NamedCk("CK_b", true)];
+        CheckRow[] tgt = [NamedCk("CK_a", false), NamedCk("CK_b", false)];
+        var pairs = CoreRun.Pairs(src, tgt, r => new CoreRun.RowKey(r.Definition, r.Definition), StringComparer.Ordinal);
+
+        Assert.Equal(2, pairs.Count);
+        Assert.All(pairs, p => Assert.Equal(p.Source.CName, p.Target.CName));
+        var fixes = pairs.Select(p => CoreRun.StateFixFor((p.Source.IsDisabled, p.Source.IsNotTrusted), p.Target)).OfType<CoreRun.StateFix>().ToList();
+        Assert.Equal("ALTER TABLE [dbo].[T] NOCHECK CONSTRAINT [CK_b]", Assert.Single(fixes).Sql);
+    }
+
+    [Fact]
+    public void Unmatched_names_pair_with_a_target_in_the_same_state_first()
+    {
+        CheckRow[] src = [NamedCk("CK_src", true)];
+        CheckRow[] tgt = [NamedCk("CK_x", false), NamedCk("CK_y", true)];
+        var pair = Assert.Single(CoreRun.Pairs(src, tgt, r => new CoreRun.RowKey(r.Definition, r.Definition), StringComparer.Ordinal));
+        Assert.Equal("CK_y", pair.Target.CName);
+    }
+
+    [Fact]
+    public void A_not_for_replication_target_check_is_never_retrusted()
+    {
+        var target = NamedCk("CK_nfr", false, nfr: true) with { IsNotTrusted = true };
+        var fix = CoreRun.StateFixFor((false, false), target)!;
+        Assert.True(fix.Retrusts);
+        Assert.NotNull(CoreRun.NfrHoldReason(target, fix, "Client_main"));
+    }
+
+    [Fact]
+    public void A_not_for_replication_source_is_not_mirrored_as_untrusted()
+    {
+        var source = NamedCk("CK_nfr", false, nfr: true) with { IsNotTrusted = true };
+        var fix = CoreRun.StateFixFor((false, true), NamedCk("CK_nfr", false))!;
+        Assert.True(fix.Weakens);
+        Assert.True(CoreRun.MirrorsNfr(source, fix));
+        Assert.False(CoreRun.MirrorsNfr(source with { Nfr = false }, fix));
+    }
+
+    [Theory]
+    [InlineData("ALTER TABLE [s].[t] NOCHECK CONSTRAINT [c]", false)]
+    [InlineData("ALTER TABLE [s].[t] CHECK CONSTRAINT [c]", false)]
+    [InlineData("ALTER TABLE [s].[t] WITH CHECK CHECK CONSTRAINT [c]", true)]
+    public void Only_state_statements_that_retrust_are_listed_as_table_scans(string sql, bool scans) =>
+        Assert.Equal(scans, ReviewReports.ScansTable(new EmittedStatement(1, "001_state_t.sql", "state", new("s", "t"), "c", sql)));
 
     [Fact]
     public void A_retrust_with_breaking_rows_is_held_back_with_the_count()

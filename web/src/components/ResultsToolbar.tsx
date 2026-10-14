@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Download, Filter, Search, Share2, X } from 'lucide-react'
 import type { CompareResult, DbObjectType, ObjectStatus } from '../types'
-import { STATUS, STATUS_ORDER, TYPE_COUNT_ORDER, typeCounts } from '../status'
+import { STATUS, STATUS_ORDER, TYPE_COUNT_ORDER, TYPE_COUNT_WORD, typeCounts } from '../status'
 import { Button, Input, Spinner } from './ui'
 import type { MatrixFilters } from './MatrixGrid'
 import { Legend } from './MatrixGrid'
@@ -97,10 +97,9 @@ export function ResultsToolbar({
               <span
                 className="tabular-nums"
                 style={{ color: 'var(--text-3)' }}
-                title={`${counts.different} differ · ${counts.missingInTarget} missing · ${counts.onlyInTarget} extra`}
+                title={TYPE_COUNT_ORDER.map((s) => `${counts[s]} ${TYPE_COUNT_WORD[s]}`).join(' · ')}
               >
-                {TYPE_COUNT_ORDER.slice(0, 3)
-                  .filter((s) => counts[s] > 0)
+                {TYPE_COUNT_ORDER.filter((s) => counts[s] > 0)
                   .map((s) => (
                     <span key={s} className="mr-1" style={{ color: STATUS[s].colour }}>
                       {STATUS[s].symbol}

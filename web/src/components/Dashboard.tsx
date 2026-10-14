@@ -3,7 +3,7 @@ import { useState } from 'react'
 import clsx from 'clsx'
 import type { CompareResult, ObjectStatus } from '../types'
 import type { DbColour } from '../dbColour'
-import { STATUS, TYPE_COUNT_ORDER, typeCounts, type TypeCounts } from '../status'
+import { STATUS, TYPE_COUNT_ORDER, TYPE_COUNT_WORD, typeCounts } from '../status'
 
 /** Names for the stage keys the engine reports, in the order the work happens. */
 const STAGES: [key: string, label: string][] = [
@@ -288,18 +288,12 @@ function TargetTile({
 }
 
 /** Words for the per-type split - "differ" means a changed definition only. */
-const TYPE_COUNT_WORD: Record<keyof TypeCounts, string> = {
-  different: 'differ',
-  missingInTarget: 'missing',
-  onlyInTarget: 'extra',
-  formattingOnly: 'formatting only',
-  unavailable: 'unreadable',
-}
-
 function TypeBreakdown({ result }: { result: CompareResult }) {
   const [expanded, setExpanded] = useState(false)
   const rows = expanded ? result.byType : result.byType.slice(0, 6)
   const max = Math.max(1, ...result.byType.map((b) => b.total))
+  // '?' only earns a legend entry when some type has an unreadable object
+  const anyUnavailable = result.byType.some((b) => typeCounts(b, result.rows).unavailable > 0)
 
   return (
     <div
@@ -346,7 +340,7 @@ function TypeBreakdown({ result }: { result: CompareResult }) {
                   />
                 ))}
               </span>
-              <span className="w-28 shrink-0 text-right tabular-nums" style={{ color: 'var(--text-3)' }}>
+              <span className="min-w-28 shrink-0 whitespace-nowrap text-right tabular-nums" style={{ color: 'var(--text-3)' }}>
                 {shown.length === 0
                   ? 0
                   : shown.map((s) => (
@@ -363,7 +357,7 @@ function TypeBreakdown({ result }: { result: CompareResult }) {
       </div>
 
       <div className="mt-1.5 flex flex-wrap gap-x-2 text-[10.5px]" style={{ color: 'var(--text-3)' }}>
-        {TYPE_COUNT_ORDER.slice(0, 4).map((s) => (
+        {TYPE_COUNT_ORDER.filter((s) => s !== 'unavailable' || anyUnavailable).map((s) => (
           <span key={s}>
             <span className="font-mono font-semibold" style={{ color: STATUS[s].colour }}>
               {STATUS[s].symbol}

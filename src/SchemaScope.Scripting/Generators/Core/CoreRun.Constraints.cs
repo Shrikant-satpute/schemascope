@@ -11,7 +11,7 @@ internal sealed partial class CoreRun
     /// (schema/table parts folded on case-insensitive databases); <see cref="Sort"/> is the tuple in its own
     /// spelling joined by NUL, which sorts ordinally exactly as Python sorts the tuple.
     /// </summary>
-    private readonly record struct RowKey(string Eq, string Sort);
+    internal readonly record struct RowKey(string Eq, string Sort);
 
     private RowKey Key(params (string Value, bool IsName)[] parts) => new(
         string.Join('\0', parts.Select(p => p.IsName ? Fold(p.Value) : p.Value)),
@@ -45,24 +45,34 @@ internal sealed partial class CoreRun
     }
 
     /// <summary>
-    /// Source rows the target also has (same key), each with its target row, sorted by key. A repeated source key
-    /// keeps the last row, as in <see cref="Todo{T}"/>; of several target rows under one key, one already in the
-    /// source's state is preferred.
+    /// Source rows the target also has (same key), each with its target row, sorted by key. Within a key, rows
+    /// pair by constraint name first; the rest pair in order with the remaining target rows, one already in the
+    /// source's state preferred. A source row left without a target row is not paired.
     /// </summary>
-    private static List<(T Source, T Target)> Pairs<T>(IEnumerable<T> source, IEnumerable<T> target, Func<T, RowKey> kf)
+    internal static List<(T Source, T Target)> Pairs<T>(IEnumerable<T> source, IEnumerable<T> target, Func<T, RowKey> kf,
+        IEqualityComparer<string> names)
         where T : class, INamedConstraint
     {
         var have = target.GroupBy(r => kf(r).Eq, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
-        var keyed = new Dictionary<string, (string Sort, T Row)>(StringComparer.Ordinal);
-        foreach (var r in source)
+        var pairs = new List<(T, T)>();
+        foreach (var g in source.GroupBy(r => kf(r).Eq, StringComparer.Ordinal)
+                     .Where(g => have.ContainsKey(g.Key))
+                     .OrderBy(g => kf(g.First()).Sort, StringComparer.Ordinal))
         {
-            var k = kf(r);
-            keyed[k.Eq] = (keyed.TryGetValue(k.Eq, out var old) ? old.Sort : k.Sort, r);
+            var free = new List<T>(have[g.Key]);
+            var rest = new List<T>();
+            foreach (var s in g)
+                if (free.FirstOrDefault(x => names.Equals(x.CName, s.CName)) is { } t) { pairs.Add((s, t)); free.Remove(t); }
+                else rest.Add(s);
+            foreach (var s in rest)
+            {
+                if (free.Count == 0) break;
+                var t = free.FirstOrDefault(x => State(x) == State(s)) ?? free[0];
+                pairs.Add((s, t));
+                free.Remove(t);
+            }
         }
-        return keyed.Where(e => have.ContainsKey(e.Key))
-            .OrderBy(e => e.Value.Sort, StringComparer.Ordinal)
-            .Select(e => (e.Value.Row, have[e.Key].FirstOrDefault(t => State(t) == State(e.Value.Row)) ?? have[e.Key][0]))
-            .ToList();
+        return pairs;
     }
 
     /// <summary>A check's or foreign key's (is_disabled, is_not_trusted).</summary>
@@ -73,13 +83,16 @@ internal sealed partial class CoreRun
         _ => (false, false),
     };
 
+    /// <summary>NOT FOR REPLICATION: SQL Server never trusts such a check / foreign key.</summary>
+    private static bool Nfr(INamedConstraint r) => r is CheckRow { Nfr: true } or ForeignKeyRow { Nfr: true };
+
     private static string StateWord((bool Disabled, bool NotTrusted) s) =>
         s.Disabled ? "disabled" : s.NotTrusted ? "enabled but not trusted" : "enabled and trusted";
 
     /// <summary>What 05 runs to give an existing target check / foreign key the source's state.</summary>
     /// <param name="Sql">The statement(s), naming the TARGET's constraint.</param>
     /// <param name="Retrusts">WITH CHECK: every existing row is validated, so the target data is probed first.</param>
-    /// <param name="Weakens">Source untrusted, target trusted: mirrored, and listed in review because it weakens the target.</param>
+    /// <param name="Weakens">The target ends up enforcing less (disabled, or no longer trusted): mirrored, and listed in review.</param>
     internal sealed record StateFix(string Sql, bool Retrusts, bool Weakens);
 
     /// <summary>
@@ -90,11 +103,23 @@ internal sealed partial class CoreRun
     {
         var t = State(target);
         var enable = Ddl.TrustConstraint(target.Sch, target.Tbl, target.CName, isNotTrusted: false);   // CHECK CONSTRAINT, no re-validation
-        if (source.Disabled) return t.Disabled ? null : new StateFix(Ddl.DisableConstraint(target), false, false);
+        if (source.Disabled) return t.Disabled ? null : new StateFix(Ddl.DisableConstraint(target), false, true);
         if (!source.NotTrusted) return t.Disabled || t.NotTrusted ? new StateFix(Ddl.RetrustConstraint(target), true, false) : null;
         if (t.Disabled) return new StateFix(enable, false, false);
         return t.NotTrusted ? null : new StateFix(Ddl.DisableConstraint(target) + ScriptText.Go + enable, false, true);
     }
+
+    /// <summary>
+    /// An enabled NOT FOR REPLICATION source is untrusted by definition, not by state: <paramref name="fix"/> would
+    /// only copy that onto a trusted target (NOCHECK then CHECK), so it is skipped.
+    /// </summary>
+    internal static bool MirrorsNfr(INamedConstraint source, StateFix fix) => Nfr(source) && !State(source).Disabled && fix.Weakens;
+
+    /// <summary>Why a re-trust of a NOT FOR REPLICATION target is held back (it can never become trusted), or null.</summary>
+    internal static string? NfrHoldReason(INamedConstraint target, StateFix fix, string tgtLabel) =>
+        fix.Retrusts && Nfr(target)
+            ? $"NOT FOR REPLICATION in {tgtLabel} - SQL Server never trusts such a constraint, so WITH CHECK cannot make it match"
+            : null;
 
     /// <summary>Why a WITH CHECK re-trust is held back after its data probe, or null when no row breaks it.</summary>
     internal static string? RetrustHoldReason(ProbeCount probe, string tgtLabel) =>
@@ -308,17 +333,15 @@ internal sealed partial class CoreRun
         // checks and foreign keys both sides have whose enabled / trusted state differs: the target's own
         // constraint is brought to the source's state, after the rows a re-trust would validate are counted
         var states = 0;
-        foreach (var (s, t) in Pairs<INamedConstraint>(src.Checks, tgt.Checks, r => KCk((CheckRow)r))
-                     .Concat(Pairs<INamedConstraint>(src.FKeys, tgt.FKeys, r => KFk((ForeignKeyRow)r))))
+        var names = ci ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        foreach (var (s, t) in Pairs<INamedConstraint>(src.Checks, tgt.Checks, r => KCk((CheckRow)r), names)
+                     .Concat(Pairs<INamedConstraint>(src.FKeys, tgt.FKeys, r => KFk((ForeignKeyRow)r), names)))
         {
             Ct.ThrowIfCancellationRequested();
-            if (StateFixFor(State(s), t) is not { } fix) continue;
+            if (StateFixFor(State(s), t) is not { } fix || MirrorsNfr(s, fix)) continue;
             var table = new ObjectName(t.Sch, t.Tbl);
             var label = t is CheckRow ? "check" : "foreignkey";
-            var why = Excluded(table, s.CName) ?? Excluded(table, t.CName)
-                ?? (fix.Retrusts && t is ForeignKeyRow { Nfr: true }
-                    ? $"NOT FOR REPLICATION in {tgtLabel} - SQL Server never trusts such a foreign key, so WITH CHECK cannot make it match"
-                    : null);
+            var why = Excluded(table, s.CName) ?? Excluded(table, t.CName) ?? NfrHoldReason(t, fix, tgtLabel);
             if (why is null && fix.Retrusts)
             {
                 var probe = t is ForeignKeyRow f
@@ -334,7 +357,9 @@ internal sealed partial class CoreRun
             }
             if (fix.Weakens && write)
                 ctx.Review.Note(ReviewLog.NotAppliedConstraints, label, t.CName, t.Tbl,
-                    $"{stateText}: scripted anyway (NOCHECK then CHECK) to match, which weakens {tgtLabel} - existing rows are no longer known to obey it",
+                    State(s).Disabled
+                        ? $"{stateText}: scripted anyway (NOCHECK) to match, which disables it in {tgtLabel} - it no longer checks new or changed rows"
+                        : $"{stateText}: scripted anyway (NOCHECK then CHECK) to match, which weakens {tgtLabel} - existing rows are no longer known to obey it",
                     CoreFoldersGenerator.ConstraintsFolder);
             n++;
             states++;

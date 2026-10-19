@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Database, History, Lock, Moon, Pencil, Server, Share2, Sun, Zap } from 'lucide-react'
+import { AlertTriangle, Database, History, Lock, Moon, Pencil, Server, Share2, Sun } from 'lucide-react'
 import { api } from './api'
 import type {
   ApplyPlan,
@@ -19,7 +19,7 @@ import { OptionsDialog, countNonDefault } from './components/OptionsDialog'
 import { ScriptDialog } from './components/ScriptDialog'
 import { ObjectScriptDialog } from './components/ObjectScriptDialog'
 import { ApplyDialog } from './components/ApplyDialog'
-import { Button, EmptyState, Modal, Spinner } from './components/ui'
+import { Button, EmptyState, LogoMark, Modal, Spinner } from './components/ui'
 
 type View = 'compare' | 'connections' | 'history' | 'share'
 
@@ -364,7 +364,7 @@ export default function App() {
         style={{ borderColor: 'var(--line)', background: 'var(--surface)' }}
       >
         <div className="flex items-center gap-2">
-          <Zap size={17} style={{ color: 'var(--accent)' }} />
+          <LogoMark />
           <span className="text-[14px] font-semibold tracking-tight">SchemaScope</span>
         </div>
 
@@ -397,29 +397,33 @@ export default function App() {
 
         <div className="flex-1" />
 
-        {writeMode.enabled ? (
-          <button
-            type="button"
-            onClick={() => void turnWriteModeOff()}
-            className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11.5px] font-medium"
-            style={{ background: 'color-mix(in srgb, var(--st-diff) 16%, transparent)', color: 'var(--st-diff)' }}
-            title="Read & write is on for this session: scripts can be applied to a target. Click to go back to read only."
-            aria-label="Read & write is on. Turn it off"
+        <button
+          type="button"
+          role="switch"
+          aria-checked={writeMode.enabled}
+          aria-label="Write mode"
+          onClick={() => (writeMode.enabled ? void turnWriteModeOff() : setAskEnableWrite(true))}
+          className="inline-flex items-center gap-2 rounded-md px-2 py-1 text-[11.5px] font-medium transition-colors hover:bg-[var(--raised)]"
+          style={{ color: writeMode.enabled ? 'var(--st-diff)' : 'var(--text-2)' }}
+          title={
+            writeMode.enabled
+              ? 'Write mode is on for this session: scripts can be applied to a target. Click to go back to read only.'
+              : 'Read-only by default. Turn on write mode to apply scripts to a target database from here.'
+          }
+        >
+          {writeMode.enabled ? <Pencil size={12} /> : <Lock size={12} />}
+          Write mode
+          <span
+            className="flex h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors"
+            style={{ background: writeMode.enabled ? 'var(--st-diff)' : 'var(--line)' }}
           >
-            <Pencil size={12} /> Read & write
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setAskEnableWrite(true)}
-            className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11.5px] font-medium"
-            style={{ background: 'color-mix(in srgb, var(--st-same) 14%, transparent)', color: 'var(--st-same)' }}
-            title="Read-only by default. SchemaScope only changes a database when you turn on Read & write for this session and apply scripts to it yourself."
-            aria-label="Read only. Turn on Read & write"
-          >
-            <Lock size={12} /> Read only
-          </button>
-        )}
+            <span
+              className="h-3 w-3 rounded-full bg-white transition-transform"
+              style={{ transform: writeMode.enabled ? 'translateX(12px)' : 'none' }}
+            />
+          </span>
+          <span className="w-5 text-left">{writeMode.enabled ? 'On' : 'Off'}</span>
+        </button>
 
         <Button size="sm" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Toggle theme">
           {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
@@ -655,7 +659,7 @@ function EnableWriteModeDialog({
 
   return (
     <Modal
-      title="Turn on Read & write?"
+      title="Turn on write mode?"
       subtitle="SchemaScope is read-only by default."
       onClose={busy ? noop : onClose}
       width={560}
@@ -681,7 +685,7 @@ function EnableWriteModeDialog({
           </div>
         )}
         <p>
-          With Read & write on, scripts you generate can be applied to their target database from here, instead of only
+          With write mode on, scripts you generate can be applied to their target database from here, instead of only
           being written to disk.
         </p>
         <ul className="flex list-disc flex-col gap-1 pl-5" style={{ color: 'var(--text-2)' }}>

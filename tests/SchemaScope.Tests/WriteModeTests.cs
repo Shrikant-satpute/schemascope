@@ -325,7 +325,7 @@ public sealed class ApplyRouteTests : IAsyncLifetime
         var r = await Apply(Body(NewPlan()));
 
         Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
-        Assert.Contains("Read & write", await Message(r));
+        Assert.Contains("write mode", await Message(r));
     }
 
     [Fact]
@@ -524,7 +524,7 @@ public sealed class ApplyRouteTests : IAsyncLifetime
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
-        Assert.Equal("Turn on Read & write to include changes that can lose data", await Message(r));
+        Assert.Equal("Turn on write mode to include changes that can lose data", await Message(r));
     }
 }
 

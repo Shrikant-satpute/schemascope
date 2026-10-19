@@ -220,7 +220,7 @@ export function ConnectionForm({
               checked={!!form.protectedServer}
               onChange={(v) => set('protectedServer', v)}
               label="Protected — never apply scripts here"
-              hint="Scripts for it are only written to disk. SchemaScope will not apply anything to it, even with Read & write on."
+              hint="Scripts for it are only written to disk. SchemaScope will not apply anything to it, even with write mode on."
             />
             <div className="px-2 pt-1">
               <Field label="Connect timeout (seconds)">

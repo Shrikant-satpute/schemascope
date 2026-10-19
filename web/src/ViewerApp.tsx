@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Clock, Eye, Moon, Sun, Zap } from 'lucide-react'
+import { AlertTriangle, Clock, Eye, Moon, Sun } from 'lucide-react'
 import { api } from './api'
 import type { SharedComparison } from './types'
 import { ResultsWorkspace } from './components/ResultsWorkspace'
-import { Button, EmptyState, Spinner } from './components/ui'
+import { Button, EmptyState, LogoMark, Spinner } from './components/ui'
 
 const THEME_KEY = 'schemascope.theme'
 
@@ -86,7 +86,7 @@ export function ViewerApp({ token }: { token: string }) {
         style={{ borderColor: 'var(--line)', background: 'var(--surface)' }}
       >
         <div className="flex items-center gap-2">
-          <Zap size={17} style={{ color: 'var(--accent)' }} />
+          <LogoMark />
           <span className="text-[14px] font-semibold tracking-tight">SchemaScope</span>
         </div>
 

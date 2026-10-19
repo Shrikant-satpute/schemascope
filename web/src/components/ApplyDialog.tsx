@@ -273,7 +273,7 @@ export function ApplyDialog({
           </Banner>
         ) : (
           <>
-            {!writeMode && <Banner tone="error">Read & write is off, so nothing can be applied. Turn it on to apply.</Banner>}
+            {!writeMode && <Banner tone="error">Write mode is off, so nothing can be applied. Turn it on to apply.</Banner>}
             {error && <Banner tone="error">{error}</Banner>}
 
             <section>

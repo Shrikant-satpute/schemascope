@@ -215,7 +215,7 @@ export function ObjectScriptDialog({
             <>
               <Banner tone="error">
                 Generate script does not run this. Create scripts can include it in 11_destructive, which is applied
-                only with Read & write on. Dropping can break apps and lose data - check who uses it first.
+                only with write mode on. Dropping can break apps and lose data - check who uses it first.
               </Banner>
               <pre
                 className="max-h-72 overflow-auto rounded-md border px-3 py-2 font-mono text-[12px]"

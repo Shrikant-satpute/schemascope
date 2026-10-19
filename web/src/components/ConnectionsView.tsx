@@ -59,7 +59,7 @@ export function ConnectionsView({
             {secretsProtected
               ? 'Passwords are encrypted with Windows DPAPI under your account. No other Windows user can read them, and nothing is ever sent anywhere.'
               : 'Password encryption is unavailable on this platform, so passwords are not saved. You will be asked each time.'}{' '}
-            SchemaScope is read-only by default - it changes a database only when you turn on Read & write and apply scripts to it.
+            SchemaScope is read-only by default - it changes a database only when you turn on write mode and apply scripts to it.
           </div>
         </div>
 

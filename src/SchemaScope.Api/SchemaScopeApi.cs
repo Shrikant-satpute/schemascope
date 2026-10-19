@@ -682,7 +682,7 @@ public static class SchemaScopeApi
             var problem = CheckScriptRequest(session, request);
             if (problem is not null) return Results.BadRequest(new { message = problem });
             if (request!.Options.IncludeDestructive && !writeMode.Enabled)
-                return Results.BadRequest(new { message = "Turn on Read & write to include changes that can lose data" });
+                return Results.BadRequest(new { message = "Turn on write mode to include changes that can lose data" });
 
             // CheckScriptRequest has proved all of these are present and in range.
             var result = session.Result!;
@@ -883,7 +883,7 @@ public static class SchemaScopeApi
             if (!http.HasJsonContentType())
                 return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
             if (!writeMode.Enabled)
-                return Refuse(StatusCodes.Status403Forbidden, "Turn on Read & write to apply scripts.");
+                return Refuse(StatusCodes.Status403Forbidden, "Turn on write mode to apply scripts.");
 
             ApplyRequest? request;
             try

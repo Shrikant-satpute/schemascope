@@ -1,65 +1,53 @@
 WEBVTT
 
 1
-00:00:00.200 --> 00:00:02.346
-Is production still the same as dev?
+00:00:00.100 --> 00:00:04.300
+Compare databases. Staging, production, and every client database.
 
 2
-00:00:02.346 --> 00:00:04.150
-Most teams can't say for sure.
+00:00:04.600 --> 00:00:14.700
+We ship one database to many clients. Soon nobody knows which client has which tables, which procedure is missing, or which schema never shipped.
 
 3
-00:00:04.150 --> 00:00:07.200
-Dev, QA, staging, production, every client's copy.
+00:00:15.200 --> 00:00:18.000
+The easy fix: compare them with SchemaScope.
 
 4
-00:00:07.200 --> 00:00:11.260
-They quietly drift apart, and checking them by hand is slow.
+00:00:18.600 --> 00:00:21.200
+Step 1: First, pick the database you trust.
 
 5
-00:00:12.200 --> 00:00:13.917
-Meet SchemaScope.
+00:00:21.600 --> 00:00:25.000
+Step 2: Add every target: QA and eight clients.
 
 6
-00:00:15.350 --> 00:00:17.524
-Pick the database you trust,
+00:00:25.600 --> 00:00:29.400
+Step 3: Press Compare. All nine at once, in about a second.
 
 7
-00:00:19.400 --> 00:00:21.845
-add every copy you want to check,
+00:00:30.200 --> 00:00:33.000
+Step 4: Every client gets a score, worst first.
 
 8
-00:00:22.850 --> 00:00:24.487
-and press Compare.
+00:00:33.600 --> 00:00:40.800
+Step 5: See what is missing. Client04 never got the support schema. Client03 lacks tables and procedures.
 
 9
-00:00:25.400 --> 00:00:29.260
-In about a second, you see exactly what differs, and where.
+00:00:41.400 --> 00:00:44.600
+Step 6: Open any object to see the exact lines.
 
 10
-00:00:32.300 --> 00:00:34.892
-Open any object side by side,
+00:00:45.250 --> 00:00:48.600
+Step 7: Create scripts that fix it, each checked offline first.
 
 11
-00:00:36.400 --> 00:00:40.350
-generate the SQL to fix it, checked before you run it,
+00:00:49.000 --> 00:00:53.400
+Step 8: New in 1.2: write mode. Type the name to apply.
 
 12
-00:00:40.350 --> 00:00:43.220
-and share a read-only link with your team.
+00:00:54.600 --> 00:00:59.200
+Step 8: Client05 goes to 100%. Protected servers are refused.
 
 13
-00:00:44.300 --> 00:00:47.000
-Fast. Free. Read-only.
-
-14
-00:00:47.000 --> 00:00:49.142
-And it runs on your PC.
-
-15
-00:00:50.300 --> 00:00:52.439
-Find the drift before your users do.
-
-16
-00:00:52.439 --> 00:00:55.000
-Download SchemaScope, free for Windows.
+00:00:59.600 --> 00:01:05.000
+Stop comparing in pairs. Free at schemascope.shadowmark.in

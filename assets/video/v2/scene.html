@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SchemaScope Explainer v2</title>
+<!--
+  SchemaScope explainer v2 - light theme, 1920x1080 motion graphics.
+  Every pixel is a pure function of time:
+    window.renderAt(seconds)      -> main explainer frame (0 .. window.DURATION)
+    window.renderLoopAt(seconds)  -> 8 s silent hero loop (0 .. window.LOOP.duration); frame 8.0 == frame 0
+  window.READY resolves once fonts and every screenshot are decoded.
+  No CSS transitions, no timers, no wall clock, no network. System fonts only (Segoe UI / Segoe UI Black / Cascadia Mono).
+  App layer = REAL light-theme screenshots in shots/ (3840x2160, shown at 1920x1080 CSS px).
+  Every number on screen is measured in this run (demo-db/measurements.json, shots/manifest.json) or labelled as illustration.
+  Add ?cap=1 to the URL to burn the narration captions in.
+-->
+<style>
+:root{
+  --page:#ffffff; --grid:#e9ecf1; --ink:#14171f; --ink2:#3b4252; --muted:#5b6475; --muted2:#8a91a1;
+  --blue:#2a78d6; --blue-soft:#e8f1fc; --yellow:#ffd60a; --amber:#c98500; --green:#1a9e6a; --red:#d23f3f;
+  --line:#dfe3ea; --card:#ffffff;
+  --sans:'Segoe UI', system-ui, sans-serif;
+  --black:'Segoe UI Black','Segoe UI',system-ui,sans-serif;
+  --mono:'Cascadia Mono', Consolas, ui-monospace, monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--page);color:var(--ink);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+#stage{position:absolute;inset:0;overflow:hidden;background:var(--page)}
+.abs{position:absolute}
+.scene{position:absolute;inset:0;display:none}
+.mono{font-family:var(--mono)}
+.w{display:inline-block;white-space:pre}
+
+/* background grid (fades toward the edges, like the thumbnail) */
+#bg{position:absolute;inset:0;background:#fff}
+#grid{position:absolute;inset:-80px;background-image:
+  linear-gradient(var(--grid) 1.5px,transparent 1.5px),linear-gradient(90deg,var(--grid) 1.5px,transparent 1.5px);
+  background-size:48px 48px;
+  -webkit-mask-image:radial-gradient(ellipse 75% 70% at 50% 50%,#000 40%,rgba(0,0,0,.35) 100%)}
+
+/* logo */
+#logo{position:absolute;left:64px;top:46px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:34px;letter-spacing:-.02em;color:var(--ink)}
+
+/* heavy headline type (thumbnail style) */
+.hd{position:absolute;font-family:var(--black);font-weight:900;letter-spacing:-.045em;line-height:1;white-space:nowrap;color:var(--ink)}
+.hlb{position:relative;display:inline-block;padding:.02em .16em .1em}
+.hlb>i{position:absolute;left:0;top:.04em;right:0;bottom:-.02em;background:var(--yellow);border-radius:.07em;transform-origin:0 50%;
+  box-shadow:0 .05em 0 rgba(20,23,31,.06)}
+.hlb>span{position:relative;display:inline-block}
+.sub{position:absolute;font-weight:600;color:var(--muted);white-space:nowrap}
+.fine{position:absolute;font-size:25px;color:var(--muted);white-space:nowrap}
+
+/* database cards */
+.dbc{position:absolute;width:240px;height:166px;border-radius:20px;background:#fff;border:2px solid var(--line);
+  box-shadow:0 14px 34px rgba(20,23,31,.08),0 2px 6px rgba(20,23,31,.05);padding:18px 18px 0;transform-origin:50% 50%}
+.dbc.src{border:3px solid var(--blue);box-shadow:0 14px 34px rgba(42,120,214,.20)}
+.dbc .nm{font-size:25px;font-weight:700;letter-spacing:-.02em;margin-top:12px;white-space:nowrap}
+.dbc .sb{font-size:19px;color:var(--muted2);font-weight:600;margin-top:2px}
+.dbc .tagsrc{position:absolute;right:14px;top:16px;font-size:15px;font-weight:800;letter-spacing:.1em;color:#fff;background:var(--blue);border-radius:8px;padding:4px 9px}
+.dbc .sc{position:absolute;right:16px;top:14px;font-size:32px;font-weight:800;letter-spacing:-.03em;color:var(--ink)}
+.dbc .mt{position:absolute;left:18px;right:18px;bottom:16px;height:9px;border-radius:5px;background:#f3d6d6;overflow:hidden}
+.dbc .mt i{position:absolute;left:0;top:0;bottom:0;background:var(--green);border-radius:5px}
+
+/* old-way mock windows (generic grey, illustration) */
+.ow{position:absolute;width:880px;height:420px;border-radius:16px;background:#f4f5f7;border:2px solid #cfd3da;
+  box-shadow:0 18px 40px rgba(20,23,31,.10);overflow:hidden}
+.ow .tb{height:58px;background:#dfe2e7;display:flex;align-items:flex-start;padding:5px 20px 0;gap:10px;border-bottom:2px solid #cfd3da}
+.ow .tb b{width:14px;height:14px;border-radius:50%;background:#b9bec7;margin-top:9px}
+.ow .tb span{margin-left:14px;font-size:23px;font-weight:600;color:#6d7380;white-space:nowrap}
+.ow .row{position:absolute;height:16px;border-radius:8px;background:#e1e4e9}
+.ow .pb{position:absolute;left:40px;right:40px;bottom:44px;height:26px;border-radius:13px;background:#e1e4e9;overflow:hidden}
+.ow .pb i{position:absolute;left:0;top:0;bottom:0;background:#9aa0ab;border-radius:13px}
+.ow .pl{position:absolute;left:40px;bottom:84px;font-size:24px;color:#7a808c;font-weight:600}
+
+/* app layer */
+#appLayer{position:absolute;inset:0;display:none}
+#frame{position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:0 0;border-radius:14px;overflow:hidden;background:#fff;
+  box-shadow:0 30px 90px rgba(20,23,31,.18),0 0 0 1.5px rgba(20,23,31,.10)}
+.shot{position:absolute;left:0;top:0;width:1920px;height:1080px;visibility:hidden}
+.shot img{position:absolute;left:0;top:0;width:1920px;height:1080px}
+.redact{position:absolute;border-radius:5px;background:#e9ecf1;color:#7b8293;font-family:var(--mono);font-size:12.5px;display:flex;align-items:center;padding-left:8px;white-space:nowrap}
+.mark{position:absolute;background:var(--yellow);mix-blend-mode:multiply;border-radius:3px;transform-origin:0 50%}
+.crop{position:absolute;overflow:hidden;transform-origin:50% 50%}
+.crop img{position:absolute;width:1920px;height:1080px}
+#spot{position:absolute;border-radius:14px;border:4px solid var(--blue);pointer-events:none;visibility:hidden}
+
+/* overlays */
+.panel{position:absolute;background:rgba(255,255,255,.96);border-radius:22px;box-shadow:0 18px 50px rgba(20,23,31,.12),0 0 0 1.5px rgba(20,23,31,.06)}
+.pill{position:absolute;white-space:nowrap;border-radius:999px;font-weight:700}
+.callout{position:absolute;white-space:nowrap;background:#fff;border-radius:16px;padding:14px 22px;font-size:32px;font-weight:700;letter-spacing:-.01em;
+  box-shadow:0 14px 40px rgba(20,23,31,.16),0 0 0 2px var(--ink)}
+#tag{position:absolute;left:30px;bottom:26px;font-size:22px;font-weight:700;color:var(--muted);background:#fff;border:2px solid var(--line);border-radius:999px;padding:6px 16px;letter-spacing:.02em}
+
+/* character */
+#char{position:absolute;transform-origin:50% 100%;visibility:hidden}
+#char img{position:absolute;left:0;top:0;width:100%;height:100%}
+#charHalo{position:absolute;border-radius:50%;background:radial-gradient(circle,#e3edfa 0 62%,rgba(227,237,250,0) 63%)}
+
+/* cursor */
+#cursor{position:absolute;left:0;top:0;width:44px;height:44px;visibility:hidden;filter:drop-shadow(0 4px 6px rgba(0,0,0,.25))}
+#ripple{position:absolute;width:20px;height:20px;border-radius:50%;border:4px solid var(--blue);visibility:hidden}
+#flash{position:absolute;inset:0;background:#fff;visibility:hidden}
+
+/* stopwatch */
+#sw{position:absolute;left:250px;top:250px;width:560px;height:620px}
+.stat{position:absolute;left:940px;white-space:nowrap}
+.stat b{font-family:var(--black);font-weight:900;font-size:96px;letter-spacing:-.04em;color:var(--ink)}
+.stat span{font-size:38px;font-weight:700;color:var(--muted);margin-left:18px}
+
+/* folders */
+.fold{position:absolute;left:1110px;width:760px;height:76px;border-radius:16px;background:#fff;border:2px solid var(--line);
+  box-shadow:0 10px 26px rgba(20,23,31,.08);display:flex;align-items:center;padding:0 22px;gap:18px;white-space:nowrap}
+.fold .fn{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--ink)}
+.fold .ft{font-size:22px;color:var(--muted)}
+.fold .fc{margin-left:auto;font-family:var(--black);font-weight:900;font-size:40px;color:var(--blue)}
+
+/* transaction list */
+.tx{position:absolute;left:24px;right:24px;height:60px;border-radius:12px;border:2px dashed #c6cfdd;display:flex;align-items:center;padding:0 18px;gap:18px;white-space:nowrap;background:#fff}
+.tx .lbl{position:absolute;left:14px;top:-13px;font-size:15px;font-weight:700;letter-spacing:.08em;color:#8a95ab;background:#fff;padding:0 6px}
+.tx .ck{width:30px;height:30px;border-radius:50%;border:3px solid #c6cfdd;display:flex;align-items:center;justify-content:center;flex:none}
+.tx .fo{font-family:var(--mono);font-size:22px;color:var(--muted2);width:220px}
+.tx .ob{font-family:var(--mono);font-size:26px;font-weight:600;color:var(--ink)}
+
+/* hero tile */
+#hero{position:absolute;left:150px;top:240px;width:1000px;height:560px;border-radius:30px;background:#fff;border:4px solid var(--line);
+  box-shadow:0 30px 80px rgba(20,23,31,.12);padding:46px 56px}
+.chip{display:inline-flex;align-items:center;gap:12px;font-size:30px;font-weight:700;margin-right:34px;white-space:nowrap}
+.chip b{width:16px;height:16px;border-radius:50%}
+
+/* end card */
+.epill{position:absolute;font-size:28px;font-weight:700;color:var(--ink2);background:#fff;border:2px solid var(--line);border-radius:999px;padding:10px 24px;white-space:nowrap}
+#cta{position:absolute;height:96px;border-radius:22px;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;gap:18px;
+  font-size:38px;font-weight:700;white-space:nowrap;padding:0 44px;box-shadow:0 20px 60px rgba(42,120,214,.35)}
+
+/* captions (optional burn-in, ?cap=1) */
+#cap{position:absolute;left:0;right:0;bottom:34px;display:flex;justify-content:center;visibility:hidden}
+#capbox{padding:12px 30px 14px;border-radius:16px;background:rgba(255,255,255,.96);color:#14171f;box-shadow:0 10px 30px rgba(20,23,31,.14),0 0 0 2px #dfe3ea;font-size:34px;font-weight:600;white-space:nowrap}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="bg"><div id="grid"></div></div>
+
+  <!-- ======================= APP LAYER (real screenshots) ======================= -->
+  <div id="appLayer"><div id="frame"></div></div>
+  <div id="spot"></div>
+
+  <!-- ======================= 1. HOOK ======================= -->
+  <div id="s1" class="scene"><div id="s1cam" class="abs" style="inset:0;transform-origin:780px 420px">
+    <div id="s1cards" class="abs" style="inset:0"></div>
+    <div id="s1l1" class="hd" style="left:124px;top:560px;font-size:88px"></div>
+    <div id="s1l2" class="hd" style="left:112px;top:690px;font-size:150px"><span class="hlb"><i></i><span>One compare.</span></span></div>
+  </div></div>
+
+  <!-- ======================= 2. OLD WAY ======================= -->
+  <div id="s2" class="scene">
+    <div id="s2deck" class="abs" style="inset:0"></div>
+    <div id="s2pair" class="hd" style="left:120px;top:56px;font-size:84px;color:#5f6572">Pair <span id="s2n">1</span> of 9</div>
+    <svg id="s2clock" class="abs" style="left:1500px;top:110px" width="230" height="230" viewBox="-115 -115 230 230">
+      <circle r="104" fill="#fff" stroke="#9aa0ab" stroke-width="10"/>
+      <g id="s2ticks"></g>
+      <line id="s2hh" x1="0" y1="8" x2="0" y2="-52" stroke="#5f6572" stroke-width="10" stroke-linecap="round"/>
+      <line id="s2mh" x1="0" y1="10" x2="0" y2="-80" stroke="#7a808c" stroke-width="6" stroke-linecap="round"/>
+      <circle r="9" fill="#5f6572"/>
+    </svg>
+    <div id="s2hl" class="hd" style="left:108px;top:856px;font-size:100px"><span class="hlb"><i></i><span>one pair at a time</span></span></div>
+    <div id="s2fine" class="fine" style="left:124px;top:1004px">Pairwise compare tools, e.g. Visual Studio Schema Compare &middot; illustration, not timed</div>
+    <div id="s2vig" class="abs" style="inset:0;background:radial-gradient(ellipse 70% 65% at 50% 50%,rgba(120,126,138,0) 40%,rgba(120,126,138,.45) 100%)"></div>
+  </div>
+
+  <!-- ======================= 3. TURN (overlay on app) ======================= -->
+  <div id="o3" class="scene">
+    <div id="o3sweep" class="abs" style="top:0;width:520px;height:1080px;background:linear-gradient(90deg,rgba(42,120,214,0),rgba(42,120,214,.20) 40%,rgba(42,120,214,.85) 50%,rgba(42,120,214,.20) 60%,rgba(42,120,214,0))"></div>
+    <div id="o3cnt" class="hd" style="left:0;width:1920px;text-align:center;top:500px;font-size:150px"><span id="o3n">1</span><span style="color:var(--muted2)"> of 9 targets</span></div>
+    <div id="o3read" class="callout" style="left:0;top:0">All 10 databases: Reading catalog &middot; at once</div>
+    <div id="o3panel" class="abs" style="left:0;right:0;top:560px;height:520px;background:linear-gradient(180deg,rgba(255,255,255,0),rgba(255,255,255,.97) 18%,#fff)"></div>
+    <div id="o3hd" class="hd" style="left:60px;top:618px;font-size:104px"><span class="hlb"><i></i><span>All 9 targets.</span></span><span id="o3b" style="display:inline-block;margin-left:30px">One sweep.</span></div>
+    <div id="o3chips" class="abs" style="inset:0"></div>
+    <div id="o3ui" class="pill" style="left:0;top:0;font-size:24px;padding:7px 18px;background:#fff;border:2px solid var(--line);color:var(--ink2)">&larr; 1130 ms = this screen recording &middot; warm runs: 890&ndash;985 ms</div>
+  </div>
+
+  <!-- ======================= 4. STOPWATCH ======================= -->
+  <div id="s4" class="scene">
+    <svg id="sw" viewBox="-280 -320 560 620">
+      <rect x="-34" y="-318" width="68" height="44" rx="12" fill="#14171f" id="swBtn"/>
+      <rect x="-14" y="-290" width="28" height="30" fill="#14171f"/>
+      <circle r="262" fill="#fff" stroke="#14171f" stroke-width="18"/>
+      <g id="swTicks"></g>
+      <circle r="214" fill="none" stroke="#e8f1fc" stroke-width="26"/>
+      <circle id="swArc" r="214" fill="none" stroke="#2a78d6" stroke-width="26" stroke-linecap="round" transform="rotate(-90)" stroke-dasharray="0 2000"/>
+      <line id="swHand" x1="0" y1="24" x2="0" y2="-190" stroke="#2a78d6" stroke-width="10" stroke-linecap="round"/>
+      <circle r="16" fill="#14171f"/>
+      <text id="swTxt" x="0" y="118" text-anchor="middle" font-family="Segoe UI Black, Segoe UI" font-weight="900" font-size="104" fill="#14171f" letter-spacing="-4">0.00 s</text>
+    </svg>
+    <div id="st1" class="stat" style="top:250px"><b id="st1n">0</b><span>source objects</span></div>
+    <div id="st2" class="stat" style="top:390px"><b>10</b><span>databases</span></div>
+    <div id="st3" class="stat" style="top:530px"><b>9</b><span>targets</span></div>
+    <div id="s4hl" class="hd" style="left:924px;top:690px;font-size:120px"><span class="hlb"><i></i><span>Under a second.</span></span></div>
+    <div id="s4fine" class="fine" style="left:250px;top:930px;line-height:1.5;white-space:normal;width:1500px">
+      Warm runs: 890&ndash;985 ms (5 runs). First run after app start: 2.8 s. One target alone: 0.36&ndash;0.46 s.<br>
+      The UI recording you just saw: 1.13 s. LocalDB, demo data.</div>
+  </div>
+
+  <!-- ======================= 5. PITCH CARD ======================= -->
+  <div id="s5" class="scene"><div id="s5cam" class="abs" style="inset:0;transform-origin:700px 520px">
+    <div id="s5l1" class="hd" style="left:120px;top:236px;font-size:110px">Your 8 client databases.</div>
+    <div id="s5l2" class="hd" style="left:120px;top:400px;font-size:150px">One compare.</div>
+    <div id="s5l3" class="hd" style="left:104px;top:590px;font-size:176px"><span class="hlb"><i></i><span>One second.</span></span></div>
+    <div id="s5sub" class="sub" style="left:126px;top:866px;font-size:34px">9 targets read in parallel &middot; 890&ndash;985 ms warm &middot; demo data</div>
+  </div></div>
+
+  <!-- ======================= 6. SCORES (overlay) ======================= -->
+  <div id="o6" class="scene">
+    <div id="o6panel" class="abs" style="left:0;right:0;top:600px;height:480px;background:linear-gradient(180deg,rgba(255,255,255,0),rgba(255,255,255,.97) 20%,#fff)"></div>
+    <div id="o6worst" class="hd" style="left:80px;top:690px;font-size:110px"><span class="hlb"><i></i><span>Worst first.</span></span><svg id="o6arrow" width="520" height="80" viewBox="0 0 520 80" style="margin-left:40px;vertical-align:-6px"><path d="M10 40 H480 M440 8 L486 40 L440 72" fill="none" stroke="#14171f" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <div id="o6fmt" class="hd" style="left:64px;top:900px;font-size:100px"><span class="hlb"><i></i><span>Formatting, not a false alarm.</span></span></div>
+    <div id="o6c7" class="callout" style="left:0;top:0">Client07: 80 formatting-only</div>
+    <div id="o6ui" class="pill" style="left:0;top:0;font-size:24px;padding:7px 18px;background:#fff;border:2px solid var(--line);color:var(--ink2)">&larr; 1130 ms = this screen recording &middot; warm runs: 890&ndash;985 ms</div>
+    <div id="o6c5" class="callout" style="left:0;top:0">SSDemo_Client05 &middot; 16 different &middot; 13 missing</div>
+  </div>
+
+  <!-- ======================= 7. EXACT LINES + SCRIPTS (overlay) ======================= -->
+  <div id="o7" class="scene">
+    <div id="o7hd1" class="hd" style="left:70px;top:44px;font-size:96px"><span class="hlb"><i></i><span>See the exact lines.</span></span></div>
+    <div id="o7c1" class="callout" style="left:0;top:0">Client03 added <span class="mono" style="background:#ffe9a8;padding:2px 10px;border-radius:8px">AND t.Status &lt;&gt; 9</span></div>
+    <div id="o7lbl" class="pill" style="left:70px;top:176px;font-size:26px;padding:8px 20px;background:#fff;border:2px solid var(--line);color:var(--ink2)">core.usp_Currency_List &middot; SSDemo_Dev vs SSDemo_Client03 &middot; +1 &minus;0</div>
+    <div id="o7hd2" class="hd" style="left:200px;top:46px;font-size:96px"><span class="hlb"><i></i><span>Then make it match.</span></span></div>
+    <div id="o7folds" class="abs" style="inset:0"></div>
+    <div id="o7rev" class="abs" style="left:1110px;top:604px;width:760px;height:170px;border-radius:16px;border:3px dashed #b9c3d3;background:#fafbfd;padding:16px 22px">
+      <div style="display:flex;align-items:center;gap:16px"><span class="mono" style="font-size:28px;font-weight:700">99_review</span><span style="font-size:24px;color:var(--muted);font-weight:700">notes, not scripts</span></div>
+      <div class="mono" style="font-size:20px;color:var(--muted);line-height:1.5;margin-top:8px">column_type_differences.md &middot; drifted_modules.md<br>flow_safety.md &middot; target_only_objects.md &middot; validation.md</div>
+    </div>
+    <div id="o7ok" class="abs" style="left:1110px;top:800px;width:760px;height:84px;border-radius:18px;background:#e5f6ee;border:2px solid #9fd9bf;display:flex;align-items:center;gap:18px;padding:0 24px;white-space:nowrap">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#1a9e6a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m7.5 12.5 3 3 6-6.5"/></svg>
+      <span style="font-size:30px;font-weight:700;color:#127a51">Checked offline: 173 batches, 0 syntax errors</span></div>
+    <div id="o7fine" class="pill" style="left:1110px;top:898px;width:760px;white-space:normal;line-height:1.3;border-radius:18px;font-size:22px;font-weight:600;padding:8px 20px;background:#fff;border:2px solid var(--line);color:var(--ink2)">Real output for SSDemo_Client05: 51 files in 1.4 s &ndash; 34 scripts, plus _ALL.sql + run_all.ps1 per folder, README, RUN.ps1 and 5 notes</div>
+  </div>
+
+  <!-- ======================= 8. WRITE MODE (overlay) ======================= -->
+  <div id="o8" class="scene">
+    <div id="o8new" class="pill" style="left:110px;top:420px;font-size:32px;padding:10px 26px;background:var(--blue);color:#fff;letter-spacing:.06em">NEW IN 1.2</div>
+    <div id="o8hd" class="hd" style="left:96px;top:500px;font-size:140px"><span class="hlb"><i></i><span>Write mode</span></span></div>
+    <div id="o8sub" class="sub" style="left:116px;top:680px;font-size:52px;color:var(--ink2)">Off at every launch.</div>
+    <div id="o8on" class="pill" style="left:0;top:0;font-size:32px;padding:12px 26px;background:#fff3d6;color:#8a5a00;border:3px solid var(--amber)">On &middot; this session only</div>
+  </div>
+
+  <!-- ======================= 9. APPLY ON PURPOSE (overlay) ======================= -->
+  <div id="o9" class="scene">
+    <div id="o9wash" class="abs" style="inset:0;background:rgba(246,247,250,.82)"></div>
+    <div id="o9hd1" class="hd" style="left:70px;top:892px;font-size:96px"><span class="hlb"><i></i><span>Type the name to apply.</span></span></div>
+    <div id="o9hd2" class="hd" style="left:70px;top:44px;font-size:96px"><span class="hlb"><i></i><span>Protected = refused.</span></span></div>
+    <div id="o9inset" class="abs" style="left:660px;top:262px;width:1200px;height:520px;border-radius:20px;overflow:hidden;background:#fff;box-shadow:0 30px 80px rgba(20,23,31,.22),0 0 0 2px rgba(20,23,31,.12)">
+      <div id="o9inner" class="abs" style="left:0;top:0;width:1920px;height:1080px;transform-origin:0 0"></div>
+    </div>
+    <div id="o9insLbl" class="pill" style="left:660px;top:800px;font-size:26px;padding:8px 20px;background:#fff;border:2px solid var(--line);color:var(--ink2)">SSDemo_Client08 marked Protected: only a Close button</div>
+    <div id="o9stamp" class="abs" style="left:1290px;top:318px;font-family:var(--black);font-weight:900;font-size:92px;letter-spacing:.02em;color:var(--red);border:10px solid var(--red);border-radius:18px;padding:0 26px;transform-origin:50% 50%;background:rgba(255,255,255,.9)">REFUSED</div>
+  </div>
+
+  <!-- ======================= 10. ONE FILE, ONE TRANSACTION ======================= -->
+  <div id="s10" class="scene">
+    <div id="s10hd" class="hd" style="left:110px;top:120px;font-size:96px"><span class="hlb"><i></i><span>1 file = 1 transaction</span></span></div>
+    <div id="s10list" class="abs" style="left:110px;top:270px;width:1220px;height:620px;border-radius:24px;background:#fff;border:2px solid var(--line);overflow:hidden;box-shadow:0 18px 50px rgba(20,23,31,.08)">
+      <div id="s10rows" class="abs" style="left:0;right:0;top:0"></div>
+    </div>
+    <div id="s10cnt" class="abs" style="left:1390px;top:280px;white-space:nowrap"><span id="s10n" style="font-family:var(--black);font-weight:900;font-size:150px;letter-spacing:-.05em">0</span><span style="font-family:var(--black);font-weight:900;font-size:80px;color:var(--muted2);letter-spacing:-.04em"> / 34</span>
+      <div style="font-size:30px;font-weight:700;color:var(--muted);margin-top:-6px">files applied &middot; 2&ndash;20 ms each</div></div>
+    <div id="s10ban" class="abs" style="left:110px;top:916px;width:1220px;border-radius:16px;background:#fff6e0;border:2px solid #f0d28a;padding:14px 22px;font-size:25px;color:#7a5200;line-height:1.38">
+      Each file runs in its own transaction. If one fails, that file is rolled back and the run stops there &ndash; the files before it stay applied.</div>
+    <div id="s10rb" class="abs" style="left:1390px;top:556px;width:470px;height:330px;border-radius:20px;background:#fff;border:2px solid var(--line);box-shadow:0 18px 50px rgba(20,23,31,.10);padding:16px 18px">
+      <div style="font-size:17px;font-weight:800;letter-spacing:.09em;color:var(--muted2)">ILLUSTRATION &middot; IF A FILE FAILS</div>
+      <div id="rb1" class="tx" style="left:18px;right:18px;top:64px;height:64px"><span class="lbl">TRANSACTION</span><span class="ck" style="background:#1a9e6a;border-color:#1a9e6a"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span><span class="ob" style="font-size:23px">file 12</span><span class="st" style="margin-left:auto;font-size:21px;font-weight:700;color:#127a51">applied</span></div>
+      <div id="rb2" class="tx" style="left:18px;right:18px;top:150px;height:64px"><span class="lbl">TRANSACTION</span><span id="rb2c" class="ck"></span><span class="ob" style="font-size:23px">file 13</span><span id="rb2s" class="st" style="margin-left:auto;font-size:21px;font-weight:700;color:var(--muted2)">running&hellip;</span></div>
+      <div id="rb3" class="tx" style="left:18px;right:18px;top:236px;height:64px"><span class="lbl">TRANSACTION</span><span class="ck"></span><span class="ob" style="font-size:23px">file 14</span><span id="rb3s" class="st" style="margin-left:auto;font-size:21px;font-weight:700;color:var(--muted2)"></span></div>
+    </div>
+  </div>
+
+  <!-- ======================= 11. 100% ======================= -->
+  <div id="s11" class="scene">
+    <div id="hero">
+      <div style="font-size:50px;font-weight:700;letter-spacing:-.02em">SSDemo_Client05</div>
+      <div class="mono" style="font-size:24px;color:var(--muted2);margin-top:4px">(localdb)\MSSQLLocalDB / SSDemo_Client05</div>
+      <div style="margin-top:20px;white-space:nowrap"><span id="hp" style="font-family:var(--black);font-weight:900;font-size:190px;letter-spacing:-.05em;line-height:1">97.6</span><span style="font-family:var(--black);font-weight:900;font-size:90px">%</span><span style="font-size:34px;color:var(--muted);font-weight:600;margin-left:22px">matches source</span></div>
+      <div class="abs" style="left:56px;right:56px;top:350px;height:22px;border-radius:11px;background:#f6d9d9;overflow:hidden"><i id="hbar" class="abs" style="left:0;top:0;bottom:0;background:var(--green);border-radius:11px"></i></div>
+      <div class="abs" style="left:56px;top:410px">
+        <span class="chip"><b style="background:var(--green)"></b><span id="hs">1,166</span>&nbsp;same</span><span class="chip"><b style="background:#c98500"></b><span id="hd">16</span>&nbsp;different</span><span class="chip"><b style="background:var(--red)"></b><span id="hm">13</span>&nbsp;missing</span>
+      </div>
+    </div>
+    <div id="s11fine" class="fine" style="left:156px;top:830px;font-size:28px">Re-compared alone: 97.6% before, 100% after the apply (score out of 1,195 source objects) &middot; demo data</div>
+    <div id="confetti" class="abs" style="inset:0"></div>
+  </div>
+  <div id="o11" class="scene">
+    <div id="o11c" class="callout" style="left:0;top:0;box-shadow:0 14px 40px rgba(20,23,31,.16),0 0 0 3px var(--green)">SSDemo_Client05: 100.0%</div>
+    <div id="o11ms" class="pill" style="left:0;top:0;font-size:24px;padding:7px 18px;background:#fff;border:2px solid var(--line);color:var(--ink2)">&larr; 2261 ms = this 9-target re-compare, right after the apply</div>
+    <div id="o11o" class="pill" style="left:0;top:0;font-size:26px;padding:8px 20px;background:#fff;border:2px solid var(--line);color:var(--ink2)">other scores from the 9-target run</div>
+  </div>
+
+  <!-- ======================= 12. CLOSE ======================= -->
+  <div id="s12" class="scene">
+    <svg id="s12bolt" class="abs" style="left:770px;top:96px" width="120" height="120" viewBox="0 0 24 24" fill="none" stroke="#2a78d6" stroke-width="2.3" stroke-linejoin="round" stroke-linecap="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" fill="#2a78d6"/></svg>
+    <div id="s12t" class="hd" style="left:0;width:1660px;text-align:center;top:236px;font-size:124px;font-family:var(--sans);font-weight:700;letter-spacing:-.035em"></div>
+    <div id="s12a" class="hd" style="left:0;width:1660px;text-align:center;top:410px;font-size:76px">Stop comparing in pairs.</div>
+    <div id="s12b" class="hd" style="left:0;width:1660px;text-align:center;top:520px;font-size:64px;color:var(--ink2)">Your 8 client databases. <span class="hlb"><i></i><span style="color:var(--ink)">One compare.</span></span></div>
+    <div id="s12pills" class="abs" style="inset:0"></div>
+    <div id="cta">Free download &middot; schemascope.shadowmark.in</div>
+  </div>
+
+  <!-- ======================= HERO LOOP (separate, silent) ======================= -->
+  <div id="sL" class="scene">
+    <div id="sLcards" class="abs" style="inset:0"></div>
+    <div id="sLsweep" class="abs" style="top:120px;width:420px;height:420px;background:linear-gradient(90deg,rgba(42,120,214,0),rgba(42,120,214,.22) 40%,rgba(42,120,214,.85) 50%,rgba(42,120,214,.22) 60%,rgba(42,120,214,0))"></div>
+    <div id="sLhd" class="hd" style="left:112px;top:640px;font-size:150px"><span class="hlb"><i></i><span>One compare.</span></span></div>
+    <div id="sLsub" class="sub" style="left:128px;top:850px;font-size:36px">9 real scores &middot; 890&ndash;985 ms warm &middot; demo data</div>
+  </div>
+
+  <div id="logo"><svg width="40" height="40" viewBox="0 0 24 24" fill="#2a78d6" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>SchemaScope</div>
+  <div id="charHalo"></div>
+  <div id="char"><img id="cN" src="character/character.svg" alt=""><img id="cF" src="character/character-frustrated.svg" alt=""><img id="cH" src="character/character-happy.svg" alt=""><img id="cA" src="character/character-wave-a.svg" alt=""><img id="cB" src="character/character-wave-b.svg" alt=""></div>
+  <svg id="cursor" viewBox="0 0 24 24"><path d="M4 2 L4 19 L8.6 14.8 L11.6 21.6 L14.6 20.3 L11.7 13.6 L18 13.4 Z" fill="#14171f" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+  <div id="ripple"></div>
+  <div id="tag">demo data</div>
+  <div id="flash"></div>
+  <div id="cap"><div id="capbox"></div></div>
+</div>
+
+<script>
+// ------------------------------------------------------------------ helpers
+const $=id=>document.getElementById(id);
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const P=(t,a,b)=>clamp((t-a)/(b-a));
+const lerp=(a,b,x)=>a+(b-a)*x;
+const eo=x=>1-Math.pow(1-x,3), eo5=x=>1-Math.pow(1-x,5), ein=x=>x*x*x;
+const eio=x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+const eback=x=>{const c1=1.7,c3=c1+1;return 1+c3*Math.pow(x-1,3)+c1*Math.pow(x-1,2)};
+function vis(t,a,b,fi=.3,fo=.3){if(t<a||t>b)return 0;return Math.min(fi?eo(P(t,a,a+fi)):1,fo?1-eio(P(t,b-fo,b)):1)}
+function S(el,o,x=0,y=0,s=1,extra=''){el.style.opacity=o.toFixed(4);el.style.visibility=o<=.002?'hidden':'visible';
+  el.style.transform=`translate(${x.toFixed(2)}px,${y.toFixed(2)}px) scale(${s.toFixed(4)}) ${extra}`}
+const fmtInt=n=>Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g,',');
+function rnd(seed){let s=seed;return()=>{s=(s*16807)%2147483647;return(s-1)/2147483646}}
+function el(tag,cls,html,host,css){const d=document.createElement(tag);if(cls)d.className=cls;if(html!=null)d.innerHTML=html;if(css)d.style.cssText=css;if(host)host.appendChild(d);return d}
+const DPR_FRAME=1/30;
+
+// yellow highlight block: bar wipes, then text lands
+function hl(box,t,t0,o=1){if(!box)return;const bar=box.querySelector(':scope>i'),tx=box.querySelector(':scope>span');
+  const kb=eo5(P(t,t0,t0+.26)), kt=eo(P(t,t0+.06,t0+.32));
+  bar.style.transform=`scaleX(${kb.toFixed(4)})`; tx.style.opacity=(kt*o).toFixed(3); tx.style.transform=`translateY(${((1-kt)*30).toFixed(1)}px)`;}
+function hdIn(e,t,t0,t1=99,dy=46){const k=eo5(P(t,t0,t0+.38));const o=Math.min(k,t1<99?1-eio(P(t,t1-.25,t1)):1);S(e,o,0,(1-k)*dy,lerp(.96,1,k));return k}
+// word-by-word kinetic text
+function wordsInto(e,text){e.innerHTML=text.split(' ').map(w=>`<span class="w">${w}</span>`).join(' ');return [...e.querySelectorAll('.w')]}
+function words(list,t,times,dy=50){list.forEach((w,i)=>{const k=eo5(P(t,times[i],times[i]+.32));w.style.opacity=k.toFixed(3);
+  w.style.transform=`translateY(${((1-k)*dy).toFixed(1)}px) scale(${lerp(1.25,1,eback(k)).toFixed(3)})`;})}
+
+// ------------------------------------------------------------------ data (measured: demo-db/measurements.json, compare9 run 2)
+const TARGETS=[['SSDemo_QA','QA',99.8],['SSDemo_Client01','client',99.2],['SSDemo_Client02','client',96.3],['SSDemo_Client03','client',88.8],
+  ['SSDemo_Client04','client',88.9],['SSDemo_Client05','client',97.7],['SSDemo_Client06','client',98.9],['SSDemo_Client07','client',93.4],['SSDemo_Client08','client',96.6]];
+const WORST=[...TARGETS].sort((a,b)=>a[2]-b[2]);
+
+// ------------------------------------------------------------------ database cards (hook + loop)
+const cylSvg=(c,f)=>`<svg width="46" height="52" viewBox="0 0 70 80"><path d="M5 13 v52 a30 10 0 0 0 60 0 v-52" fill="${f}" stroke="${c}" stroke-width="6"/><ellipse cx="35" cy="13" rx="30" ry="10" fill="#fff" stroke="${c}" stroke-width="6"/><path d="M5 32 a30 10 0 0 0 60 0 M5 50 a30 10 0 0 0 60 0" fill="none" stroke="${c}" stroke-width="5"/></svg>`;
+function buildCards(host,withScore){
+  const list=[['SSDemo_Dev','source',null],...TARGETS];
+  return list.map((d,i)=>{const col=i%5,row=Math.floor(i/5);const x=124+col*262,y=150+row*196;
+    const c=el('div','dbc'+(i===0?' src':''),'',host);c.style.left=x+'px';c.style.top=y+'px';
+    c.innerHTML=(i===0?cylSvg('#2a78d6','#e8f1fc'):cylSvg('#3b4b6e','#eef1f6'))+`<div class="nm">${d[0]}</div><div class="sb">${i===0?'1,195 objects':(withScore?'':d[1])}</div>`+
+      (i===0?'<span class="tagsrc">SOURCE</span>':(withScore?`<span class="sc">${d[2].toFixed(1)}%</span><div class="mt"><i style="width:${d[2]}%"></i></div>`:''));
+    return {el:c,x,y,sc:c.querySelector('.sc'),mt:c.querySelector('.mt')};});
+}
+const s1cards=buildCards($('s1cards'),false);
+const sLcards=buildCards($('sLcards'),true);
+const s1w=wordsInto($('s1l1'),'8 client databases. + QA.');
+s1w[3].style.color='#2a78d6';s1w[4].style.color='#2a78d6';
+
+// ------------------------------------------------------------------ old way deck
+const OW=[];(()=>{const names=['SSDemo_Client08','SSDemo_Client07','SSDemo_Client06','SSDemo_Client05','SSDemo_Client04','SSDemo_Client03','SSDemo_Client02','SSDemo_Client01','SSDemo_QA'];
+  names.forEach((n,i)=>{const w=el('div','ow','',$('s2deck'));const front=i===names.length-1;
+    w.innerHTML=`<div class="tb"><b></b><b></b><b></b><span>Compare &nbsp;SSDemo_Dev &harr; ${n}</span></div>`+
+      [0,1,2,3,4,5,6].map(r=>`<div class="row" style="left:40px;top:${100+r*36}px;width:${300+((r*137)%220)}px"></div><div class="row" style="left:470px;top:${100+r*36}px;width:${260+((r*89)%180)}px"></div>`).join('')+
+      (front?`<div class="pl">Comparing&hellip; <span id="owPct">0</span>%</div><div class="pb"><i id="owBar" style="width:0"></i></div>`:'<div class="pl">Waiting</div><div class="pb"></div>');
+    OW.push(w);});})();
+(()=>{let h='';for(let i=0;i<12;i++){const a=i*30*Math.PI/180;h+=`<line x1="${Math.sin(a)*80}" y1="${-Math.cos(a)*80}" x2="${Math.sin(a)*92}" y2="${-Math.cos(a)*92}" stroke="#9aa0ab" stroke-width="${i%3?4:7}" stroke-linecap="round"/>`}$('s2ticks').innerHTML=h;})();
+
+// ------------------------------------------------------------------ app layer: real screenshots
+const SHOTS={
+ '01':['01-empty-compare.png'],'03':['03-source-picked.png'],
+ 't1':['05-targets-01.png'],'t2':['05-targets-02.png'],'t3':['05-targets-03.png'],'t4':['05-targets-04.png'],'t5':['05-targets-05.png'],
+ 't6':['05-targets-06.png'],'t7':['05-targets-07.png'],'t8':['05-targets-08.png'],'t9':['05-targets-09.png'],
+ '06':['06-setup-ready.png'],'07':['07-compare-hover.png'],'08':['08-comparing-3.png'],'10':['10-results-dashboard.png'],
+ '15':['15-diff-changed-proc.png'],'17':['17-diff-formatting-only.png',[],[[11,453,224,17]]],'22':['22-write-mode-switch-off.png'],
+ '23':['23-write-mode-confirm-dialog.png',[],[[716,631,266,24]]],'23b':['23b-write-mode-confirm-hover.png',[],[[716,631,266,24]]],'24':['24-write-mode-on.png'],
+ // the output folder shows a local path: covered by a redaction chip
+ '21':['21-create-scripts-dialog-readonly.png',[[630,741,568,22,'C:\\…\\demo-db  (local path hidden)']]],
+ // 'Runs as' shows the real machine login: covered by a redaction chip
+ '29':['29-apply-dialog.png',[[676,409,232,21]]],'a3':['30-apply-typing-03.png',[[676,409,232,21]]],'a7':['30-apply-typing-07.png',[[676,409,232,21]]],
+ 'a11':['30-apply-typing-11.png',[[676,409,232,21]]],'a13':['30-apply-typing-13.png',[[676,409,232,21]]],'31':['31-apply-name-typed.png',[[676,409,232,21]]],
+ '34':['34-apply-result.png'],'35':['35-recompared-hero-100.png'],'37':['37-protected-apply-refused.png',[[676,539,232,21]]],
+};
+const IMGS=[];
+function makeShot(key,host){const d=SHOTS[key];const s=el('div','shot','',host);const im=el('img',null,null,s);im.src='shots/'+d[0];IMGS.push(im);
+  (d[1]||[]).forEach(r=>{el('div','redact',r[4]||'Windows: (hidden)',s,`left:${r[0]}px;top:${r[1]}px;width:${r[2]}px;height:${r[3]}px`)});
+  const marks=(d[2]||[]).map(r=>el('div','mark','',s,`left:${r[0]}px;top:${r[1]}px;width:${r[2]}px;height:${r[3]}px`));
+  return {el:s,marks}}
+const SH={};Object.keys(SHOTS).forEach(k=>SH[k]=makeShot(k,$('frame')));
+const INS=makeShot('37',$('o9inner'));INS.el.style.visibility='visible';
+// tile crops for the worst-first deal (shot 10, CSS px boxes from the manifest)
+const TILEBOX=[[16,201,327,188],[355,201,315,188],[682,201,262,188],[957,201,321,188],[1290,201,321,188],[1623,201,262,188],[1897,201,23,188]];
+const cover=el('div','', '', SH['10'].el,'position:absolute;left:0;top:195px;width:1920px;height:200px;background:#fff;visibility:hidden');
+const crops=TILEBOX.map(b=>{const c=el('div','crop','',SH['10'].el,`left:${b[0]-3}px;top:${b[1]-3}px;width:${b[2]+6}px;height:${b[3]+6}px;visibility:hidden`);
+  const im=el('img',null,null,c);im.src='shots/'+SHOTS['10'][0];im.style.left=(-b[0]+3)+'px';im.style.top=(-b[1]+3)+'px';IMGS.push(im);return c});
+
+let CAM={fx:960,fy:540,z:1,sx:960,sy:540};
+function cam(fx,fy,z,sx=960,sy=540){CAM={fx,fy,z,sx,sy};$('frame').style.transform=`translate(${(sx-z*fx).toFixed(2)}px,${(sy-z*fy).toFixed(2)}px) scale(${z.toFixed(4)})`}
+function camK(t,K){let a=K[0],b=K[0],k=0;if(t>=K[K.length-1][0]){a=b=K[K.length-1]}else for(let i=0;i<K.length-1;i++){if(t>=K[i][0]&&t<K[i+1][0]){a=K[i];b=K[i+1];k=eio(P(t,a[0],b[0]));break}}
+  const g=(i,d)=>lerp(a[i]??d,b[i]??d,k);const z=Math.exp(lerp(Math.log(a[3]),Math.log(b[3]),k));cam(g(1),g(2),z,g(4,960),g(5,540))}
+const scr=(x,y)=>[CAM.sx+CAM.z*(x-CAM.fx),CAM.sy+CAM.z*(y-CAM.fy)];
+function shots(map){for(const k in SH){const o=map[k]||0;SH[k].el.style.visibility=o>0.002?'visible':'hidden';SH[k].el.style.opacity=o.toFixed(3)}}
+function seq(t,list){let cur=list[0][1];for(const [tt,k] of list) if(t>=tt) cur=k;const m={};m[cur]=1;return m}
+function spot(box,a,pad=10,wash=.78){const s=$('spot');if(!box||a<=0.002){s.style.visibility='hidden';return}
+  const [x,y]=scr(box[0]-pad,box[1]-pad);const w=(box[2]+pad*2)*CAM.z,h=(box[3]+pad*2)*CAM.z;
+  s.style.visibility='visible';s.style.left=x+'px';s.style.top=y+'px';s.style.width=w+'px';s.style.height=h+'px';
+  s.style.opacity=1;s.style.borderColor=`rgba(42,120,214,${a})`;s.style.boxShadow=`0 0 0 4000px rgba(240,242,246,${(wash*a).toFixed(3)})`}
+function place(e,x,y,o=1,s=1,ax=0,ay=0){e.style.left=(x-ax*e.offsetWidth)+'px';e.style.top=(y-ay*e.offsetHeight)+'px';S(e,o,0,0,s)}
+
+// cursor (image coords, follows the camera) + ripple
+function cursor(t,K,clicks=[]){const c=$('cursor'),r=$('ripple');if(!K||t<K[0][0]||t>K[K.length-1][0]){c.style.visibility='hidden';r.style.visibility='hidden';return}
+  let a=K[0],b=K[0],k=0;for(let i=0;i<K.length-1;i++){if(t>=K[i][0]&&t<=K[i+1][0]){a=K[i];b=K[i+1];k=eio(P(t,a[0],b[0]));break}}
+  const [x,y]=scr(lerp(a[1],b[1],k),lerp(a[2],b[2],k));let press=1;r.style.visibility='hidden';
+  for(const tc of clicks){const d=t-tc;if(d>-.06&&d<.12)press=.84;if(d>=0&&d<.45){const q=eo(d/.45);r.style.visibility='visible';const R=lerp(10,70,q);
+    r.style.left=(x-R)+'px';r.style.top=(y-R)+'px';r.style.width=r.style.height=(2*R)+'px';r.style.opacity=(1-q).toFixed(3)}}
+  const o=Math.min(P(t,K[0][0],K[0][0]+.2),1-P(t,K[K.length-1][0]-.2,K[K.length-1][0]));
+  c.style.visibility=o>0?'visible':'hidden';c.style.opacity=o;c.style.transform=`translate(${x-8}px,${y-4}px) scale(${press})`;c.style.transformOrigin='8px 4px'}
+
+// character: pose by time, pops in/out, gentle bob
+function charSet(t,cfg){const c=$('char'),halo=$('charHalo');if(!cfg||t<cfg.t0||t>cfg.t1){c.style.visibility='hidden';halo.style.visibility='hidden';return}
+  let pose=cfg.poses[0][1],tsw=-9;for(const [tt,p] of cfg.poses) if(t>=tt){pose=p;tsw=tt}
+  const H=cfg.h,W=H*690/750;const kin=eback(P(t,cfg.t0,cfg.t0+.45)),kout=ein(P(t,cfg.t1-.3,cfg.t1));
+  const bob=Math.sin((t-cfg.t0)*(cfg.bobHz||1.6)*Math.PI*2)*(cfg.bob??6);
+  const sq=1-0.07*Math.sin(Math.PI*P(t,tsw,tsw+.22));
+  const y=cfg.y+(1-kin)*H*.55+kout*H*.7+bob;
+  c.style.visibility='visible';c.style.left=cfg.x+'px';c.style.top=y+'px';c.style.width=W+'px';c.style.height=H+'px';
+  c.style.opacity=Math.min(P(t,cfg.t0,cfg.t0+.12),1-kout).toFixed(3);
+  const rot=cfg.rot||0;
+  if(cfg.wave&&t>=cfg.t0+.5)pose=Math.floor((t-cfg.t0-.5)*3.4)%2?'B':'A';
+  c.style.transform=`rotate(${rot}deg) scale(${(1/sq*.0+1).toFixed(3)},${sq.toFixed(3)})${cfg.flip?' scaleX(-1)':''}`;
+  ['cN','cF','cH','cA','cB'].forEach(id=>$(id).style.visibility=id==='c'+pose?'inherit':'hidden');
+  if(cfg.halo){halo.style.visibility='visible';const R=W*.62;halo.style.left=(cfg.x+W*.53-R)+'px';halo.style.top=(cfg.y+H*.42-R+(1-kin)*40)+'px';halo.style.width=halo.style.height=2*R+'px';
+    halo.style.opacity=(Math.min(P(t,cfg.t0,cfg.t0+.3),1-kout)).toFixed(3)}else halo.style.visibility='hidden';}
+
+// ------------------------------------------------------------------ chips (all nine scores at once)
+const o3chips=WORST.map((d,i)=>el('div','panel','',$('o3chips'),`left:${60+i*156}px;top:800px;width:146px;height:112px;padding:14px 0 0 16px;border-radius:18px`));
+o3chips.forEach((c,i)=>{const d=WORST[i];c.innerHTML=`<div style="font-size:20px;font-weight:700;color:var(--muted)">${d[0].replace('SSDemo_','')}</div><div style="font-family:var(--black);font-weight:900;font-size:40px;letter-spacing:-.04em;color:${d[2]<95?'#c0392b':'#14171f'}">${d[2].toFixed(1)}%</div>`});
+
+// ------------------------------------------------------------------ stopwatch ticks
+(()=>{let h='';for(let i=0;i<60;i++){const a=i*6*Math.PI/180,L=i%5?14:28;h+=`<line x1="${Math.sin(a)*(250-L)}" y1="${-Math.cos(a)*(250-L)}" x2="${Math.sin(a)*244}" y2="${-Math.cos(a)*244}" stroke="${i%5?'#b7bdc8':'#14171f'}" stroke-width="${i%5?3:6}"/>`}$('swTicks').innerHTML=h;})();
+const ARC=2*Math.PI*214;
+
+// ------------------------------------------------------------------ folders (real counts, SSDemo_Client05 run)
+const FOLD=[['01_columns','New columns','4'],['03_missing','1 table, 2 functions, 1 view, 9 procedures','13'],['04_columntypes','e.g. hr.EmployeeSkill.Url 255 &rarr; 400','4'],['05_constraints','Constraints','6'],['06_indexes','Indexes','7']];
+const foldEls=FOLD.map((f,i)=>{const d=el('div','fold','',$('o7folds'));d.style.top=(160+i*86)+'px';
+  d.innerHTML=`<svg width="38" height="32" viewBox="0 0 24 20" style="flex:none"><path d="M1 3a2 2 0 0 1 2-2h6l2 3h10a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2z" fill="#e8f1fc" stroke="#2a78d6" stroke-width="1.6"/></svg><span class="fn">${f[0]}</span><span class="ft">${f[1]}</span><span class="fc">${f[2]}</span>`;return d});
+
+// ------------------------------------------------------------------ transaction list (the 34 real files, in run order)
+const FILES=[['04_columntypes','hr.EmployeeSkill'],['04_columntypes','shipping.ShippingZone'],['04_columntypes','support.Sla'],['04_columntypes','inventory.PurchaseOrderLine'],
+ ['01_columns','core.TenantSetting'],['01_columns','reporting.Widget'],['01_columns','sales.Quote'],['01_columns','shipping.TrackingEvent'],
+ ['03_missing','hr.Payroll'],['03_missing','sales.fn_PriceListCount'],['03_missing','support.tvf_TicketCommentSearch'],['03_missing','support.vw_SlaActive'],
+ ['03_missing','billing.usp_CreditNote_Delete'],['03_missing','billing.usp_InvoiceLine_List'],['03_missing','core.usp_UserRole_Update'],['03_missing','crm.usp_EmailTemplate_Delete'],
+ ['03_missing','inventory.usp_ReorderRule_List'],['03_missing','sales.usp_Commission_Insert'],['03_missing','sales.usp_OrderNote_List'],['03_missing','support.usp_Agent_Delete'],['03_missing','support.usp_Macro_Insert'],
+ ['05_constraints','billing.InvoiceLine'],['05_constraints','reporting.Alert'],['05_constraints','shipping.ShippingZone'],['05_constraints','hr.Department'],['05_constraints','hr.Payroll &middot; FK_hr_Payroll_PayGradeId'],['05_constraints','hr.Payroll &middot; FK_hr_Payroll_Tenant'],
+ ['06_indexes','audit.AccessLog'],['06_indexes','audit.ConfigChange'],['06_indexes','core.Tenant'],['06_indexes','hr.Payroll &middot; IX_hr_Payroll_PayGradeId'],['06_indexes','hr.Payroll &middot; IX_hr_Payroll_TenantId_Status'],['06_indexes','inventory.Bin'],['06_indexes','shipping.Shipment']];
+const ROWH=76;
+const txEls=FILES.map((f,i)=>{const d=el('div','tx','',$('s10rows'));d.style.top=(28+i*ROWH)+'px';
+  d.innerHTML=`<span class="lbl">TRANSACTION</span><span class="ck"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span><span class="fo">${f[0]}</span><span class="ob">${f[1]}</span>`;
+  return {el:d,ck:d.querySelector('.ck')}});
+const txTime=i=>53.6+4.3*Math.pow(i/33,.6);   // = sound.py EV files (53.6, 57.9), u**0.6
+
+// ------------------------------------------------------------------ confetti
+const CONF=(()=>{const R=rnd(42),out=[];const cols=['#2a78d6','#ffd60a','#7fb2ee','#ffe566','#1a9e6a'];
+  for(let i=0;i<110;i++){const d=el('div','abs','',$('confetti'));const w=10+R()*12,h=6+R()*8;d.style.width=w+'px';d.style.height=h+'px';d.style.background=cols[i%cols.length];d.style.borderRadius='2px';
+    out.push({el:d,vx:(R()-.5)*1700,vy:-500-R()*1100,vr:(R()-.5)*900,x0:420+R()*400,y0:440+R()*80})}return out})();
+
+// ------------------------------------------------------------------ end card pills
+const PILLS=[['Free','Open source','SQL Server 2012+'],['Azure SQL','Windows 10 & 11','No Visual Studio needed']];
+const pillEls=[];PILLS.forEach((row,r)=>row.forEach(p=>pillEls.push({el:el('div','epill',p.replace('&','&amp;'),$('s12pills')),r})));
+function layoutPills(){[0,1].forEach(r=>{const L=pillEls.filter(p=>p.r===r);const tot=L.reduce((s,p)=>s+p.el.offsetWidth,0)+18*(L.length-1);let x=830-tot/2;
+  L.forEach(p=>{p.el.style.left=x+'px';p.el.style.top=(650+r*78)+'px';x+=p.el.offsetWidth+18})})}
+
+// ------------------------------------------------------------------ captions (narration)
+const CAPTIONS=[
+ {a:0.2,b:3.6,text:'Eight client databases. Plus QA. One compare.'},
+ {a:4.0,b:9.6,text:'The old way: one pair at a time. Then eight more.'},
+ {a:11.0,b:17.8,text:'SchemaScope takes all nine targets in one go, and reads every one at the same time.'},
+ {a:18.2,b:23.3,text:'Over a thousand objects in each of ten databases, in under a second.'},
+ {a:23.7,b:27.8,text:'Your eight client databases. One compare. About one second.'},
+ {a:28.2,b:35.0,text:'Every client gets a score, worst first. Re-indented code is formatting, not a false alarm.'},
+ {a:35.4,b:41.6,text:'See the exact lines, then create scripts that make it match, checked before they run.'},
+ {a:42.0,b:47.6,text:'1.2 adds write mode. Off at every launch, until you confirm.'},
+ {a:48.0,b:53.1,text:'Type the database name to apply. Protected servers are refused, scripts only.'},
+ {a:53.5,b:59.1,text:'Each file runs in its own transaction. One error rolls that file back.'},
+ {a:59.5,b:64.6,text:'Then it compares again, and the client hits one hundred percent.'},
+ {a:65.0,b:71.3,text:'Stop comparing in pairs. Get SchemaScope free, at schemascope.shadowmark.in'}];
+window.CAPTIONS=CAPTIONS;
+window.DURATION=71.5;
+window.LOOP={duration:8};
+window.SCENES=[[0,3.8,'Hook'],[3.8,10.8,'Old way'],[10.8,18,'Turn'],[18,23.5,'Stopwatch'],[23.5,28,'Pitch card'],[28,35.2,'Scores'],[35.2,41.8,'Exact lines + scripts'],
+ [41.8,47.8,'Write mode'],[47.8,53.3,'Apply on purpose'],[53.3,59.3,'One file, one transaction'],[59.3,64.8,'100%'],[64.8,71.5,'Close']];
+const SHOWCAP=/[?&]cap=1/.test(location.search);
+
+// ------------------------------------------------------------------ render
+const ALLSC=['s1','s2','o3','s4','s5','o6','o7','o8','o9','s10','s11','o11','s12','sL'];
+function only(list){ALLSC.forEach(id=>{const e=$(id);e.style.display=list.includes(id)?'block':'none';e.style.visibility='visible'})}
+function resetCommon(){$('appLayer').style.display='none';$('appLayer').style.opacity=1;spot(null,0);cursor(-1,null);charSet(-1,null);$('flash').style.visibility='hidden';S($('tag'),0);S($('logo'),1)}
+
+function renderAt(t){
+  resetCommon();
+  // ---------------- 1. HOOK 0 - 3.8
+  if(t<3.8){only(['s1']);
+    const z=lerp(1.2,1,eo(P(t,0,1.7)));$('s1cam').style.transform=`scale(${z.toFixed(4)})`;
+    s1cards.forEach((c,i)=>{const tl=.1+i*.067,k=P(t,tl,tl+.3);S(c.el,P(t,tl,tl+.06),0,(1-eo(k))*-30,lerp(1.75,1,eback(k)))});
+    words(s1w,t,[.3,.5,.72,1.75,1.95]);
+    hl($('s1l2').querySelector('.hlb'),t,2.55);S($('s1l2'),t>=2.55?1:0);
+    charSet(t,{t0:1.0,t1:9e9,x:1318,y:420,h:680,poses:[[0,'N']],halo:true});
+    return}
+  // ---------------- 2. OLD WAY 3.8 - 10.8 (frozen after 9.8)
+  if(t<10.8){only(['s2']);S($('logo'),0);const tf=Math.min(t,9.8);
+    const fan=eio(P(tf,7.5,8.6));
+    OW.forEach((w,i)=>{const back=OW.length-1-i;const k=eo(P(tf,3.85+back*.04,4.3+back*.04));
+      const x=120+back*lerp(10,4,fan)+fan*back*3, y=420-back*lerp(8,34,fan);
+      S(w,k*(back?lerp(.85,1,fan):1),x,y-(1-k)*60,1-back*.012); w.style.left='0px';w.style.top='0px';w.style.zIndex=20-back});
+    // front window: pair 1 crawls, stalls, never done in time
+    const prog=(tf<4.4?0:Math.min(.62,0.08*Math.pow(tf-4.4,1.4)+.03*Math.sin((tf-4.4)*2.1)))*100;
+    $('owBar').style.width=Math.max(0,prog)+'%';$('owPct').textContent=Math.max(0,Math.floor(prog));
+    $('s2n').textContent='1';hdIn($('s2pair'),tf,4.0);
+    S($('s2clock'),eo(P(tf,4.1,4.5)),0,0,lerp(.6,1,eback(P(tf,4.1,4.5))));
+    $('s2mh').setAttribute('transform',`rotate(${(tf-3.8)*300})`);$('s2hh').setAttribute('transform',`rotate(${(tf-3.8)*25})`);
+    hl($('s2hl').querySelector('.hlb'),tf,5.0);S($('s2hl'),tf>=5?1:0);
+    S($('s2fine'),eo(P(tf,3.9,4.2)));   // the "illustration, not timed" label is up whenever the mock is
+    const fr=P(t,9.8,9.95);$('s2').style.filter=`grayscale(${fr}) contrast(${lerp(1,.92,fr)})`;S($('s2vig'),fr);
+    charSet(tf,{t0:3.95,t1:9e9,x:1360,y:470,h:640,poses:[[0,'F']],bob:5,bobHz:2.2,halo:true});
+    return}
+  // ---------------- 3. TURN 10.8 - 18 (real app). Beats = sound.py EV: source_chip 11.5, targets 11.9 + i*0.12,
+  //                     compare_click 14.6 (visual 14.55), sweep 14.75-15.5, scores_land 15.5, char_happy 16.6
+  if(t<18){only(['o3']);$('appLayer').style.display='block';S($('logo'),0);
+    const TS=i=>11.9+i*.12;
+    shots(seq(t,[[10.8,'01'],[11.5,'03'],...['t1','t2','t3','t4','t5','t6','t7','t8','t9'].map((k,i)=>[TS(i),k]),[13.0,'06'],[13.7,'07'],[14.7,'08'],[15.5,'10']]));
+    // starts pushed in (readable at 720p) with the source chip on the left; pans right to the targets and the Write mode Off switch
+    camK(t,[[10.8,610,60,1.6,960,96],[11.5,610,60,1.6,960,96],[11.95,790,90,1.22,960,110],[12.9,1130,90,1.22,960,110],[13.45,740,140,1.3,960,182],[14.6,740,140,1.3,960,182],[14.7,960,540,.94],[15.5,960,540,.94],[15.51,960,300,1.0,960,330],[17.9,960,300,1.18,960,330]]);
+    cursor(t,[[13.2,900,300],[14.3,164,131],[14.75,164,131]],[14.55]);
+    S($('tag'),eo(P(t,11,11.3)));
+    const sw=P(t,14.7,15.5);S($('o3sweep'),t>14.7&&t<15.55?1:0,lerp(-560,1960,eio(sw)),0);
+    if(t>=15.5&&t<15.88){$('flash').style.visibility='visible';$('flash').style.opacity=(.85*(1-eo(P(t,15.5,15.88)))).toFixed(3)}
+    // the frame pops when all nine scores land
+    if(t>=15.5&&t<15.98){const k=P(t,15.5,15.98);const z=CAM.z*(1+.035*Math.sin(Math.PI*k));cam(CAM.fx,CAM.fy,z,CAM.sx,CAM.sy)}
+    {let idx=-1;for(let i=0;i<9;i++)if(t>=TS(i))idx=i;$('o3n').textContent=idx<0?0:idx+1;
+      const k=P(t,11.9,12.15);S($('o3cnt'),Math.min(eo(k),1-eio(P(t,13.2,13.45))),0,0,lerp(.8,1,eback(k))*(1+.04*Math.max(0,1-(idx<0?1:(t-TS(idx))/.08))))}
+    place($('o3read'),960,540,vis(t,14.7,15.5,.15,.1),lerp(.9,1,eback(P(t,14.7,14.9))),.5,.5);
+    S($('o3panel'),eo(P(t,15.4,15.7)));
+    o3chips.forEach(c=>{const k=P(t,15.5,15.82);S(c,eo(k),0,(1-eback(k))*50,lerp(.8,1,eback(k)))});
+    hl($('o3hd').querySelector('.hlb'),t,15.8);S($('o3hd'),t>=15.8?1:0);S($('o3b'),eo(P(t,16.2,16.5)),0,(1-eo(P(t,16.2,16.5)))*30);
+    if(t>=15.5){const [x,y]=scr(300,131);place($('o3ui'),x,y,eo(P(t,15.9,16.2)),1,0,.5)}else S($('o3ui'),0);
+    charSet(t,{t0:16.3,t1:9e9,x:1500,y:540,h:560,poses:[[0,'H']],bob:5});
+    return}
+  // ---------------- 4. STOPWATCH 18 - 23.5 (stopwatch_start 18.25, stop 19.2; chips 19.6 / 20.5 / 21.2)
+  if(t<23.5){only(['s4']);
+    S($('sw'),eo(P(t,18,18.25)),0,(1-eo(P(t,18,18.25)))*40,lerp(.92,1,eo(P(t,18,18.25))));
+    const T0=18.25,T1=T0+.955;const el_=clamp(t-T0,0,.955);
+    $('swTxt').textContent=(Math.floor(el_*100)/100).toFixed(2)+' s';
+    $('swHand').setAttribute('transform',`rotate(${el_*360})`);$('swArc').setAttribute('stroke-dasharray',`${(el_*ARC).toFixed(1)} 2000`);
+    const press=(d=>d>=0&&d<.15?6:0)(t-T1)+(d=>d>=0&&d<.12?6:0)(t-T0);$('swBtn').setAttribute('y',-318+press);
+    if(t>=T1){const k=1-P(t,T1,T1+.35);$('sw').style.filter=k>0?`drop-shadow(0 0 ${30*k}px rgba(42,120,214,${.6*k}))`:'none'}else $('sw').style.filter='none';
+    hdIn($('st1'),t,19.55);$('st1n').textContent=fmtInt(1195*eo(P(t,19.6,20.4)));
+    hdIn($('st2'),t,20.45);hdIn($('st3'),t,21.15);
+    hl($('s4hl').querySelector('.hlb'),t,21.95);S($('s4hl'),t>=21.95?1:0);   // VO "in under a second" 21.98
+    S($('s4fine'),eo(P(t,22.25,22.6)));
+    // the right half is empty until the stats arrive: the character watches the stopwatch run
+    charSet(t,{t0:18.1,t1:19.5,x:1260,y:400,h:700,poses:[[0,'N']],halo:true});
+    return}
+  // ---------------- 5. PITCH CARD 23.5 - 28 (drum hits 23.73 / 25.69 / 26.68)
+  if(t<28){only(['s5']);const out=1-eio(P(t,27.75,28));
+    $('s5cam').style.transform=`scale(${lerp(1,1.04,P(t,23.5,28)).toFixed(4)})`;$('s5').style.opacity=out;
+    const pop=(e,t0)=>{const k=P(t,t0,t0+.3);S(e,eo(k),0,0,lerp(1.35,1,eback(k)))};
+    pop($('s5l1'),23.7);pop($('s5l2'),25.62);hl($('s5l3').querySelector('.hlb'),t,26.62);S($('s5l3'),t>=26.62?1:0);
+    S($('s5sub'),eo(P(t,27.0,27.35)));
+    charSet(t,{t0:23.6,t1:27.9,x:1400,y:460,h:640,poses:[[0,'N']],halo:true});
+    return}
+  // ---------------- 6. SCORES 28 - 35.2 (sort 28.3, push_c07 30.9, chip_flip 32.15, pan_hero 33.6)
+  if(t<35.2){only(['o6']);$('appLayer').style.display='block';S($('logo'),0);S($('tag'),1);
+    const in17=t>=31.5&&t<33.4;
+    shots(in17?{'17':1}:{'10':1});
+    if(t<31.5) camK(t,[[28,960,330,.92,960,330],[28.4,960,330,1.0,960,330],[30.2,960,330,1.0,960,330],[30.9,813,295,2.35,760,330]]);
+    else if(in17) camK(t,[[31.5,770,560,1.25,960,560],[33.4,770,560,1.32,960,560]]);
+    else camK(t,[[33.4,813,295,2.35,760,330],[33.9,1754,295,1.8,1621,330],[35.2,1754,295,1.85,1613,330]]);
+    const a1=P(t,28,28.15);$('appLayer').style.opacity=a1;
+    // worst-first deal: tiles flip in left to right
+    cover.style.visibility=t<30.5?'visible':'hidden';
+    crops.forEach((c,i)=>{const k=P(t,28.3+i*.17,28.3+i*.17+.42);c.style.visibility=k>0?'visible':'hidden';c.style.opacity=Math.min(1,k*3);
+      c.style.transform=`perspective(1400px) rotateY(${lerp(-100,0,eback(k)).toFixed(2)}deg)`});
+    S($('o6panel'),vis(t,29.4,30.6,.3,.3));
+    hl($('o6worst').querySelector('.hlb'),t,29.6);S($('o6worst'),vis(t,29.6,30.6,.01,.25));
+    {const k=eo(P(t,29.9,30.3));$('o6arrow').style.opacity=k;$('o6arrow').style.transform=`translateX(${(1-k)*-40}px)`}
+    if(t<31.5){const [x,y]=scr(300,131);place($('o6ui'),x,y,vis(t,28.3,30.6,.3,.3),1,0,.5)}else S($('o6ui'),0);
+    // Client07 tile, then the real diff of the re-indented procedure (marked Formatting by the app itself)
+    if(t<31.5){spot([682,201,262,188],vis(t,30.8,31.55,.3,.05),8,.7);
+      {const [x,y]=scr(682+131,201+188);place($('o6c7'),x,y+28,vis(t,31.0,31.5,.2,.05),1,.5,0)}}
+    else S($('o6c7'),0);
+    if(in17){
+      SH['17'].marks.forEach(m=>{m.style.transform=`scaleX(${eo(P(t,31.8,32.1)).toFixed(3)})`;m.style.opacity=.85});
+      spot([1298,388,144,24],vis(t,32.1,33.45,.2,.05),6,.3);
+      if(t<31.62){$('flash').style.visibility='visible';$('flash').style.opacity=(.6*(1-P(t,31.5,31.62))).toFixed(3)}
+      charSet(t,{t0:31.6,t1:33.35,x:1530,y:720,h:380,poses:[[0,'H']],bob:3});
+    }
+    hl($('o6fmt').querySelector('.hlb'),t,32.3);S($('o6fmt'),vis(t,32.3,33.4,.01,.15));
+    // pan to the hero tile
+    if(t>=33.4){spot([1623,201,262,188],vis(t,33.8,35.3,.3,0),8,.7);
+      const [x,y]=scr(1623+262,201+188);place($('o6c5'),x,y+28,vis(t,34.1,35.3,.25,0),1,1,0)}else S($('o6c5'),0);
+    return}
+  // ---------------- 7. EXACT LINES + SCRIPTS 35.2 - 41.8 (diff_in 35.3, token 36.3, create_click 37.15, folders 37.5 + i*0.22, review 38.75, badge 39.4)
+  if(t<41.8){only(['o7']);$('appLayer').style.display='block';$('appLayer').style.opacity=1;S($('logo'),0);S($('tag'),1);
+    shots(seq(t,[[35.2,'15'],[37.15,'21']]));
+    if(t<37.15){camK(t,[[35.2,1300,700,1.35,960,600],[36.0,1340,793,1.9,960,640],[37.15,1355,793,1.94,960,640]]);
+      spot([990,786,900,14],vis(t,35.9,37.2,.3,0),1,.62);
+      hl($('o7hd1').querySelector('.hlb'),t,35.45);S($('o7hd1'),t>=35.45?1:0);
+      S($('o7lbl'),eo(P(t,35.8,36.1)));
+      {const [x,y]=scr(1100,783);place($('o7c1'),x,y-30,eo(P(t,36.3,36.6)),lerp(.85,1,eback(P(t,36.3,36.6))),0,1)}
+      S($('o7hd2'),0);foldEls.forEach(f=>S(f,0));S($('o7rev'),0);S($('o7ok'),0);S($('o7fine'),0);
+    } else {
+      camK(t,[[37.15,960,540,1.04,620,600],[37.7,960,540,1.12,620,594]]);
+      S($('o7hd1'),0);S($('o7c1'),0);S($('o7lbl'),0);
+      if(t<37.4){$('flash').style.visibility='visible';$('flash').style.opacity=(.7*(1-P(t,37.15,37.4))).toFixed(3)}
+      hl($('o7hd2').querySelector('.hlb'),t,37.25);S($('o7hd2'),t>=37.25?1:0);
+      foldEls.forEach((f,i)=>{const k=P(t,37.5+i*.22,37.5+i*.22+.4);S(f,eo(k),(1-eo5(k))*-420,(1-eo5(k))*(300-i*60),lerp(.6,1,eback(k)))});
+      {const k=P(t,38.75,39.15);S($('o7rev'),eo(k),0,(1-eo5(k))*-60)}
+      {const k=P(t,39.4,39.7);S($('o7ok'),eo(k),0,0,lerp(1.25,1,eback(k)))}
+      S($('o7fine'),eo(P(t,39.8,40.1)));
+      // "checked before they run": the character points at the badge
+      charSet(t,{t0:39.3,t1:41.75,x:-30,y:700,h:400,poses:[[0,'H']],flip:true,bob:3});
+    }
+    return}
+  // ---------------- 8. WRITE MODE 41.8 - 47.8 (switch_click 43.9, dialog 44.0, enable_click 46.0, amber 46.05)
+  if(t<47.8){only(['o8']);$('appLayer').style.display='block';S($('logo'),0);S($('tag'),0);
+    shots(seq(t,[[41.8,'01'],[43.3,'22'],[43.95,'23'],[45.6,'23b'],[46.05,'24']]));
+    camK(t,[[41.8,1700,30,2.0,1300,230],[42.6,1770,24,3.0,1340,230],[43.9,1770,24,3.0,1340,230],[43.95,960,560,1.0],[44.5,880,560,1.75,960,560],[45.6,900,560,1.75,960,560],[46.15,1700,40,2.1,1458,150],[47.8,1700,40,2.2,1436,150]]);
+    if(t<43.95){const k=P(t,41.85,42.2);S($('o8new'),eo(k),0,(1-eo(k))*30);hl($('o8hd').querySelector('.hlb'),t,42.15);S($('o8hd'),t>=42.15?1:0);
+      S($('o8sub'),eo(P(t,42.7,43.0)));
+      cursor(t,[[43.0,1600,260],[43.65,1868,24],[43.95,1868,24]],[43.78]);}
+    else{S($('o8new'),0);S($('o8hd'),0);S($('o8sub'),0);
+      SH['23'].marks.concat(SH['23b'].marks).forEach(m=>{m.style.transform=`scaleX(${eo(P(t,44.7,45.1)).toFixed(3)})`;m.style.opacity=.85});
+      spot([700,631,540,30],vis(t,44.6,45.7,.3,.25),4,.45);
+      cursor(t,[[45.0,1300,820],[45.75,1133,697],[46.1,1133,697]],[46.0]);}
+    {const [x,y]=scr(1694,23);place($('o8on'),x-24,y,t>=46.1?eo(P(t,46.15,46.45)):0,lerp(.8,1,eback(P(t,46.15,46.45))),1,.5)}
+    if(t>=46.05){const k=P(t,46.05,46.9);spot([1694,10,168,27],(1-k)*.9,6,.0);$('spot').style.borderColor=`rgba(201,133,0,${(1-k).toFixed(3)})`}
+    // nervous: on the right while the header is zoomed, then bottom-left so the dialog, the cursor and the hero tile stay clear
+    if(t<44.0) charSet(t,{t0:42.3,t1:44.0,x:1480,y:560,h:540,poses:[[0,'F']],bob:4,bobHz:2.6});
+    else charSet(t,{t0:44.1,t1:9e9,x:10,y:668,h:430,poses:[[0,'F']],bob:4,bobHz:2.6});
+    return}
+  // ---------------- 9. APPLY ON PURPOSE 47.8 - 53.3 (type 48.5 + i*0.085, apply_wakes 49.95, inset 50.6, refused 51.35)
+  if(t<53.3){only(['o9']);$('appLayer').style.display='block';S($('logo'),0);S($('tag'),1);
+    const TY=n=>48.5+n*.085;
+    shots(seq(t,[[47.8,'29'],[TY(3),'a3'],[TY(7),'a7'],[TY(11),'a11'],[TY(13),'a13'],[TY(15),'31']]));
+    camK(t,[[47.8,960,540,1.05],[48.2,960,540,1.12],[48.75,960,770,1.9,960,560],[50.4,1000,780,1.95,960,560],[51.0,960,600,1.2,800,560]]);
+    hl($('o9hd1').querySelector('.hlb'),t,48.1);S($('o9hd1'),vis(t,48.1,50.6,.01,.2));
+    spot([1078,793,241,31],vis(t,49.95,50.7,.2,.2),6,.5);
+    if(t>=49.9&&t<50.6)cursor(t,[[49.9,1300,900],[50.35,1200,808],[50.6,1200,808]],[]);
+    S($('o9wash'),eo(P(t,50.5,50.9))*.9);
+    // the Client08 inset at 1.5x, framed on the whole refused dialog (banner + the lone Close button)
+    {const k=P(t,50.6,51.1);S($('o9inset'),eo(k),(1-eo5(k))*700,0,lerp(.9,1,eo(k)));
+      const z=1.5;$('o9inner').style.transform=`translate(${(-570*z).toFixed(1)}px,${(-392*z).toFixed(1)}px) scale(${z})`}
+    S($('o9insLbl'),eo(P(t,51.2,51.5)));
+    hl($('o9hd2').querySelector('.hlb'),t,50.8);S($('o9hd2'),t>=50.8?1:0);
+    {const k=P(t,51.3,51.55);S($('o9stamp'),t>=51.3?Math.min(1,k*3)*eo(P(t,50.6,51.1)):0,(1-eo5(P(t,50.6,51.1)))*700,0,lerp(2.4,1,eo5(k)),'rotate(-12deg)')}
+    return}
+  // ---------------- 10. ONE FILE, ONE TRANSACTION 53.3 - 59.3 (files 53.6-57.9, applied 58.2; VO "One error rolls that file back" 56.2-58.2)
+  if(t<59.3){only(['s10']);
+    hl($('s10hd').querySelector('.hlb'),t,53.4);
+    if(t<58.0) S($('s10hd'),t>=53.4?1:0);
+    else S($('s10hd'),t<58.2?1-P(t,58.0,58.2):eo(P(t,58.25,58.5)),0,t<58.2?0:812);   // moves to the empty bottom so it does not cover the result title
+    S($('s10list'),eo(P(t,53.4,53.8)),0,(1-eo(P(t,53.4,53.8)))*40);S($('s10ban'),eo(P(t,54.1,54.5)));S($('s10cnt'),eo(P(t,53.6,54)));
+    let done=0;txEls.forEach((r,i)=>{const ti=txTime(i);const appear=P(t,ti-.25,ti-.05);const ok=t>=ti;if(ok)done++;
+      r.el.style.opacity=Math.max(.0,appear).toFixed(3);
+      r.ck.style.background=ok?'#1a9e6a':'#fff';r.ck.style.borderColor=ok?'#1a9e6a':'#c6cfdd';r.ck.style.transform=`scale(${ok?lerp(1.4,1,eo(P(t,ti,ti+.18))):1})`;
+      r.el.style.borderColor=ok?'#9fd9bf':'#c6cfdd';r.el.style.borderStyle=ok?'solid':'dashed';});
+    $('s10n').textContent=done;
+    {const cur=clamp(done,0,34);const target=Math.max(0,(cur-6))*ROWH;$('s10rows').style.transform=`translateY(${-Math.min(target,(34-7.6)*ROWH)}px)`}
+    // illustration: what a failure would look like (the real run had none)
+    {const k=P(t,56.15,56.45);S($('s10rb'),Math.min(eo(k),1-P(t,57.85,58.05)),(1-eo5(k))*120,0);
+      const fail=t>=56.5,back=t>=56.95,stop=t>=57.35;const r2=$('rb2'),c2=$('rb2c');
+      const sh=fail&&!back?Math.sin((t-56.5)*60)*6*(1-P(t,56.5,56.9)):0;
+      r2.style.transform=`translateX(${sh.toFixed(1)}px)`;
+      r2.style.borderColor=fail?'#e7a3a3':'#c6cfdd';r2.style.borderStyle=back?'dashed':'solid';r2.style.background=fail&&!back?'#fdecec':'#fff';
+      c2.style.background=fail?'#d23f3f':'#fff';c2.style.borderColor=fail?'#d23f3f':'#c6cfdd';
+      c2.innerHTML=fail?'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>':'';
+      $('rb2s').textContent=back?'error → rolled back':fail?'error':'running…';$('rb2s').style.color=fail?'#b42318':'#8a91a1';
+      $('rb3s').textContent=stop?'not run – run stops':'';$('rb3').style.opacity=stop?.55:1}
+    // real result frame
+    if(t>=58.0){$('appLayer').style.display='block';const k=P(t,58.0,58.3);S($('logo'),1-k);['s10list','s10ban','s10cnt'].forEach(id=>{$(id).style.opacity=(1-k).toFixed(3)});$('appLayer').style.opacity=k;shots({'34':1});
+      camK(t,[[58.0,960,470,1.7,960,560],[59.3,960,470,1.8,960,560]]);spot([601,333,718,51],vis(t,58.2,59.4,.2,0)*k,6,.4)}
+    charSet(t,{t0:53.5,t1:56.1,x:1450,y:580,h:520,poses:[[0,'F']],bob:3,bobHz:2.8});
+    return}
+  // ---------------- 11. 100% 59.3 - 64.8 (recompare 59.5, count 60.6-61.95, hundred 61.95)
+  if(t<64.8){
+    if(t<62.8){only(['s11']);
+      const k0=P(t,59.3,59.65);S($('hero'),eo(k0),0,(1-eo(k0))*60);
+      const H=61.95;const k=eio(P(t,60.55,H));const pct=lerp(97.6,100,k);$('hp').textContent=pct.toFixed(1);
+      $('hbar').style.width=pct+'%';
+      // the object counts are never interpolated: the real "before" counts, then the real "after" counts
+      const af=t>=H;$('hs').textContent=af?'1,195':'1,166';$('hd').textContent=af?'0':'16';$('hm').textContent=af?'0':'13';
+      const g=P(t,H,H+.2);$('hero').style.borderColor=g>0?'#1a9e6a':'#dfe3ea';$('hero').style.boxShadow=`0 30px 80px rgba(20,23,31,.12),0 0 0 ${(g*10).toFixed(1)}px rgba(26,158,106,.18)`;
+      $('hp').style.color=g>0?'#127a51':'#14171f';
+      if(g>0&&t<H+.3){$('hero').style.transform+=` scale(${(1+.04*Math.sin(Math.PI*P(t,H,H+.3))).toFixed(4)})`}
+      S($('s11fine'),eo(P(t,60.0,60.4)));
+      const dt=t-H;CONF.forEach(c=>{if(dt<0||dt>2.2){c.el.style.visibility='hidden';return}c.el.style.visibility='visible';
+        const x=c.x0+c.vx*dt*.62,y=c.y0+c.vy*dt+.5*1500*dt*dt;c.el.style.transform=`translate(${x}px,${y}px) rotate(${c.vr*dt}deg)`;c.el.style.opacity=(1-P(dt,1.5,2.2)).toFixed(3)});
+      charSet(t,{t0:59.6,t1:62.85,x:1340,y:480,h:620,poses:[[0,'N'],[H,'H']],halo:true});
+    } else {only(['o11']);$('appLayer').style.display='block';$('appLayer').style.opacity=1;S($('logo'),0);S($('tag'),1);shots({'35':1});
+      camK(t,[[62.8,960,345,1.0,960,420],[63.4,960,345,1.0,960,420],[64.1,1441,335,1.75,1100,420],[64.8,1441,335,1.8,1100,420]]);
+      if(t<63.1){$('flash').style.visibility='visible';$('flash').style.opacity=(.6*(1-P(t,62.8,63.1))).toFixed(3)}
+      spot([1310,241,262,188],vis(t,63.0,64.9,.3,0),8,.55);$('spot').style.borderColor='rgba(26,158,106,1)';
+      {const [x,y]=scr(1441,241+188);place($('o11c'),x,y+30,eo(P(t,64.0,64.3)),1,.5,0)}
+      {const [x,y]=scr(560,560);place($('o11o'),x,y,vis(t,63.0,64.0,.25,.25),1,.5,0)}
+      {const [x,y]=scr(470,219);place($('o11ms'),x,y,vis(t,63.0,64.0,.25,.25),1,0,.5)}
+    }
+    return}
+  // ---------------- 12. CLOSE 64.8 - 71.5 (title_type 65.1, tagline 66.8, pills 67.6 + i*0.25, button 69.2)
+  only(['s12']);S($('logo'),0);layoutPills();
+  {const k=P(t,64.85,65.3);S($('s12bolt'),eo(k),0,0,lerp(.3,1,eback(k)),`rotate(${lerp(-30,0,eo(k))}deg)`)}
+  {const n=Math.round(11*P(t,65.1,65.7));$('s12t').textContent='SchemaScope'.slice(0,n);S($('s12t'),t>=65.1?1:0)}
+  hdIn($('s12a'),t,65.0+.1);
+  hdIn($('s12b'),t,66.6);hl($('s12b').querySelector('.hlb'),t,66.8);
+  pillEls.forEach((p,i)=>{const k=P(t,67.6+i*.25,67.6+i*.25+.35);S(p.el,eo(k),0,(1-eback(k))*-40)});
+  {const k=P(t,69.2,69.6);const c=$('cta');c.style.left=(830-c.offsetWidth/2)+'px';c.style.top='850px';S(c,eo(k),0,(1-eo(k))*40,lerp(.85,1,eback(k))*(1+.015*Math.sin(Math.max(0,t-69.8)*4)))}
+  charSet(t,{t0:65.3,t1:9e9,x:1395,y:500,h:620,poses:[[0,'H']],wave:true,halo:true});
+}
+
+// ------------------------------------------------------------------ 8 s silent hero loop
+function renderLoopAt(t){
+  resetCommon();only(['sL']);
+  sLcards.forEach((c,i)=>{const tl=.3+i*.067,k=P(t,tl,tl+.3);const ko=P(t,6.6+i*.03,7.2+i*.03);
+    S(c.el,P(t,tl,tl+.06)*(1-eo(ko)),0,(1-eo(k))*-30+ein(ko)*60,lerp(1.75,1,eback(k))*lerp(1,.9,ko));
+    if(c.sc){const ks=P(t,3.25,3.55);c.sc.style.opacity=eo(ks);c.sc.style.transform=`scale(${lerp(1.6,1,eback(ks))})`;c.mt.style.opacity=eo(ks)}});
+  const sw=P(t,2.6,3.3);S($('sLsweep'),t>2.6&&t<3.35?1:0,lerp(-500,1500,eio(sw)),0);
+  const hb=$('sLhd').querySelector('.hlb');hl(hb,t,1.5);S($('sLhd'),t>=1.5?(1-eio(P(t,6.8,7.4))):0,0,ein(P(t,6.8,7.4))*40);
+  S($('sLsub'),Math.min(eo(P(t,3.7,4.1)),1-eio(P(t,6.7,7.2))));
+  // fills the right third from the start; points at the row when the scores land; leaves with the cards
+  charSet(t,{t0:0.6,t1:7.2,x:1430,y:460,h:640,poses:[[0,'N'],[3.3,'H']],halo:true});
+}
+window.POSTER={loop:4.2,full:15.9};
+
+window.renderAt=renderAt;window.renderLoopAt=renderLoopAt;
+window.READY=Promise.all([document.fonts.ready,...IMGS.map(i=>i.decode().catch(()=>{})),...['cN','cF','cH','cA','cB'].map(id=>$(id).decode().catch(()=>{}))]);
+// captions burn-in (optional)
+const _r=renderAt;window.renderAt=function(t){_r(t);const c=$('cap');if(!SHOWCAP){c.style.visibility='hidden';return}
+  const cur=CAPTIONS.find(x=>t>=x.a&&t<x.b);c.style.visibility=cur?'visible':'hidden';if(cur)$('capbox').textContent=cur.text};
+window.READY.then(()=>window.renderAt(0));
+</script>
+</body>
+</html>

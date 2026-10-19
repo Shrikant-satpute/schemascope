@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SchemaScope Explainer v3</title>
+<!--
+  SchemaScope explainer v3 - "Compare databases." Light theme, 1920x1080, calm numbered walkthrough.
+  Every pixel is a pure function of time (same contract as v2):
+    window.renderAt(seconds)      -> main explainer frame (0 .. window.DURATION)
+    window.renderLoopAt(seconds)  -> 8 s silent hero loop (0 .. window.LOOP.duration); frame 8.0 == frame 0
+  window.READY resolves once fonts and every screenshot are decoded.
+  No CSS transitions, no timers, no wall clock, no network. System fonts only.
+  App layer = REAL light-theme screenshots: ../v2/shots (v2 capture) and shots/ (v3 extra capture 45, 46), 3840x2160 shown at 1920x1080 CSS px.
+  Redaction chips cover the machine login ('Runs as') and local folder paths. No LAN IP appears in the frames used.
+  The character appears ONLY in the hook (0 - 4.4 s). The yellow highlight bar appears ONLY in the hook and the close.
+  Add ?cap=1 to burn the narration captions in.
+-->
+<style>
+:root{
+  --page:#ffffff; --grid:#edf0f4; --ink:#14171f; --ink2:#3b4252; --muted:#5b6475; --muted2:#8a91a1;
+  --blue:#2a78d6; --blue-soft:#e8f1fc; --yellow:#ffd60a; --amber:#c98500; --green:#1a9e6a; --red:#d23f3f;
+  --line:#dfe3ea; --card:#ffffff;
+  --sans:'Segoe UI', system-ui, sans-serif;
+  --black:'Segoe UI Black','Segoe UI',system-ui,sans-serif;
+  --mono:'Cascadia Mono', Consolas, ui-monospace, monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--page);color:var(--ink);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+#stage{position:absolute;inset:0;overflow:hidden;background:var(--page)}
+.abs{position:absolute}
+.scene{position:absolute;inset:0;display:none}
+.mono{font-family:var(--mono)}
+
+/* faint 40px grid */
+#bg{position:absolute;inset:0;background:#fff}
+#grid{position:absolute;inset:-80px;background-image:
+  linear-gradient(var(--grid) 1.5px,transparent 1.5px),linear-gradient(90deg,var(--grid) 1.5px,transparent 1.5px);
+  background-size:40px 40px;
+  -webkit-mask-image:radial-gradient(ellipse 75% 70% at 50% 50%,#000 40%,rgba(0,0,0,.35) 100%)}
+
+#logo{position:absolute;left:64px;top:46px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:34px;letter-spacing:-.02em;color:var(--ink)}
+
+/* heavy headline + yellow bar (hook and close only) */
+.hd{position:absolute;font-family:var(--black);font-weight:900;letter-spacing:-.045em;line-height:1;white-space:nowrap;color:var(--ink)}
+.hlb{position:relative;display:inline-block;padding:.02em .16em .1em}
+.hlb>i{position:absolute;left:0;top:.04em;right:0;bottom:-.02em;background:var(--yellow);border-radius:.07em;transform-origin:0 50%;box-shadow:0 .05em 0 rgba(20,23,31,.06)}
+.hlb>span{position:relative;display:inline-block}
+
+/* hook pills */
+.hpill{position:absolute;white-space:nowrap;font-size:46px;font-weight:700;color:var(--ink2);background:#f3f5f8;border:2px solid var(--line);border-radius:999px;padding:12px 34px 14px}
+.mini{position:absolute;width:132px;height:112px;display:flex;flex-direction:column;align-items:center;gap:6px;background:#fff;border:2px solid var(--line);border-radius:16px;padding-top:12px;box-shadow:0 8px 20px rgba(20,23,31,.06)}
+.mini span{font-size:20px;font-weight:700;color:var(--ink2)}
+
+/* story cards */
+.dbc{position:absolute;width:250px;height:170px;border-radius:20px;background:#fff;border:2px solid var(--line);
+  box-shadow:0 14px 34px rgba(20,23,31,.08),0 2px 6px rgba(20,23,31,.05);padding:18px 20px 0}
+.dbc.src{border:3px solid var(--blue);box-shadow:0 14px 34px rgba(42,120,214,.20)}
+.dbc .nm{font-size:26px;font-weight:700;letter-spacing:-.02em;margin-top:10px;white-space:nowrap}
+.dbc .sb{font-size:19px;color:var(--muted2);font-weight:600;margin-top:2px}
+.dbc .tagsrc{position:absolute;right:14px;top:16px;font-size:15px;font-weight:800;letter-spacing:.1em;color:#fff;background:var(--blue);border-radius:8px;padding:4px 9px}
+.cc{position:absolute;width:300px;height:112px;border-radius:18px;background:#fff;border:2px solid var(--line);
+  box-shadow:0 10px 26px rgba(20,23,31,.07);display:flex;align-items:center;gap:14px;padding:0 18px;white-space:nowrap}
+.cc .nm{font-size:25px;font-weight:700;letter-spacing:-.02em}
+.cc .q{position:absolute;right:-14px;top:-14px;width:40px;height:40px;border-radius:50%;background:#fff;border:2px solid #c3cad6;color:var(--muted);
+  font-size:24px;font-weight:800;display:flex;align-items:center;justify-content:center}
+.cc .gap{position:absolute;left:72px;bottom:10px;height:34px;border:2.5px dashed var(--red);border-radius:8px;color:var(--red);font-size:20px;font-weight:700;
+  display:flex;align-items:center;gap:8px;padding:0 10px;background:#fff6f6}
+.qt{position:absolute;white-space:nowrap;font-size:38px;font-weight:600;color:var(--ink2);background:#f3f5f8;border:2px solid var(--line);border-radius:16px;padding:10px 24px 12px;display:flex;align-items:center;gap:14px}
+.qt b{width:38px;height:38px;border-radius:50%;background:#fff;border:2px solid #c3cad6;color:var(--muted);font-size:22px;font-weight:800;display:flex;align-items:center;justify-content:center;flex:none}
+
+/* app layer */
+#appLayer{position:absolute;inset:0;display:none;background:#fff}
+#frame{position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:0 0;overflow:hidden;background:#fff}
+.shot{position:absolute;left:0;top:0;width:1920px;height:1080px;visibility:hidden}
+.shot img{position:absolute;left:0;top:0;width:1920px;height:1080px}
+.redact{position:absolute;border-radius:5px;background:#e9ecf1;color:#7b8293;font-family:var(--mono);font-size:12.5px;display:flex;align-items:center;padding-left:8px;white-space:nowrap}
+.crop{position:absolute;overflow:hidden}
+.crop img{position:absolute;width:1920px;height:1080px}
+#spot{position:absolute;border-radius:12px;border:4px solid var(--blue);pointer-events:none;visibility:hidden}
+#ring{position:absolute;border-radius:12px;border:4px solid var(--red);pointer-events:none;visibility:hidden}
+
+/* small overlays */
+.note{position:absolute;white-space:nowrap;font-size:26px;font-weight:600;color:var(--ink2);background:rgba(255,255,255,.97);border:2px solid var(--line);border-radius:14px;padding:8px 20px;
+  box-shadow:0 8px 24px rgba(20,23,31,.08)}
+.callout{position:absolute;white-space:nowrap;background:#fff;border-radius:14px;padding:12px 22px;font-size:30px;font-weight:700;letter-spacing:-.01em;
+  box-shadow:0 14px 40px rgba(20,23,31,.16),0 0 0 2px var(--ink)}
+#tag{position:absolute;left:30px;bottom:26px;font-size:22px;font-weight:700;color:var(--muted);background:#fff;border:2px solid var(--line);border-radius:999px;padding:6px 16px;letter-spacing:.02em}
+
+/* numbered step pill (v1 workflow style, light) */
+#step{position:absolute;left:0;top:0;display:flex;align-items:center;gap:20px;padding:12px 34px 12px 12px;border-radius:999px;background:#fff;
+  box-shadow:0 16px 44px rgba(20,23,31,.16),0 0 0 2px rgba(20,23,31,.08);white-space:nowrap}
+#stepN{width:58px;height:58px;border-radius:50%;background:var(--blue);color:#fff;font-weight:800;font-size:32px;display:flex;align-items:center;justify-content:center;flex:none}
+#stepT{font-size:38px;font-weight:600;letter-spacing:-.01em;color:var(--ink)}
+#newtag{position:absolute;left:0;top:0;font-size:22px;font-weight:800;letter-spacing:.08em;color:#fff;background:var(--blue);border-radius:999px;padding:6px 16px;white-space:nowrap}
+
+/* character (hook only) */
+#char{position:absolute;transform-origin:50% 100%;visibility:hidden}
+#char img{position:absolute;left:0;top:0;width:100%;height:100%}
+#charHalo{position:absolute;border-radius:50%;background:radial-gradient(circle,#e3edfa 0 62%,rgba(227,237,250,0) 63%);visibility:hidden}
+
+/* cursor */
+#cursor{position:absolute;left:0;top:0;width:44px;height:44px;visibility:hidden;filter:drop-shadow(0 4px 6px rgba(0,0,0,.25))}
+#ripple{position:absolute;width:20px;height:20px;border-radius:50%;border:4px solid var(--blue);visibility:hidden}
+#flash{position:absolute;inset:0;background:#fff;visibility:hidden}
+
+/* close */
+.epill{position:absolute;font-size:28px;font-weight:700;color:var(--ink2);background:#fff;border:2px solid var(--line);border-radius:999px;padding:10px 24px;white-space:nowrap}
+#cta{position:absolute;height:96px;border-radius:22px;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;gap:18px;
+  font-size:38px;font-weight:700;white-space:nowrap;padding:0 44px;box-shadow:0 20px 60px rgba(42,120,214,.35)}
+
+#cap{position:absolute;left:0;right:0;bottom:130px;display:flex;justify-content:center;visibility:hidden}
+#capbox{padding:10px 26px 12px;border-radius:14px;background:rgba(20,23,31,.82);color:#fff;font-size:30px;font-weight:600;white-space:nowrap}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="bg"><div id="grid"></div></div>
+
+  <!-- ======================= APP LAYER (real screenshots) ======================= -->
+  <div id="appLayer"><div id="frame"></div></div>
+  <div id="spot"></div>
+  <div id="ring"></div>
+
+  <!-- ======================= HOOK 0 - 4.4 ======================= -->
+  <div id="sH" class="scene">
+    <div id="hHd" class="hd" style="left:104px;top:270px;font-size:136px"><span class="hlb"><i></i><span>Compare databases.</span></span></div>
+    <div id="hP1" class="hpill">Staging</div>
+    <div id="hP2" class="hpill">Production</div>
+    <div id="hP3" class="hpill">Every client database</div>
+    <div id="hMinis" class="abs" style="inset:0"></div>
+  </div>
+
+  <!-- ======================= STORY 4.4 - 15 ======================= -->
+  <div id="sS" class="scene"><div id="sScam" class="abs" style="inset:0;transform-origin:900px 520px">
+    <div id="sTitle" class="abs" style="left:120px;top:150px;font-size:44px;font-weight:700;letter-spacing:-.02em;color:var(--ink2);white-space:nowrap">One database, shipped to many clients</div>
+    <svg id="sLines" class="abs" style="left:0;top:0" width="1920" height="1080"></svg>
+    <div id="sSrc" class="dbc src" style="left:120px;top:400px"></div>
+    <div id="sCards" class="abs" style="inset:0"></div>
+    <div id="sQ1" class="qt" style="left:120px;top:640px"><b>?</b>which tables?</div>
+    <div id="sQ2" class="qt" style="left:120px;top:740px"><b>?</b>which procedure is missing?</div>
+    <div id="sQ3" class="qt" style="left:120px;top:840px"><b>?</b>which schema never shipped?</div>
+  </div></div>
+
+  <!-- ======================= WALKTHROUGH OVERLAYS ======================= -->
+  <div id="oW" class="scene">
+    <div id="nReal" class="note">SchemaScope &middot; real app, demo data</div>
+    <div id="nTime" class="note" style="font-size:25px">9 targets: 890&ndash;985 ms warm (5 runs), first run 2.8 s, LocalDB, demo data</div>
+    <div id="c4" class="callout" style="box-shadow:0 14px 40px rgba(20,23,31,.16),0 0 0 3px var(--red)">Client04: 127 missing, including the whole <span class="mono">support</span> schema</div>
+    <div id="c3" class="callout" style="box-shadow:0 14px 40px rgba(20,23,31,.16),0 0 0 3px var(--red)">Client03: 58 missing &middot; tables, views, procedures</div>
+    <div id="c5" class="callout" style="box-shadow:0 14px 40px rgba(20,23,31,.16),0 0 0 3px var(--green)">was 97.7% in the 9-target compare</div>
+    <div id="newtag">NEW IN 1.2</div>
+    <div id="step"><div id="stepN">1</div><div id="stepT"></div></div>
+  </div>
+
+  <!-- ======================= CLOSE 59.6 - 65.4 ======================= -->
+  <div id="sC" class="scene">
+    <div id="cLogo" class="abs" style="left:0;width:1920px;top:180px;display:flex;justify-content:center;align-items:center;gap:22px">
+      <svg width="88" height="88" viewBox="0 0 64 64" style="flex:none"><defs><linearGradient id="ssTileB" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b88e2"/><stop offset="1" stop-color="#1f66c2"/></linearGradient></defs><rect x="2" y="2" width="60" height="60" rx="14" fill="url(#ssTileB)"/><rect x="14" y="17" width="36" height="7" rx="3.5" fill="#fff"/><rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#ffd60a"/><rect x="14" y="40" width="36" height="7" rx="3.5" fill="#fff"/></svg>
+      <span style="font-size:92px;font-weight:700;letter-spacing:-.035em">SchemaScope</span></div>
+    <div id="cHd" class="hd" style="left:0;width:1920px;text-align:center;top:390px;font-size:112px"><span class="hlb"><i></i><span>Stop comparing in pairs.</span></span></div>
+    <div id="cPills" class="abs" style="inset:0"></div>
+    <div id="cta">Free download &middot; schemascope.shadowmark.in</div>
+  </div>
+
+  <!-- ======================= HERO LOOP (separate, silent, no character) ======================= -->
+  <div id="sL" class="scene">
+    <div id="lHd" class="hd" style="left:0;width:1920px;text-align:center;top:160px;font-size:132px"><span class="hlb"><i></i><span>Compare databases.</span></span></div>
+    <div id="lRows" class="abs" style="inset:0"></div>
+    <div id="lSub" class="abs" style="left:0;width:1920px;text-align:center;top:880px;font-size:34px;font-weight:600;color:var(--muted);white-space:nowrap">Staging &middot; production &middot; every client database &middot; 9 real scores, demo data</div>
+  </div>
+
+  <div id="logo"><svg width="40" height="40" viewBox="0 0 64 64" style="flex:none"><defs><linearGradient id="ssTileA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b88e2"/><stop offset="1" stop-color="#1f66c2"/></linearGradient></defs><rect x="2" y="2" width="60" height="60" rx="14" fill="url(#ssTileA)"/><rect x="14" y="17" width="36" height="7" rx="3.5" fill="#fff"/><rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#ffd60a"/><rect x="14" y="40" width="36" height="7" rx="3.5" fill="#fff"/></svg>SchemaScope</div>
+  <div id="charHalo"></div>
+  <div id="char"><img id="cN" src="character.svg" alt=""></div>
+  <svg id="cursor" viewBox="0 0 24 24"><path d="M4 2 L4 19 L8.6 14.8 L11.6 21.6 L14.6 20.3 L11.7 13.6 L18 13.4 Z" fill="#14171f" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+  <div id="ripple"></div>
+  <div id="tag">demo data</div>
+  <div id="flash"></div>
+  <div id="cap"><div id="capbox"></div></div>
+</div>
+
+<script>
+// ------------------------------------------------------------------ helpers
+const $=id=>document.getElementById(id);
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const P=(t,a,b)=>clamp((t-a)/(b-a));
+const lerp=(a,b,x)=>a+(b-a)*x;
+const eo=x=>1-Math.pow(1-x,3), eo5=x=>1-Math.pow(1-x,5), ein=x=>x*x*x;
+const eio=x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+const eback=x=>{const c1=1.4,c3=c1+1;return 1+c3*Math.pow(x-1,3)+c1*Math.pow(x-1,2)};
+function vis(t,a,b,fi=.3,fo=.3){if(t<a||t>b)return 0;return Math.min(fi?eo(P(t,a,a+fi)):1,fo?1-eio(P(t,b-fo,b)):1)}
+function S(e,o,x=0,y=0,s=1,extra=''){e.style.opacity=o.toFixed(4);e.style.visibility=o<=.002?'hidden':'visible';
+  e.style.transform=`translate(${x.toFixed(2)}px,${y.toFixed(2)}px) scale(${s.toFixed(4)}) ${extra}`}
+function el(tag,cls,html,host,css){const d=document.createElement(tag);if(cls)d.className=cls;if(html!=null)d.innerHTML=html;if(css)d.style.cssText=css;if(host)host.appendChild(d);return d}
+// yellow highlight block: bar wipes, then text lands
+function hl(box,t,t0,o=1,td=.08){const bar=box.querySelector(':scope>i'),tx=box.querySelector(':scope>span');
+  const kb=eo5(P(t,t0,t0+.3)), kt=eo(P(t,t0+td,t0+td+.28));
+  bar.style.transform=`scaleX(${kb.toFixed(4)})`; tx.style.opacity=(kt*o).toFixed(3); tx.style.transform=`translateY(${((1-kt)*26).toFixed(1)}px)`;}
+function place(e,x,y,o=1,s=1,ax=0,ay=0,dy=0){e.style.left=(x-ax*e.offsetWidth)+'px';e.style.top=(y-ay*e.offsetHeight)+'px';S(e,o,0,dy,s)}
+const cylSvg=(c,f,w=46,h=52)=>`<svg width="${w}" height="${h}" viewBox="0 0 70 80" style="flex:none"><path d="M5 13 v52 a30 10 0 0 0 60 0 v-52" fill="${f}" stroke="${c}" stroke-width="6"/><ellipse cx="35" cy="13" rx="30" ry="10" fill="#fff" stroke="${c}" stroke-width="6"/><path d="M5 32 a30 10 0 0 0 60 0 M5 50 a30 10 0 0 0 60 0" fill="none" stroke="${c}" stroke-width="5"/></svg>`;
+
+// ------------------------------------------------------------------ app layer: real screenshots
+const V2='shots-mark/v2/', V3='shots-mark/v3/';   // shots with the new mark painted into the app header (patch-mark.py)
+const RUNAS=[676,409,232,21];
+const SHOTS={
+ '01':[V2+'01-empty-compare.png'],'02':[V2+'02-picker-source.png'],'03':[V2+'03-source-picked.png'],'04':[V2+'04-picker-target.png'],
+ 't1':[V2+'05-targets-01.png'],'t2':[V2+'05-targets-02.png'],'t3':[V2+'05-targets-03.png'],'t4':[V2+'05-targets-04.png'],'t5':[V2+'05-targets-05.png'],
+ 't6':[V2+'05-targets-06.png'],'t7':[V2+'05-targets-07.png'],'t8':[V2+'05-targets-08.png'],'t9':[V2+'05-targets-09.png'],
+ '06':[V2+'06-setup-ready.png'],'07':[V2+'07-compare-hover.png'],'09':[V2+'09-comparing-warm.png'],'10':[V2+'10-results-dashboard.png'],
+ '45':[V3+'45-matrix-missing-client04.png'],'46':[V3+'46-matrix-missing-client03.png'],
+ '15':[V2+'15-diff-changed-proc.png'],'20':[V2+'20-hero-tile-create-scripts-hover.png'],
+ // local output folder paths: covered by redaction chips
+ '21':[V2+'21-create-scripts-dialog-readonly.png',[[630,741,568,22,'C:\\…\\demo-db  (local path hidden)']]],
+ '28':[V2+'28-scripts-written.png',[[624,299,598,27,'C:\\…\\scripts-out  (local path hidden)']]],
+ '22':[V2+'22-write-mode-switch-off.png'],'23b':[V2+'23b-write-mode-confirm-hover.png'],'24':[V2+'24-write-mode-on.png'],
+ // 'Runs as' shows the real machine login: covered by a redaction chip
+ '29':[V2+'29-apply-dialog.png',[RUNAS]],'a3':[V2+'30-apply-typing-03.png',[RUNAS]],'a7':[V2+'30-apply-typing-07.png',[RUNAS]],
+ 'a11':[V2+'30-apply-typing-11.png',[RUNAS]],'a13':[V2+'30-apply-typing-13.png',[RUNAS]],'31':[V2+'31-apply-name-typed.png',[RUNAS]],
+ '34':[V2+'34-apply-result.png'],'35':[V2+'35-recompared-hero-100.png'],'37':[V2+'37-protected-apply-refused.png',[[676,539,232,21]]],
+};
+const IMGS=[];
+function makeShot(key,host){const d=SHOTS[key];const s=el('div','shot','',host);const im=el('img',null,null,s);im.src=d[0];IMGS.push(im);
+  (d[1]||[]).forEach(r=>{el('div','redact',r[4]||'Windows: (hidden)',s,`left:${r[0]}px;top:${r[1]}px;width:${r[2]}px;height:${r[3]}px`)});
+  return {el:s}}
+const SH={};Object.keys(SHOTS).forEach(k=>SH[k]=makeShot(k,$('frame')));
+
+// The drift-dashboard tile strip as one continuous row: shot 10 (scroll 0) + shot 11 (same strip scrolled right by 1155 px,
+// Client03 at x16 in 10 and x-1139 in 11). Scrolling it reproduces the app's own horizontal scroll, pixel for pixel.
+const STRIP_Y=196,STRIP_H=205,STRIP_SHIFT=1155;
+function crop(host,src,sx,sy,w,h,dx,dy){const c=el('div','crop','',host,`left:${dx}px;top:${dy}px;width:${w}px;height:${h}px`);
+  const im=el('img',null,null,c);im.src=src;im.style.left=(-sx)+'px';im.style.top=(-sy)+'px';IMGS.push(im);return c}
+function makeStrip(host,withUnderline){const inner=el('div','abs','',host,`left:0;top:0;width:${1897+1178}px;height:${STRIP_H}px`);
+  crop(inner,V2+'10-results-dashboard.png',0,STRIP_Y,1897,STRIP_H,0,0);
+  crop(inner,V2+'11-results-dashboard-scrolled.png',742,STRIP_Y,1178,STRIP_H,1897,0);
+  const u=withUnderline?el('div','abs','',inner,`left:16px;top:${394-STRIP_Y}px;height:5px;width:0;border-radius:3px;background:var(--blue)`):null;
+  return {inner,u}}
+const stripClip=el('div','abs','',SH['10'].el,`left:0;top:${STRIP_Y}px;width:1920px;height:${STRIP_H}px;overflow:hidden`);
+const STRIP=makeStrip(stripClip,true);
+// hero loop: the same real strip, cut into two rows (Client03..Client05 | Client06..QA) at 1.06x
+const LSC=1.06, LROWS=[[4,1617],[1617,2739]].map(([x0,x1],i)=>{const w=(x1-x0)*LSC,h=198*LSC,left=960-w/2,top=390+i*(h+24);
+  const box=el('div','abs','',$('lRows'),`left:${left}px;top:${top}px;width:${w}px;height:${h}px;border-radius:16px;overflow:hidden;background:#f8f9fb;box-shadow:0 24px 60px rgba(20,23,31,.14),0 0 0 1.5px rgba(20,23,31,.10)`);
+  const sc=el('div','abs','',box,`left:0;top:0;transform-origin:0 0;transform:scale(${LSC}) translateX(${-x0}px)`);makeStrip(sc,false);
+  const sw=el('div','abs','',box,`top:0;width:360px;height:${h}px;background:linear-gradient(90deg,rgba(42,120,214,0),rgba(42,120,214,.16) 40%,rgba(42,120,214,.45) 50%,rgba(42,120,214,.16) 60%,rgba(42,120,214,0))`);
+  return {box,sw,left}});
+// cover for the diff pane before the row is clicked (shot 15): the pane is still closed
+const diffCover=el('div','abs','',SH['15'].el,'left:0;top:366px;width:1920px;height:714px;background:#fff;visibility:hidden');
+
+let CAM={fx:960,fy:540,z:1};
+function cam(fx,fy,z){
+  // keep the screenshot filling the screen: never show past its edges
+  const hx=960/z,hy=540/z;fx=clamp(fx,hx,1920-hx);fy=clamp(fy,hy,1080-hy);
+  CAM={fx,fy,z};$('frame').style.transform=`translate(${(960-z*fx).toFixed(2)}px,${(540-z*fy).toFixed(2)}px) scale(${z.toFixed(4)})`}
+function camK(t,K){let a=K[0],b=K[0],k=0;if(t>=K[K.length-1][0]){a=b=K[K.length-1]}else for(let i=0;i<K.length-1;i++){if(t>=K[i][0]&&t<K[i+1][0]){a=K[i];b=K[i+1];k=eio(P(t,a[0],b[0]));break}}
+  const z=Math.exp(lerp(Math.log(a[3]),Math.log(b[3]),k));cam(lerp(a[1],b[1],k),lerp(a[2],b[2],k),z)}
+const scr=(x,y)=>[960+CAM.z*(x-CAM.fx),540+CAM.z*(y-CAM.fy)];
+function shots(map){for(const k in SH){const o=map[k]||0;SH[k].el.style.visibility=o>0.002?'visible':'hidden';SH[k].el.style.opacity=o.toFixed(3)}}
+function seq(t,list){let cur=list[0][1];for(const [tt,k] of list) if(t>=tt) cur=k;const m={};m[cur]=1;return m}
+function box(e,b,a,pad,col,wash){if(!b||a<=0.002){e.style.visibility='hidden';return}
+  const [x,y]=scr(b[0]-pad,b[1]-pad);const w=(b[2]+pad*2)*CAM.z,h=(b[3]+pad*2)*CAM.z;
+  e.style.visibility='visible';e.style.left=x+'px';e.style.top=y+'px';e.style.width=w+'px';e.style.height=h+'px';
+  e.style.opacity=1;e.style.borderColor=col.replace('A',a.toFixed(3));e.style.boxShadow=wash?`0 0 0 4000px rgba(240,242,246,${(wash*a).toFixed(3)})`:'none'}
+const spot=(b,a,pad=8,wash=.55,col='rgba(42,120,214,A)')=>box($('spot'),b,a,pad,col,wash);
+const ring=(b,a,pad=4)=>box($('ring'),b,a,pad,'rgba(210,63,63,A)',0);
+
+// cursor (image coords, follows the camera) + ripple
+function cursor(t,K,clicks=[]){const c=$('cursor'),r=$('ripple');r.style.visibility='hidden';if(!K||t<K[0][0]||t>K[K.length-1][0]){c.style.visibility='hidden';return}
+  let a=K[0],b=K[0],k=0;for(let i=0;i<K.length-1;i++){if(t>=K[i][0]&&t<=K[i+1][0]){a=K[i];b=K[i+1];k=eio(P(t,a[0],b[0]));break}}
+  const [x,y]=scr(lerp(a[1],b[1],k),lerp(a[2],b[2],k));let press=1;
+  for(const tc of clicks){const d=t-tc;if(d>-.06&&d<.12)press=.84;if(d>=0&&d<.45){const q=eo(d/.45);r.style.visibility='visible';const R=lerp(10,60,q);
+    r.style.left=(x-R)+'px';r.style.top=(y-R)+'px';r.style.width=r.style.height=(2*R)+'px';r.style.opacity=(1-q).toFixed(3)}}
+  const o=Math.min(P(t,K[0][0],K[0][0]+.2),1-P(t,K[K.length-1][0]-.2,K[K.length-1][0]));
+  c.style.visibility=o>0?'visible':'hidden';c.style.opacity=o;c.style.transformOrigin='8px 4px';c.style.transform=`translate(${x-8}px,${y-4}px) scale(${press})`}
+
+// character: hook ONLY
+function charHook(t){const c=$('char'),halo=$('charHalo');const t0=.75,t1=4.4;
+  if(t<t0||t>=t1){c.style.visibility='hidden';halo.style.visibility='hidden';return}
+  const H=600,W=H*690/750,X=1450,Y=490;
+  const kin=eback(P(t,t0,t0+.5)),kout=ein(P(t,4.0,t1));
+  const bob=Math.sin((t-t0)*1.6*Math.PI*2)*5;
+  const y=Y+(1-kin)*H*.55+kout*H*.75+bob;
+  c.style.visibility='visible';c.style.left=X+'px';c.style.top=y+'px';c.style.width=W+'px';c.style.height=H+'px';
+  c.style.opacity=Math.min(P(t,t0,t0+.12),1-kout).toFixed(3);
+  // leans toward the pills while they land
+  const lean=-6*eo(P(t,1.9,2.4))*(1-P(t,3.6,4.0));
+  c.style.transform=`rotate(${lean.toFixed(2)}deg)`;
+  halo.style.visibility='visible';const R=W*.62;halo.style.left=(X+W*.53-R)+'px';halo.style.top=(Y+H*.42-R+(1-kin)*40+kout*H*.75)+'px';halo.style.width=halo.style.height=2*R+'px';
+  halo.style.opacity=Math.min(P(t,t0,t0+.3),1-kout).toFixed(3)}
+
+// ------------------------------------------------------------------ hook: pills + mini client icons
+const HP=[$('hP1'),$('hP2'),$('hP3')];
+function layoutHook(){let x=124;HP.forEach(p=>{p.style.left=x+'px';p.style.top='490px';x+=p.offsetWidth+24})}
+const MINIS=[...Array(8)].map((_,i)=>{const m=el('div','mini',cylSvg('#3b4b6e','#eef1f6',44,50)+`<span>Client0${i+1}</span>`,$('hMinis'));return m});
+
+// ------------------------------------------------------------------ story: source -> 8 client cards
+$('sSrc').innerHTML=cylSvg('#2a78d6','#e8f1fc')+'<div class="nm">SSDemo_Dev</div><div class="sb">1,195 objects</div><span class="tagsrc">SOURCE</span>';
+const CC=[...Array(8)].map((_,i)=>{const col=Math.floor(i/4),row=i%4;const x=1000+col*370,y=150+row*176+col*88;
+  const c=el('div','cc','',$('sCards'),`left:${x}px;top:${y}px`);
+  c.innerHTML=cylSvg('#3b4b6e','#eef1f6',40,46)+`<span class="nm">SSDemo_Client0${i+1}</span><span class="q">?</span>`;
+  return {el:c,x,y,q:c.querySelector('.q')}});
+// Client04 (index 3): the support schema never shipped (illustration of the real compare result)
+const gap=el('div','gap','<svg width="22" height="18" viewBox="0 0 24 20"><path d="M1 3a2 2 0 0 1 2-2h6l2 3h10a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2z" fill="none" stroke="#d23f3f" stroke-width="2" stroke-dasharray="3 2"/></svg>support',CC[3].el);
+CC.forEach(c=>{c.el.querySelector('.nm').style.marginTop='-26px'});
+const LINES=CC.map(c=>{const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+  const x0=370,y0=485,x1=c.x,y1=c.y+56;p.setAttribute('d',`M${x0} ${y0} C${x0+300} ${y0} ${x0+280} ${y1} ${x0+590} ${y1} L${x1} ${y1}`);
+  p.setAttribute('fill','none');p.setAttribute('stroke','#9fc0ea');p.setAttribute('stroke-width','3');$('sLines').appendChild(p);
+  const L=p.getTotalLength();p.style.strokeDasharray=L;return {p,L}});
+
+// ------------------------------------------------------------------ close pills
+const CPILLS=['Free','Open source','SQL Server 2012+','Azure SQL','Windows 10 & 11'].map(s=>el('div','epill',s.replace('&','&amp;'),$('cPills')));
+function layoutClose(){const tot=CPILLS.reduce((s,p)=>s+p.offsetWidth,0)+18*(CPILLS.length-1);let x=960-tot/2;
+  CPILLS.forEach(p=>{p.style.left=x+'px';p.style.top='600px';x+=p.offsetWidth+18});const c=$('cta');c.style.left=(960-c.offsetWidth/2)+'px';c.style.top='740px'}
+
+// ------------------------------------------------------------------ steps + captions
+// [t0, t1, number, pill label]
+const STEPS=[[18.4,21.4,1,'Pick the source you trust'],[21.4,25.4,2,'Add every target &ndash; QA + 8 clients'],[25.4,30.0,3,'Compare &ndash; all 9 at once, about a second'],
+ [30.0,33.4,4,'A score for every client &ndash; worst first'],[33.4,41.2,5,'Find what is missing'],[41.2,45.2,6,'Open any object side by side &ndash; see the exact lines'],
+ [45.2,48.8,7,'Create the fix scripts &ndash; checked offline'],[48.8,54.4,8,'Write mode &ndash; turn it on, type the name, apply'],
+ [54.4,57.6,8,'Client05: 97.7% &rarr; 100%'],[57.6,59.6,8,'Protected servers: refused']];
+const CAPTIONS=[
+ {a:0.1,b:4.3,text:'Compare databases. Staging, production, and every client database.'},
+ {a:4.6,b:14.7,text:'We ship one database to many clients. Soon nobody knows which client has which tables, which procedure is missing, or which schema never shipped.'},
+ {a:15.2,b:18.0,text:'The easy fix: compare them with SchemaScope.'},
+ {a:18.6,b:21.2,n:1,text:'First, pick the database you trust.'},
+ {a:21.6,b:25.0,n:2,text:'Add every target: QA and eight clients.'},
+ {a:25.6,b:29.4,n:3,text:'Press Compare. All nine at once, in about a second.'},
+ {a:30.2,b:33.0,n:4,text:'Every client gets a score, worst first.'},
+ {a:33.6,b:40.8,n:5,text:'See what is missing. Client04 never got the support schema. Client03 lacks tables and procedures.'},
+ {a:41.4,b:44.6,n:6,text:'Open any object to see the exact lines.'},
+ {a:45.25,b:48.6,n:7,text:'Create scripts that fix it, each checked offline first.'},
+ {a:49.0,b:53.4,n:8,text:'New in 1.2: write mode. Type the name to apply.'},
+ {a:54.6,b:59.2,n:8,text:'Client05 goes to 100%. Protected servers are refused.'},
+ {a:59.6,b:65.0,text:'Stop comparing in pairs. Free at schemascope.shadowmark.in'}];
+window.CAPTIONS=CAPTIONS;
+window.DURATION=65.4;
+window.LOOP={duration:8};
+window.SCENES=[[0,4.4,'Hook - Compare databases'],[4.4,15,'Story - who has what?'],[15,18.4,'The easy fix'],
+ ...STEPS.map(s=>[s[0],s[1],'Step '+s[2]]),[59.6,65.4,'Close']];
+const SHOWCAP=/[?&]cap=1/.test(location.search);
+
+// step pill: bottom centre; slides up at each step start
+function stepPill(t){const s=STEPS.find(x=>t>=x[0]&&t<x[1]);const e=$('step');if(!s){S(e,0);S($('newtag'),0);return}
+  if($('stepT').dataset.k!==String(s[0])){$('stepN').textContent=s[2];$('stepT').innerHTML=s[3];$('stepT').dataset.k=String(s[0])}
+  const first=STEPS.indexOf(s)===0||STEPS[STEPS.indexOf(s)-1][2]!==s[2];   // pill 8 stays put across its two parts
+  const k=first?eo(P(t,s[0],s[0]+.35)):1;
+  const out=s===STEPS[STEPS.length-1]?1-eio(P(t,s[1]-.3,s[1])):1;
+  place(e,960,1040,k*out,1,.5,1,(1-k)*24);
+  if(s[2]===8&&s[0]===48.8){const kn=eo(P(t,48.95,49.3));place($('newtag'),960-e.offsetWidth/2+18,1040-e.offsetHeight-12,kn,1,0,1,(1-kn)*12)}else S($('newtag'),0)}
+// soft white dip on a hard cut between framings
+function dip(t,list){for(const c of list){if(t>=c&&t<c+.3){$('flash').style.visibility='visible';$('flash').style.opacity=(.55*(1-eo(P(t,c,c+.3)))).toFixed(3);return}}}
+
+// ------------------------------------------------------------------ render
+const ALLSC=['sH','sS','oW','sC','sL'];
+function only(list){ALLSC.forEach(id=>{const e=$(id);e.style.display=list.includes(id)?'block':'none'})}
+function resetCommon(){$('appLayer').style.display='none';$('appLayer').style.opacity=1;spot(null,0);ring(null,0);cursor(-1,null);charHook(-1);
+  $('flash').style.visibility='hidden';S($('tag'),0);S($('logo'),1);$('tag').textContent='demo data';
+  ['nReal','nTime','c4','c3','c5','newtag','step'].forEach(id=>S($(id),0));
+  STRIP.inner.style.transform='translateX(0px)';STRIP.u.style.width='0px';diffCover.style.visibility='hidden'}
+
+function renderAt(t){
+  resetCommon();
+  // ---------------- HOOK 0 - 4.4 (character here and only here)
+  if(t<4.4){only(['sH']);layoutHook();
+    const out=1-eio(P(t,4.1,4.4));
+    hl($('hHd').querySelector('.hlb'),t,.05,1,0);S($('hHd'),t>=.05?out:0);
+    const PT=[1.95,2.25,2.9];   // = sound.py EV pills, on 'staging' / 'production' / 'every client'
+    HP.forEach((p,i)=>{const k=P(t,PT[i],PT[i]+.32);S(p,eo(k)*out,0,(1-eo5(k))*30,lerp(.9,1,eback(k)))});
+    // the last pill fans into eight small client icons
+    const p3=HP[2];const cx=p3.offsetLeft+p3.offsetWidth/2,cy=p3.offsetTop+p3.offsetHeight/2;
+    MINIS.forEach((m,i)=>{const k=P(t,3.2+i*.04,3.65+i*.04);const tx=124+i*150,ty=650;
+      m.style.left='0px';m.style.top='0px';S(m,Math.min(1,k*3)*out,lerp(cx-66,tx,eo5(k)),lerp(cy-56,ty,eo5(k)),lerp(.4,1,eo(k)))});
+    charHook(t);
+    return}
+  // ---------------- STORY 4.4 - 15 (illustration, no character, no yellow)
+  if(t<15.4){only(['sS']);S($('tag'),Math.min(eo(P(t,4.5,4.8)),1-eio(P(t,14.6,15.0))));$('tag').textContent='illustration';
+    const fin=eo(P(t,4.4,4.75)),fout=1-eio(P(t,15.0,15.4));$('sS').style.opacity=(fin*fout).toFixed(3);
+    $('sScam').style.transform=`scale(${lerp(1,1.05,eio(P(t,4.4,15.4))).toFixed(4)})`;
+    S($('logo'),1-eio(P(t,14.6,15.0)));   // gone before the app's own logo shows
+    S($('sTitle'),eo(P(t,4.55,4.9)),0,(1-eo(P(t,4.55,4.9)))*20);
+    {const k=P(t,4.6,4.95);S($('sSrc'),eo(k),0,0,lerp(.85,1,eback(k)))}
+    LINES.forEach((l,i)=>{const k=eio(P(t,5.6+i*.1,6.4+i*.1));l.p.style.strokeDashoffset=(l.L*(1-k)).toFixed(1)});
+    CC.forEach((c,i)=>{const k=P(t,6.1+i*.1,6.45+i*.1);S(c.el,eo(k),(1-eo5(k))*40,0);
+      const kq=P(t,7.7+i*.06,7.95+i*.06);S(c.q,eo(kq),0,0,lerp(.4,1,eback(kq)))});
+    // question tags in time with the voice (= sound.py EV tags): tables 9.4, procedure 10.5, schema 12.4
+    const Q=[[$('sQ1'),9.4,2],[$('sQ2'),10.5,5],[$('sQ3'),12.4,3]];
+    Q.forEach(([e,t0,ci])=>{const k=P(t,t0,t0+.32);S(e,eo(k),(1-eo5(k))*-30,0);
+      const c=CC[ci].el;const on=t>=t0;c.style.borderColor=on?'#c3cad6':'';});
+    // Client04 (schema never shipped): dashed empty 'support' folder + red edge
+    {const k=P(t,13.0,13.35);S(gap,eo(k),0,0,lerp(.7,1,eback(k)));CC[3].el.style.borderColor=t>=13.0?'#e7a3a3':(t>=12.4?'#c3cad6':'');
+      CC[3].el.style.boxShadow=t>=13.0?`0 10px 26px rgba(20,23,31,.07),0 0 0 ${(6*eo(k)).toFixed(1)}px rgba(210,63,63,.12)`:''}
+    // cross-fade into the real app
+    if(t>=15.0){$('appLayer').style.display='block';$('appLayer').style.opacity=eo(P(t,15.0,15.4));shots({'01':1});cam(300,169,3.2)}
+    return}
+  // ================= real app from here: overlays in oW =================
+  // Visual beats sit on sound.py EV (same numbers); comments name the EV key.
+  only(['oW']);$('appLayer').style.display='block';S($('logo'),0);S($('tag'),t<18.4?0:eo(P(t,18.4,18.8)));stepPill(t);
+  // ---------------- THE EASY FIX 15 - 18.4: ease out from the logo to the full window (Write mode Off visible)
+  if(t<18.4){shots({'01':1});camK(t,[[15.0,300,169,3.2],[15.5,300,169,3.2],[17.6,960,540,1.0]]);
+    place($('nReal'),960,1040,eo(P(t,16.2,16.6)),1,.5,1);
+    return}
+  // ---------------- STEP 1 18.4 - 21.4: pick the source (src_click 18.85, use_click 20.3)
+  if(t<21.4){shots(seq(t,[[18.4,'01'],[18.95,'02'],[20.45,'03']]));dip(t,[20.45]);
+    // picker: one push onto the selected row; after the cut, one push into the filled source slot
+    if(t<20.45)camK(t,[[18.4,960,540,1.0],[18.95,960,540,1.0],[19.7,960,590,1.45],[20.45,960,600,1.5]]);
+    else camK(t,[[20.45,533,300,1.6],[21.4,533,300,1.8]]);
+    cursor(t,[[18.45,700,420],[18.85,179,74],[19.45,760,560],[20.2,1216,829],[20.42,1216,829],[20.47,420,230],[21.3,520,200]],[18.85,20.3]);
+    spot([635,455,621,51],vis(t,19.6,20.45,.25,.15),4,.3);
+    spot2(t,[67,58,261,48],20.55,21.4);
+    return}
+  // ---------------- STEP 2 21.4 - 25.4: add every target (add_click 21.85, chips 21.95 + 0.33 each)
+  if(t<25.4){const TS=i=>21.95+i*.33;const keys=['t1','t2','t3','t4','t5','t6','t7','t8','t9'];
+    // the target picker (shot 04) is skipped: at this framing it would show half a dialog
+    shots(seq(t,[[21.4,'03'],...keys.map((k,i)=>[TS(i),k]),[25.0,'06']]));
+    camK(t,[[21.4,533,300,1.8],[21.95,533,300,1.8],[25.2,1387,300,1.8]]);
+    const AT=[588,701,842,983,1124,1265,1406,1547,1688,1829];   // Add target button centre per state
+    const K=[[21.45,700,300],[21.8,AT[0],81]];keys.forEach((k,i)=>{K.push([TS(i)+.12,AT[i+1],81])});K.push([25.35,AT[9],81]);
+    cursor(t,K,[21.85,...keys.slice(0,8).map((k,i)=>TS(i+1)-.05)]);
+    // a soft ring on the newest chip
+    let idx=-1;keys.forEach((k,i)=>{if(t>=TS(i))idx=i});
+    if(idx>=0&&t<25.0){const x=idx===0?534:647+141*(idx-1);spot([x,68,idx===0?107:135,28],1-P(t,TS(idx),TS(idx)+.3)*.6,3,0)}
+    return}
+  // ---------------- STEP 3 25.4 - 30: compare, all at once (compare_click 25.95, reading 26.0-27.1, dashboard 27.1)
+  if(t<30){shots(seq(t,[[25.4,'07'],[26.0,'09'],[27.1,'10']]));dip(t,[25.4]);
+    // 1.0x only while the voice says "in about a second", then a slow push so the tiles stay readable
+    camK(t,[[25.4,533,300,1.8],[26.0,533,300,1.8],[27.15,960,540,1.0],[28.4,960,540,1.0],[30,760,400,1.35]]);
+    cursor(t,[[25.4,420,260],[25.9,164,131],[26.4,164,131]],[25.95]);
+    spot([0,158,1920,86],vis(t,26.05,27.1,.2,.1),2,.25);
+    if(t>=27.1&&t<27.45){$('flash').style.visibility='visible';$('flash').style.opacity=(.6*(1-eo(P(t,27.1,27.45)))).toFixed(3)}
+    place($('nTime'),960,860,Math.min(eo(P(t,27.5,27.9)),1-eio(P(t,29.7,30))),1,.5,1);
+    return}
+  // ---------------- STEP 4 30 - 33.4: a score for every client, worst first (underline 31.0-32.8; the strip scrolls like the app)
+  if(t<33.4){shots({'10':1});
+    camK(t,[[30,760,400,1.35],[31.1,540,300,1.8],[31.4,540,300,1.8],[33.3,1060,300,1.8]]);
+    STRIP.inner.style.transform=`translateX(${(-STRIP_SHIFT*eio(P(t,31.4,33.1))).toFixed(1)}px)`;
+    STRIP.u.style.width=(2711*P(t,31.0,32.8)).toFixed(1)+'px';
+    return}
+  // ---------------- STEP 5 33.4 - 41.2: find what is missing (real filtered grids; ring_c04 35.0, slide_c03 37.4, label_c03 37.8)
+  // framed below the header (no elapsed-ms figure in view), zoomed so the object names read
+  if(t<41.2){
+    if(t<37.4){shots({'45':1});camK(t,[[33.4,740,540,1.38],[37.4,740,545,1.42]]);
+      ring([1262,268,128,388],eo(P(t,35.0,35.5)),3);
+      {const [x,y]=scr(1240,700);place($('c4'),x,y,eo(P(t,35.2,35.6)),1,1,0)}
+    }else{shots({'46':1});dip(t,[37.4]);camK(t,[[37.4,690,540,1.5],[41.2,680,550,1.56]]);
+      ring([1130,268,128,578],eo(P(t,37.5,38.0)),3);
+      {const [x,y]=scr(1105,470);place($('c3'),x,y,eo(P(t,37.8,38.2)),1,1,.5)}
+    }
+    return}
+  // ---------------- STEP 6 41.2 - 45.2: open any object side by side (diff_click 41.55, diff_open 41.7, wash 43.4)
+  if(t<45.2){shots({'15':1});dip(t,[41.2]);
+    camK(t,[[41.2,760,420,1.3],[41.8,760,420,1.3],[43.3,1350,640,1.8],[45.2,1360,645,1.85]]);
+    cursor(t,[[41.25,620,520],[41.55,300,278],[42.0,300,278]],[41.55]);
+    spot([990,785,900,16],vis(t,43.4,45.3,.35,0),3,.35);
+    return}
+  // ---------------- STEP 7 45.2 - 48.8: create the fix scripts (create_click 45.55, written 45.95, green_line 47.6)
+  // one move: tile click, then Scripts written framed on the dialog and a slow push onto the green line
+  if(t<48.8){shots(seq(t,[[45.2,'20'],[45.95,'28']]));dip(t,[45.2,45.95]);
+    if(t<45.95)camK(t,[[45.2,1387,330,1.8],[45.95,1387,325,1.85]]);
+    else camK(t,[[45.95,960,430,2.15],[47.4,960,395,2.4],[48.8,960,392,2.42]]);
+    cursor(t,[[45.25,1700,420],[45.55,1866,221],[45.95,1866,221]],[45.55]);
+    spot([621,364,678,33],vis(t,47.6,48.9,.3,0),4,.4,'rgba(26,158,106,A)');
+    return}
+  // ---------------- STEP 8 48.8 - 54.4: write mode on, type the name
+  // switch_click 50.6, wm_dialog 50.7, enable_click 51.3, amber 51.35, apply_dialog 52.0, type 52.1 + 0.075/letter, apply_enabled 53.25
+  if(t<54.4){const TY=n=>52.1+(n-1)*.075+.03;
+    shots(seq(t,[[48.8,'22'],[50.7,'23b'],[51.35,'24'],[52.0,'29'],[TY(3),'a3'],[TY(7),'a7'],[TY(11),'a11'],[TY(13),'a13'],[53.25,'31']]));dip(t,[48.8,50.7,51.35,52.0]);
+    if(t<50.7)camK(t,[[48.8,1484,245,2.2],[50.7,1484,245,2.28]]);              // header switch, Off, with its tooltip
+    else if(t<51.35)camK(t,[[50.7,960,535,2.25],[51.35,960,540,2.35]]);        // Turn on write mode? - fills the frame
+    else if(t<52.0)camK(t,[[51.35,560,318,1.7],[52.0,540,300,1.8]]);          // amber strip, readable
+    else camK(t,[[52.0,960,690,2.2],[54.4,960,700,2.25]]);                      // apply dialog: sections, confirm box, Apply
+    cursor(t,[[48.85,1640,200],[50.45,1812,23],[50.69,1812,23],[50.71,1300,600],[51.15,1133,697],[51.45,1133,697]],[50.6,51.3]);
+    if(t>=51.35&&t<52.0)spot([8,50,690,36],vis(t,51.4,52.0,.2,.1),4,0,'rgba(201,133,0,A)');
+    spot([601,731,718,33],vis(t,52.05,54.5,.3,0),4,.0);
+    return}
+  // ---------------- STEP 8 (cont.) 54.4 - 59.6: apply (apply_click 54.6, applied 54.9), 100% (hundred 56.0), Protected refused (57.6)
+  if(t<59.6){shots(seq(t,[[54.4,'31'],[54.85,'34'],[56.0,'35'],[57.6,'37']]));dip(t,[54.85,56.0,57.6]);
+    if(t<54.85){camK(t,[[54.4,960,700,2.25],[54.85,960,700,2.25]]);
+      cursor(t,[[54.4,1050,760],[54.6,1198,808],[54.85,1198,808]],[54.6])}
+    else if(t<56.0){camK(t,[[54.85,960,540,2.1],[56.0,960,560,2.15]]);
+      spot([601,715,718,17],vis(t,55.2,56.1,.25,0),6,.35,'rgba(26,158,106,A)')}
+    else if(t<57.6){camK(t,[[56.0,1400,330,1.8],[57.6,1440,335,2.0]]);
+      spot([1310,241,262,188],vis(t,56.1,57.7,.3,0),6,.35,'rgba(26,158,106,A)');
+      {const [x,y]=scr(1441,450);place($('c5'),x,y,eo(P(t,56.4,56.75)),1,.5,0)}}
+    else{camK(t,[[57.6,960,545,2.3],[59.6,960,580,2.45]]);
+      spot([601,585,718,49],vis(t,57.8,59.7,.3,0),5,.3,'rgba(210,63,63,A)')}
+    return}
+  // ---------------- CLOSE 59.6 - 65.4 (close 59.6, yellow_close 59.85, close_pills 61.0 + 0.22, button 61.8)
+  $('appLayer').style.opacity=(1-eio(P(t,59.6,59.9))).toFixed(3);shots({'37':1});cam(960,580,2.45);
+  only(['sC']);S($('tag'),0);layoutClose();
+  const fin=eo(P(t,59.6,59.85));$('sC').style.opacity=fin.toFixed(3);
+  {const k=P(t,59.6,60.0);S($('cLogo'),eo(k),0,(1-eo(k))*24)}
+  hl($('cHd').querySelector('.hlb'),t,59.85);S($('cHd'),t>=59.85?1:0);
+  CPILLS.forEach((p,i)=>{const k=P(t,61.0+i*.22,61.35+i*.22);S(p,eo(k),0,(1-eo(k))*-20)});
+  {const k=P(t,61.8,62.2);S($('cta'),eo(k),0,(1-eo(k))*30,lerp(.9,1,eback(k)))}
+}
+// blue ring on the filled source slot after step 1 (shot 03)
+function spot2(t,b,a0,a1){if(t>=a0&&t<a1)spot(b,vis(t,a0,a1,.25,.2),4,0)}
+
+// ------------------------------------------------------------------ 8 s silent hero loop (no voice, no character)
+function renderLoopAt(t){
+  resetCommon();only(['sL']);S($('logo'),1);
+  const out=1-eio(P(t,6.6,7.4));
+  hl($('lHd').querySelector('.hlb'),t,.4);S($('lHd'),t>=.4?out:0,0,ein(P(t,6.6,7.4))*-30);
+  // the real tiles slide up in two rows; all nine scores land in the same frame; one blue sweep crosses both rows
+  LROWS.forEach((r,i)=>{const k=P(t,1.3+i*.08,1.9+i*.08);S(r.box,eo(k)*out,0,(1-eo5(k))*90+ein(P(t,6.6,7.4))*40,lerp(.96,1,eo(k)));
+    const sx=lerp(-380,1820,eio(P(t,2.6,3.5)));S(r.sw,t>2.6&&t<3.5?1:0,sx-r.left,0)});
+  S($('lSub'),Math.min(eo(P(t,3.6,4.0)),out));
+}
+window.POSTER={loop:4.5,full:2.2};
+
+window.renderAt=renderAt;window.renderLoopAt=renderLoopAt;
+window.READY=Promise.all([document.fonts.ready,...IMGS.map(i=>i.decode().catch(()=>{})),$('cN').decode().catch(()=>{})]);
+const _r=renderAt;window.renderAt=function(t){_r(t);const c=$('cap');if(!SHOWCAP){c.style.visibility='hidden';return}
+  const cur=CAPTIONS.find(x=>t>=x.a&&t<x.b);c.style.visibility=cur?'visible':'hidden';if(cur)$('capbox').textContent=cur.text};
+window.READY.then(()=>window.renderAt(0));
+</script>
+</body>
+</html>

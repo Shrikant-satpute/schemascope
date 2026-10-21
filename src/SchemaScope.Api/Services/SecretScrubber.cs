@@ -25,10 +25,8 @@ internal static class SecretScrubber
             secrets.Add(cs);
 
             // a URI-form string is refused at input, but its password is still never echoed back
-            if (ConnectionEndpoints.IsUri(cs) && Uri.TryCreate(cs.Trim(), UriKind.Absolute, out var uri) &&
-                uri.UserInfo.IndexOf(':') is var colon and >= 0 && colon + 1 < uri.UserInfo.Length)
+            if (ConnectionEndpoints.IsUri(cs) && ConnectionEndpoints.UriPassword(cs) is { } password)
             {
-                var password = uri.UserInfo[(colon + 1)..];
                 secrets.Add(password);
                 secrets.Add(Uri.UnescapeDataString(password));
                 continue;

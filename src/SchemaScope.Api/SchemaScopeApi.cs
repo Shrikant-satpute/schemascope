@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -1038,18 +1039,38 @@ public static class SchemaScopeApi
     /// when any saved connection to the same server is. A store that cannot be read, or a connection string whose
     /// destination cannot be read, counts as protected.
     /// </summary>
-    private static bool IsProtected(SchemaSource target, string server, SchemaScopeStore store)
+    internal static bool IsProtected(SchemaSource target, string server, SchemaScopeStore store)
     {
         if (target.ProtectedServer) return true;
-        if (ConnectionEndpoints.Parse(target.Engine, target.ConnectionString) is null) return true;
+        if (ConnectionEndpoints.Parse(target.Engine, target.ConnectionString) is not { } ep) return true;
+        // every host the connection may reach: a failover partner (or another host of a list) is reached too
+        if (TargetServers(target, ep) is not { } others) return true;
         try
         {
             if (target.ConnectionId is { } id && store.GetConnection(id) is { ProtectedServer: true }) return true;
-            return OnProtectedServer(store, server, target.Server);
+            return OnProtectedServer(store, target.Engine, [server, target.Server, .. others]);
         }
         catch (Exception)
         {
             return true;
+        }
+    }
+
+    /// <summary>
+    /// A target's other destinations: a SQL Server failover partner as written (its instance matters, as the Data
+    /// Source's does), another engine's every host. Null when the string cannot be read.
+    /// </summary>
+    private static List<string>? TargetServers(SchemaSource target, EndpointInfo ep)
+    {
+        if (target.Engine != DatabaseEngine.SqlServer) return [.. ep.Hosts];
+        try
+        {
+            var partner = new SqlConnectionStringBuilder(target.ConnectionString).FailoverPartner;
+            return string.IsNullOrWhiteSpace(partner) ? [] : [partner.Trim()];
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
+        {
+            return null;
         }
     }
 
@@ -1059,11 +1080,15 @@ public static class SchemaScopeApi
     /// to another engine protects the whole host - every engine and port on it. A protected connection whose server
     /// cannot be read protects everything, and a store that cannot be read counts as protected.
     /// </summary>
-    internal static bool OnProtectedServer(SchemaScopeStore store, params string[] servers)
+    internal static bool OnProtectedServer(SchemaScopeStore store, params string[] servers) =>
+        OnProtectedServer(store, DatabaseEngine.SqlServer, servers);
+
+    /// <summary><see cref="OnProtectedServer(SchemaScopeStore, string[])"/> for a target of <paramref name="engine"/>: its servers are hosts unless it is SQL Server.</summary>
+    internal static bool OnProtectedServer(SchemaScopeStore store, DatabaseEngine engine, params string[] servers)
     {
         try
         {
-            return store.GetConnections().Any(c => c.ProtectedServer && Covers(c, servers));
+            return store.GetConnections().Any(c => c.ProtectedServer && Covers(c, engine, servers));
         }
         catch (Exception)
         {
@@ -1071,15 +1096,27 @@ public static class SchemaScopeApi
         }
     }
 
-    private static bool Covers(ConnectionSettings c, string[] servers)
+    /// <summary>
+    /// Whether protected <paramref name="c"/> covers a target of <paramref name="engine"/> on one of <paramref name="servers"/>.
+    /// SQL Server against SQL Server keeps today's rule (the instance must match); any other pair matches the host alone,
+    /// so a protected PROD\A also protects PostgreSQL on PROD. A saved server that cannot be read covers everything.
+    /// </summary>
+    internal static bool Covers(ConnectionSettings c, DatabaseEngine engine, IReadOnlyList<string> servers)
     {
+        var targets = servers.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
         if (c.Engine == DatabaseEngine.SqlServer)
-            return SavedServers(c) is not { } saved || saved.Any(p => servers.Any(s => ServerNames.Same(p, s)));
+        {
+            if (SavedServers(c) is not { } saved) return true;
+            return engine == DatabaseEngine.SqlServer
+                ? saved.Any(p => targets.Any(s => ServerNames.Same(p, s)))
+                : saved.Any(p => targets.Any(s => ServerNames.Host(p) == ServerNames.Host(s)));
+        }
 
-        IReadOnlyList<string>? hosts = c.UseRawConnectionString
-            ? ConnectionEndpoints.Parse(c.Engine, c.RawConnectionString)?.Hosts
-            : string.IsNullOrWhiteSpace(c.Server) ? null : [c.Server];
-        return hosts is null || hosts.Any(h => servers.Any(s => HostNames.Same(h, ServerNames.Host(s))));
+        // the Server box is read as the raw string's host list is: "a,b" is two hosts, "prod:5432" is host prod
+        var hosts = ConnectionEndpoints.Parse(c.Engine, c.UseRawConnectionString
+            ? c.RawConnectionString
+            : string.IsNullOrWhiteSpace(c.Server) ? null : new DbConnectionStringBuilder { ["Host"] = c.Server.Trim() }.ConnectionString)?.Hosts;
+        return hosts is null || hosts.Any(h => targets.Any(s => HostNames.Same(h, ServerNames.Host(s))));
     }
 
     /// <summary>

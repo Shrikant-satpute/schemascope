@@ -51,11 +51,15 @@ public sealed class CompareSession
     private List<Dictionary<string, DbObject>>? _targetIndexes;
     private Dictionary<string, CompareRow>? _rowIndex;
 
+    // keyed exactly as the compare keyed its rows: shared keys are those of every snapshot, not one alone
+    private HashSet<string>? _sharedKeys;
+    private HashSet<string> SharedKeys => _sharedKeys ??= SchemaSnapshot.SharedKeys(Targets.Prepend(Source));
+
     public Dictionary<string, DbObject> SourceIndex =>
-        _sourceIndex ??= Source?.BuildIndex() ?? [];
+        _sourceIndex ??= Source?.BuildIndex(SharedKeys) ?? [];
 
     public List<Dictionary<string, DbObject>> TargetIndexes =>
-        _targetIndexes ??= [.. Targets.Select(t => t.BuildIndex())];
+        _targetIndexes ??= [.. Targets.Select(t => t.BuildIndex(SharedKeys))];
 
     public Dictionary<string, CompareRow> RowIndex =>
         _rowIndex ??= Result?.Rows.ToDictionary(r => r.Key, StringComparer.Ordinal) ?? [];

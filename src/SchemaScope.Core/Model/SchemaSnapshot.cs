@@ -50,34 +50,56 @@ public sealed class SchemaSnapshot
     public int UnreadableCount => Objects.Count(o => o.IsEncrypted || o.DefinitionUnavailable);
 
     /// <summary>
-    /// Every object by its <see cref="DbObject.Key"/>. Two objects with one key are both kept - the second as
-    /// "key#2", the third "key#3" - and a warning says so, rather than one silently replacing the other. Keys
-    /// ignore case, so a SQL Server database only ever has two when its collation is case-sensitive.
+    /// Every object by its <see cref="DbObject.Key"/>. Keys ignore case, so two objects can share one - in a SQL Server
+    /// database only when its collation is case-sensitive. Both are then kept, and a warning says so, rather than one
+    /// silently replacing the other: every object under a shared key is indexed as "key#Schema.Name", its exact name, so
+    /// dbo.USERS pairs with dbo.USERS and never with dbo.Users. <paramref name="shared"/> is the <see cref="SharedKeys"/>
+    /// of every snapshot in the compare, so a side holding only one of the objects is keyed the same way; left out, it is
+    /// this snapshot's own.
     /// </summary>
-    public Dictionary<string, DbObject> BuildIndex()
+    public Dictionary<string, DbObject> BuildIndex(IReadOnlySet<string>? shared = null)
     {
+        shared ??= SharedKeys([this]);
         var map = new Dictionary<string, DbObject>(Objects.Count, StringComparer.Ordinal);
-        var shared = new Dictionary<string, (DbObject First, int Count)>(StringComparer.Ordinal);
         foreach (var o in Objects)
         {
-            var key = o.Key;
-            if (map.TryAdd(key, o)) continue;
+            if (!shared.Contains(o.Key))
+            {
+                map[o.Key] = o;
+                continue;
+            }
 
-            var n = shared.TryGetValue(key, out var seen) ? seen.Count + 1 : 2;
-            shared[key] = (map[key], n);
-            while (!map.TryAdd($"{key}#{n}", o)) n++;
+            // one exact name twice (an engine with overloads): the later ones numbered
+            var key = $"{o.Key}#{o.FullName}";
+            var unique = key;
+            for (var n = 2; !map.TryAdd(unique, o); n++) unique = $"{key}#{n}";
         }
 
-        foreach (var (first, count) in shared.Values)
+        foreach (var group in Objects.GroupBy(o => o.Key, StringComparer.Ordinal).Where(g => g.Skip(1).Any()))
         {
-            var warning = $"{(string.IsNullOrWhiteSpace(Label) ? Database : Label)}: {count} {first.Type.Label()} objects are named " +
-                          $"{first.FullName}; they are listed separately as {first.FullName}, {first.FullName}#2" +
-                          $"{(count > 2 ? $" ... #{count}" : "")}.";
+            var first = group.First();
+            var warning = $"{(string.IsNullOrWhiteSpace(Label) ? Database : Label)}: {group.Count()} {first.Type.Label()} objects " +
+                          $"have one name when case is ignored ({string.Join(", ", group.Select(o => o.FullName))}); " +
+                          "each is compared only with an object of exactly its name.";
             lock (Warnings)
             {
                 if (!Warnings.Contains(warning)) Warnings.Add(warning);
             }
         }
         return map;
+    }
+
+    /// <summary>The keys that two or more objects share in any one of <paramref name="snapshots"/> (see <see cref="BuildIndex"/>).</summary>
+    public static HashSet<string> SharedKeys(IEnumerable<SchemaSnapshot?> snapshots)
+    {
+        var shared = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var s in snapshots)
+        {
+            if (s is null) continue;
+            var seen = new HashSet<string>(s.Objects.Count, StringComparer.Ordinal);
+            foreach (var o in s.Objects)
+                if (!seen.Add(o.Key)) shared.Add(o.Key);
+        }
+        return shared;
     }
 }

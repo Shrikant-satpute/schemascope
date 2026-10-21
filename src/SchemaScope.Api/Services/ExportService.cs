@@ -244,11 +244,10 @@ public sealed class ExportService
         if (!IsWritableLocation(request.OutputFolder, out var root, out var refusal))
             return new ExportResult { Success = false, Message = refusal };
 
-        var snapshot = request.TargetIndex is int ti && ti >= 0 && ti < session.Targets.Count
-            ? session.Targets[ti]
-            : session.Source;
-
-        var byKey = snapshot.Objects.ToDictionary(o => o.Key, StringComparer.Ordinal);
+        // the session's index, keyed as the rows are (two objects with one key do not throw here)
+        var byKey = request.TargetIndex is int ti && ti >= 0 && ti < session.Targets.Count
+            ? session.TargetIndexes[ti]
+            : session.SourceIndex;
         Directory.CreateDirectory(root);
 
         var written = 0;

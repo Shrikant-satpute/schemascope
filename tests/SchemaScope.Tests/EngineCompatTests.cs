@@ -168,19 +168,26 @@ public class BuildIndexTests
     };
 
     [Fact]
-    public void Duplicates_are_kept_with_a_suffix_and_one_warning()
+    public void Duplicates_are_kept_under_their_exact_names_with_one_warning()
     {
-        var snapshot = new SchemaSnapshot { Label = "pg", Objects = [Table("Order", "a"), Table("order", "b"), Table("ORDER", "c"), Table("x", "d")] };
+        var snapshot = new SchemaSnapshot
+        {
+            Label = "pg",
+            Objects = [Table("Order", "a"), Table("order", "b"), Table("ORDER", "c"), Table("order", "b2"), Table("x", "d")]
+        };
 
         var index = snapshot.BuildIndex();
         snapshot.BuildIndex();   // built again by the session: still one warning
 
-        Assert.Equal(4, index.Count);
-        Assert.Equal("a", index["1|PUBLIC.ORDER"].CompareText);
-        Assert.Equal("b", index["1|PUBLIC.ORDER#2"].CompareText);
-        Assert.Equal("c", index["1|PUBLIC.ORDER#3"].CompareText);
+        Assert.Equal(5, index.Count);
+        Assert.False(index.ContainsKey("1|PUBLIC.ORDER"));
+        Assert.Equal("a", index["1|PUBLIC.ORDER#public.Order"].CompareText);
+        Assert.Equal("b", index["1|PUBLIC.ORDER#public.order"].CompareText);
+        Assert.Equal("b2", index["1|PUBLIC.ORDER#public.order#2"].CompareText);
+        Assert.Equal("c", index["1|PUBLIC.ORDER#public.ORDER"].CompareText);
+        Assert.Equal("d", index["1|PUBLIC.X"].CompareText);
         var warning = Assert.Single(snapshot.Warnings);
-        Assert.Contains("3 Table objects are named public.Order", warning);
+        Assert.Contains("4 Table objects have one name when case is ignored (public.Order, public.order, public.ORDER, public.order)", warning);
     }
 
     [Fact]
@@ -194,8 +201,77 @@ public class BuildIndexTests
         var result = new CompareEngine(new CompareOptions()).Compare(clean, [twins]);
 
         Assert.Contains(result.Warnings, w => w.StartsWith("tgt: 2 Table objects", StringComparison.Ordinal));
-        Assert.Equal(ObjectStatus.OnlyInTarget, result.Rows.Single(r => r.Key == "1|PUBLIC.X#2").Cells[0].Status);
-        Assert.Equal(ObjectStatus.Same, result.Rows.Single(r => r.Key == "1|PUBLIC.X").Cells[0].Status);
+        Assert.Equal(ObjectStatus.OnlyInTarget, result.Rows.Single(r => r.Key == "1|PUBLIC.X#public.X").Cells[0].Status);
+        Assert.Equal(ObjectStatus.Same, result.Rows.Single(r => r.Key == "1|PUBLIC.X#public.x").Cells[0].Status);
+    }
+
+    /// <summary>
+    /// The review case: the source has only USERS, the case-sensitive target has Users and USERS, read in that order.
+    /// Pairing by position compared USERS with Users (Different) and called the identical USERS extra - a wrong ALTER
+    /// and a wrong DROP. Pairing by exact name finds USERS the same and only Users extra, whichever order either side reads in.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_shared_key_pairs_objects_by_exact_name_across_sides(bool reversed)
+    {
+        var src = new SchemaSnapshot { Label = "src", Objects = [Table("USERS", "same")] };
+        List<DbObject> objects = [Table("Users", "other"), Table("USERS", "same")];
+        if (reversed) objects.Reverse();
+        var tgt = new SchemaSnapshot { Label = "tgt", Objects = objects };
+
+        var result = new CompareEngine(new CompareOptions()).Compare(src, [tgt]);
+
+        Assert.Equal(2, result.Rows.Count);
+        var users = result.Rows.Single(r => r.Name == "USERS");
+        Assert.Equal(ObjectStatus.Same, users.Cells[0].Status);
+        var extra = result.Rows.Single(r => r.Name == "Users");
+        Assert.Equal(ObjectStatus.OnlyInTarget, extra.Cells[0].Status);
+
+        // the session that serves the UI keys its indexes exactly as the rows are keyed
+        var session = new CompareSession { Result = result, Source = src, Targets = [tgt] };
+        Assert.Same(src.Objects[0], session.SourceIndex[users.Key]);
+        Assert.Equal("same", session.TargetIndexes[0][users.Key].CompareText);
+        Assert.Equal("other", session.TargetIndexes[0][extra.Key].CompareText);
+        Assert.False(session.SourceIndex.ContainsKey(extra.Key));
+    }
+
+    /// <summary>The same case read from a real case-sensitive database by the SQL Server reader.</summary>
+    [LocalDbFact]
+    public async Task A_case_sensitive_sql_server_database_pairs_by_exact_name()
+    {
+        var id = Guid.NewGuid().ToString("n")[..8];
+        var srcDb = LocalDb.NewName(id, "CsSrc");
+        var tgtDb = LocalDb.NewName(id, "CsTgt");
+        try
+        {
+            LocalDb.Exec("master", $"CREATE DATABASE [{srcDb}] COLLATE Latin1_General_CS_AS");
+            LocalDb.Exec("master", $"CREATE DATABASE [{tgtDb}] COLLATE Latin1_General_CS_AS");
+            LocalDb.Exec(srcDb, "CREATE TABLE dbo.USERS (Id int NOT NULL);");
+            LocalDb.Exec(tgtDb, "CREATE TABLE dbo.Users (Id bigint NULL);\nGO\nCREATE TABLE dbo.USERS (Id int NOT NULL);");
+
+            var reader = new SchemaScope.SqlServer.SqlServerSchemaReader { Cache = null };
+            async Task<SchemaSnapshot> Read(string db) => await reader.ReadAsync(new SchemaSource
+            {
+                Id = db, Label = db, Server = LocalDb.Server, Database = db, ConnectionString = LocalDb.Conn(db),
+            }, new CompareOptions());
+            var src = await Read(srcDb);
+            var tgt = await Read(tgtDb);
+            Assert.False(src.Failed, src.Error);
+            Assert.False(tgt.Failed, tgt.Error);
+
+            var result = new CompareEngine(new CompareOptions()).Compare(src, [tgt]);
+            var tables = result.Rows.Where(r => r.Type == DbObjectType.Table).ToList();
+            Assert.Equal(2, tables.Count);
+            Assert.Equal(ObjectStatus.Same, tables.Single(r => r.Name == "USERS").Cells[0].Status);
+            Assert.Equal(ObjectStatus.OnlyInTarget, tables.Single(r => r.Name == "Users").Cells[0].Status);
+            Assert.Contains(result.Warnings, w => w.Contains("(dbo.Users, dbo.USERS)") || w.Contains("(dbo.USERS, dbo.Users)"));
+        }
+        finally
+        {
+            LocalDb.Drop(srcDb);
+            LocalDb.Drop(tgtDb);
+        }
     }
 
     [Fact]

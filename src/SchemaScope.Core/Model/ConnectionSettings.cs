@@ -1,3 +1,4 @@
+using System.Data.Common;
 using SchemaScope.Core.Engines;
 
 namespace SchemaScope.Core.Model;
@@ -118,18 +119,92 @@ public sealed class ConnectionSettings
         return copy;
     }
 
+    /// <summary>
+    /// Every secret key's value replaced whole, quotes and all, so a quoted Password="a;b" leaves no tail behind and
+    /// the result still parses (the secret rule reads where it points). The rest of the text is kept as typed. The
+    /// connection string parser is the judge: when its reading of the masked string differs from the original's in
+    /// anything but the secrets - or a URI-form string (its password sits in the host part), or one it cannot read -
+    /// the whole string is masked.
+    /// </summary>
     private static string MaskConnectionString(string cs)
     {
-        var parts = cs.Split(';', StringSplitOptions.RemoveEmptyEntries);
-        for (var i = 0; i < parts.Length; i++)
+        const string masked = "********";
+        if (ConnectionEndpoints.IsUri(cs)) return masked;
+
+        var original = new DbConnectionStringBuilder();
+        var result = new DbConnectionStringBuilder();
+        string text;
+        try
         {
-            var eq = parts[i].IndexOf('=');
-            if (eq <= 0) continue;
-            var key = parts[i][..eq].Trim();
-            if (SecretKeys.IsSecret(key))
-                parts[i] = $"{key}=********";
+            original.ConnectionString = cs;
+            text = ReplaceSecretValues(cs, masked);
+            result.ConnectionString = text;
         }
-        return string.Join(';', parts);
+        catch (ArgumentException)
+        {
+            return masked;
+        }
+
+        if (original.Count != result.Count) return masked;
+        foreach (string key in original.Keys)
+        {
+            var expected = SecretKeys.IsSecret(key) ? masked : original[key]?.ToString();
+            if (!result.TryGetValue(key, out var value) || !string.Equals(value?.ToString(), expected, StringComparison.Ordinal))
+                return masked;
+        }
+        return text;
+    }
+
+    /// <summary>key=value pairs as the ADO.NET grammar reads them ('==' in a key, quoted values with doubled quotes), secret values swapped.</summary>
+    private static string ReplaceSecretValues(string cs, string masked)
+    {
+        var sb = new System.Text.StringBuilder(cs.Length);
+        var i = 0;
+        while (i < cs.Length)
+        {
+            var keyStart = i;
+            while (i < cs.Length && cs[i] != ';')
+            {
+                if (cs[i] == '=')
+                {
+                    if (i + 1 < cs.Length && cs[i + 1] == '=') { i += 2; continue; }   // '==' is an '=' in the key
+                    break;
+                }
+                i++;
+            }
+            sb.Append(cs, keyStart, i - keyStart);
+            if (i >= cs.Length) break;
+            if (cs[i] == ';')
+            {
+                sb.Append(';');
+                i++;
+                continue;
+            }
+
+            var key = cs[keyStart..i].Replace("==", "=").Trim();
+            sb.Append('=');
+            var valueStart = ++i;
+            while (i < cs.Length && char.IsWhiteSpace(cs[i])) i++;
+            if (i < cs.Length && cs[i] is '"' or '\'')
+            {
+                var quote = cs[i++];
+                while (i < cs.Length)
+                {
+                    if (cs[i] == quote)
+                    {
+                        if (i + 1 < cs.Length && cs[i + 1] == quote) { i += 2; continue; }   // a doubled quote is one quote
+                        i++;
+                        break;
+                    }
+                    i++;
+                }
+            }
+            while (i < cs.Length && cs[i] != ';') i++;
+
+            if (SecretKeys.IsSecret(key)) sb.Append(masked);
+            else sb.Append(cs, valueStart, i - valueStart);
+        }
+        return sb.ToString();
     }
 }
 

@@ -28,8 +28,9 @@ public sealed class CompareEngine(CompareOptions options)
             Timings = new Dictionary<string, long>()
         };
 
-        var sourceIndex = source.BuildIndex();
-        var targetIndexes = targets.Select(t => t.BuildIndex()).ToList();
+        var shared = SchemaSnapshot.SharedKeys(targets.Prepend(source));
+        var sourceIndex = source.BuildIndex(shared);
+        var targetIndexes = targets.Select(t => t.BuildIndex(shared)).ToList();
 
         // Every key seen anywhere, so objects that exist only in a target still
         // get a row.

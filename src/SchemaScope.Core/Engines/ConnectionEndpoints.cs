@@ -11,12 +11,29 @@ namespace SchemaScope.Core.Engines;
 /// </summary>
 public static partial class ConnectionEndpoints
 {
-    /// <summary>postgres://user:pass@host/db and friends: refused at input, since the password sits in the host part.</summary>
+    /// <summary>
+    /// postgres://user:pass@host/db and friends, jdbc:postgresql://... too: refused at input, since the password sits
+    /// in the host part.
+    /// </summary>
     public static bool IsUri(string? connectionString) =>
         connectionString is not null && UriForm().IsMatch(connectionString);
 
-    [GeneratedRegex(@"^\s*[A-Za-z][A-Za-z0-9+.\-]*://", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^\s*[A-Za-z][A-Za-z0-9+.:\-]*://", RegexOptions.CultureInvariant)]
     private static partial Regex UriForm();
+
+    /// <summary>The password in a URI-form string's user:password@ part, still percent-encoded; null when there is none.</summary>
+    public static string? UriPassword(string connectionString)
+    {
+        var start = connectionString.IndexOf("://", StringComparison.Ordinal);
+        if (start < 0) return null;
+        var rest = connectionString[(start + 3)..];
+        var end = rest.IndexOfAny(['/', '?', '#']);
+        var authority = end >= 0 ? rest[..end] : rest;
+        var at = authority.LastIndexOf('@');
+        if (at < 0) return null;
+        var colon = authority.IndexOf(':');
+        return colon >= 0 && colon + 1 < at ? authority[(colon + 1)..at] : null;
+    }
 
     public static EndpointInfo? Parse(DatabaseEngine engine, string? connectionString)
     {

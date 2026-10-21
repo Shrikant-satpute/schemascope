@@ -41,10 +41,10 @@ internal static class PgCatalogQueries
 
     /// <summary>
     /// Every catalog set in one round trip, in this order: schemas, relations, columns, constraints, indexes,
-    /// routines, triggers, sequences, types, extensions.
+    /// routines, triggers, sequences, types, extensions, row security policies.
     /// </summary>
     public static string Catalog(int versionNum) => string.Join("\n", Schemas, Relations, Columns(versionNum), Constraints,
-        Indexes, Routines, Triggers, Sequences, Types, Extensions);
+        Indexes, Routines, Triggers, Sequences, Types, Extensions, Policies);
 
     private static readonly string Schemas = $"""
         SELECT n.nspname, pg_get_userbyid(n.nspowner)
@@ -52,10 +52,23 @@ internal static class PgCatalogQueries
         WHERE {UserSchema("n")} AND {NotExtensionMember("pg_namespace", "n.oid")};
         """;
 
-    // r table, p partitioned table, v view, m materialized view
+    /// <summary>
+    /// r table, p partitioned table, v view, m materialized view. Beside the definition, what pg_get_viewdef and the
+    /// columns leave out: UNLOGGED (relpersistence), row level security and FORCE, the WITH (...) options (a view's
+    /// check_option and security_barrier live there), the partition key, a partition's bounds, and the parents of a
+    /// partition or of plain inheritance.
+    /// </summary>
     private static readonly string Relations = $"""
         SELECT c.oid, n.nspname, c.relname, c.relkind::text,
-               CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END
+               CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END,
+               c.relpersistence::text, c.relrowsecurity, c.relforcerowsecurity, COALESCE(c.reloptions, ARRAY[]::text[]),
+               CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END,
+               c.relispartition, CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) END,
+               ARRAY(SELECT quote_ident(pn.nspname) || '.' || quote_ident(pc.relname)
+                     FROM pg_inherits i
+                     JOIN pg_class pc ON pc.oid = i.inhparent
+                     JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+                     WHERE i.inhrelid = c.oid ORDER BY i.inhseqno)
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE c.relkind IN ('r', 'p', 'v', 'm') AND {UserSchema("n")} AND {NotExtensionMember("pg_class", "c.oid")};
@@ -87,7 +100,9 @@ internal static class PgCatalogQueries
         ORDER BY a.attrelid, a.attnum;
         """;
 
-    // p primary key, u unique, f foreign key, c check, x exclusion; PostgreSQL 18's NOT NULL rows ('n') are columns' attnotnull
+    // p primary key, u unique, f foreign key, c check, x exclusion; PostgreSQL 18's NOT NULL rows ('n') are columns' attnotnull.
+    // A partition's copies of its parent's keys (conparentid set, on another table) are its own constraints too; the
+    // copies a foreign key makes for each partition it references (conparentid set, on the same table) are not.
     private static readonly string Constraints = $"""
         SELECT co.conrelid, co.contypid, co.conname, co.contype::text, pg_get_constraintdef(co.oid, true), co.convalidated,
                ARRAY(SELECT a.attname::text FROM unnest(co.conkey) WITH ORDINALITY k(num, ord)
@@ -100,7 +115,8 @@ internal static class PgCatalogQueries
         JOIN pg_namespace n ON n.oid = co.connamespace
         LEFT JOIN pg_class rc ON rc.oid = co.confrelid
         LEFT JOIN pg_namespace rn ON rn.oid = rc.relnamespace
-        WHERE co.contype IN ('p', 'u', 'f', 'c', 'x') AND {UserSchema("n")} AND co.conparentid = 0
+        WHERE co.contype IN ('p', 'u', 'f', 'c', 'x') AND {UserSchema("n")}
+          AND (co.conparentid = 0 OR EXISTS (SELECT 1 FROM pg_constraint pco WHERE pco.oid = co.conparentid AND pco.conrelid <> co.conrelid))
           AND (co.conrelid <> 0 OR co.contypid <> 0);
         """;
 
@@ -194,5 +210,17 @@ internal static class PgCatalogQueries
         SELECT e.extname, e.extversion, n.nspname
         FROM pg_extension e
         JOIN pg_namespace n ON n.oid = e.extnamespace;
+        """;
+
+    // polcmd: * all, r select, a insert, w update, d delete; role 0 is PUBLIC
+    private static readonly string Policies = $"""
+        SELECT pol.polrelid, pol.polname, pol.polpermissive, pol.polcmd::text,
+               ARRAY(SELECT CASE WHEN r.oid = 0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(r.oid)) END
+                     FROM unnest(pol.polroles) r(oid) ORDER BY 1),
+               pg_get_expr(pol.polqual, pol.polrelid), pg_get_expr(pol.polwithcheck, pol.polrelid)
+        FROM pg_policy pol
+        JOIN pg_class c ON c.oid = pol.polrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE {UserSchema("n")};
         """;
 }

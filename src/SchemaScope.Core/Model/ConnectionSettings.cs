@@ -110,6 +110,31 @@ public sealed class ConnectionSettings
                ea.Hosts.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(eb.Hosts);
     }
 
+    /// <summary>
+    /// When a secret saved against <paramref name="saved"/> may go out with <paramref name="incoming"/>: the same
+    /// destination (<see cref="SameDestination"/>), and for an engine that takes an SSL mode, TLS no weaker than it
+    /// was saved with. Otherwise anyone holding the API could re-post a saved connection with SSL off and have its
+    /// password sent in clear text; a downgrade means typing the password again. SQL Server is unchanged.
+    /// </summary>
+    public static bool MayReleaseSecret(ConnectionSettings incoming, ConnectionSettings saved) =>
+        SameDestination(incoming, saved) && !WeakerTls(incoming, saved);
+
+    /// <summary>
+    /// True when <paramref name="incoming"/> asks for less TLS than <paramref name="saved"/>: Disable &lt; Prefer &lt;
+    /// Require &lt; Verify CA &lt; Verify full, with "Trust server certificate" bringing a verify mode down to
+    /// Require. A raw string is released whole, its own TLS settings and all, so the form's fields do not count.
+    /// </summary>
+    public static bool WeakerTls(ConnectionSettings incoming, ConnectionSettings saved) =>
+        incoming.Engine != DatabaseEngine.SqlServer && !incoming.UseRawConnectionString &&
+        TlsRank(incoming) < TlsRank(saved);
+
+    private static int TlsRank(ConnectionSettings s)
+    {
+        var mode = s.Ssl ?? SslMode.VerifyFull;
+        if (s.TrustServerCertificate && mode is SslMode.VerifyFull or SslMode.VerifyCa) mode = SslMode.Require;
+        return (int)mode;
+    }
+
     public ConnectionSettings WithoutSecrets()
     {
         var copy = (ConnectionSettings)MemberwiseClone();

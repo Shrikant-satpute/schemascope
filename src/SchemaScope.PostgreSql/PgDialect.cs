@@ -45,6 +45,9 @@ public static class PgCanonicalWriter
     /// <summary>Marks an exclusion constraint among a table's <see cref="DbObject.Indexes"/>.</summary>
     public const string ExcludeConstraint = "EXCLUDE";
 
+    /// <summary>A table's row security policies sit in its <see cref="DbObject.Properties"/> under this prefix and their name.</summary>
+    public const string PolicyPrefix = "policy:";
+
     public static string Q(string name) => "\"" + name.Replace("\"", "\"\"") + "\"";
 
     public static string Write(DbObject o, CompareOptions opt) => o.Type switch
@@ -104,8 +107,10 @@ public static class PgCanonicalWriter
 
     private static string WriteTable(DbObject o, CompareOptions opt)
     {
+        var p = o.Properties;
+        var table = $"{Q(o.Schema)}.{Q(o.Name)}";
         var sb = new StringBuilder(512);
-        sb.Append($"CREATE TABLE {Q(o.Schema)}.{Q(o.Name)} (\n");
+        sb.Append(p.ContainsKey("persistence") ? "CREATE UNLOGGED TABLE " : "CREATE TABLE ").Append($"{table} (\n");
 
         var columns = opt.IgnoreColumnOrder
             ? o.Columns.OrderBy(c => c.Name, StringComparer.Ordinal).ToList()
@@ -127,7 +132,15 @@ public static class PgCanonicalWriter
             lines.Add("    " + (Named(ck.IsSystemNamed, opt) ? $"CONSTRAINT {Q(ck.Name)} " : "") + ck.Definition +
                       (ck.IsNotTrusted ? " NOT VALID" : ""));
 
-        sb.Append(string.Join(",\n", lines)).Append("\n);\n");
+        sb.Append(string.Join(",\n", lines)).Append("\n)");
+        if (p.GetValueOrDefault("inherits") is { Length: > 0 } inherits) sb.Append($" INHERITS ({inherits})");
+        if (p.GetValueOrDefault("partitionBy") is { Length: > 0 } partitionBy) sb.Append($" PARTITION BY {partitionBy}");
+        if (p.GetValueOrDefault("options") is { Length: > 0 } storage) sb.Append($" WITH ({storage})");
+        sb.Append(";\n");
+
+        // a partition: where it hangs and which rows it takes
+        if (p.GetValueOrDefault("partitionOf") is { Length: > 0 } parent)
+            sb.Append($"ALTER TABLE ONLY {parent} ATTACH PARTITION {table} {p.GetValueOrDefault("partitionBound")};\n");
 
         foreach (var ix in o.Indexes
                      .Where(i => !i.IsPrimaryKey && !i.IsUniqueConstraint && i.TypeDesc != ExcludeConstraint)
@@ -136,6 +149,13 @@ public static class PgCanonicalWriter
 
         foreach (var fk in o.ForeignKeys.OrderBy(f => f.Name, StringComparer.Ordinal))
             sb.Append($"ALTER TABLE {Q(o.Schema)}.{Q(o.Name)} ADD CONSTRAINT {Q(fk.Name)} {fk.Definition};\n");
+
+        // row level security: whether it is on, whether it binds the owner too, and every policy
+        if (p.ContainsKey("rowSecurity")) sb.Append($"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;\n");
+        if (p.ContainsKey("forceRowSecurity")) sb.Append($"ALTER TABLE {table} FORCE ROW LEVEL SECURITY;\n");
+        foreach (var policy in p.Where(kv => kv.Key.StartsWith(PolicyPrefix, StringComparison.Ordinal))
+                     .OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            sb.Append(policy.Value).Append('\n');
 
         return sb.ToString().TrimEnd('\n');
     }

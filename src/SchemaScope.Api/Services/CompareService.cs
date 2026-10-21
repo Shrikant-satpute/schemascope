@@ -224,6 +224,8 @@ public sealed class CompareService
             throw new SchemaReadException("Every source needs either a saved connection or an inline connection.");
         }
 
+        if (ConnectionRules.MissingPassword(settings) is { } missing) throw new SchemaReadException(missing);
+
         // an engine this build lacks, or a preview one switched off: never handed to another engine's driver
         if (!engines.TryGet(settings.Engine, out var provider))
             throw new SchemaReadException(ConnectionRules.NotEnabled(settings.Engine));

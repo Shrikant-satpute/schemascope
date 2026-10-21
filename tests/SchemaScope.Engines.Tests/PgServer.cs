@@ -20,6 +20,15 @@ public sealed class PostgresFactAttribute : FactAttribute
     }
 }
 
+/// <summary>A theory that needs a PostgreSQL container, gated like <see cref="PostgresFactAttribute"/>.</summary>
+public sealed class PostgresTheoryAttribute : TheoryAttribute
+{
+    public PostgresTheoryAttribute()
+    {
+        if (!PgServer.Enabled) Skip = "Engine tests are off: set SCHEMASCOPE_ENGINE_TESTS=1 (needs Docker).";
+    }
+}
+
 /// <summary>
 /// Refuses any endpoint a test did not start itself. A container is published on a random host port; the ports the
 /// developer's own servers listen on (PostgreSQL 5432, MySQL 3306) on this machine are refused outright, whatever
@@ -101,6 +110,8 @@ public class PgServer : IAsyncLifetime
         UserName = user ?? User,
         Password = password ?? Password,
         Ssl = Core.Engines.SslMode.Disable,
+        // the explicit opt-in Disable needs (no TLS at all)
+        TrustServerCertificate = true,
     };
 
     public string ConnectionString(string database, string? user = null, string? password = null) =>

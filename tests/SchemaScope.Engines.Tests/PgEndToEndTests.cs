@@ -112,11 +112,13 @@ public sealed class PgEndToEndTests(PgServer pg)
         // the image has no TLS: the default (Verify full) must fail rather than fall back to an unencrypted link
         var settings = pg.Settings("postgres");
         settings.Ssl = null;
+        settings.TrustServerCertificate = false;
         var svc = new PgConnectionService();
         var result = await svc.TestAsync(EndpointGuard.Checked(svc.BuildConnectionString(settings), pg));
         Assert.False(result.Success);
 
         settings.Ssl = SchemaScope.Core.Engines.SslMode.Disable;
+        settings.TrustServerCertificate = true;   // the explicit opt-in to no TLS
         Assert.True((await svc.TestAsync(EndpointGuard.Checked(svc.BuildConnectionString(settings), pg))).Success);
     }
 

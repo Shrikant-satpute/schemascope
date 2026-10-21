@@ -61,6 +61,9 @@ public static class StructureDiffService
             BuildNamed("Check constraints",
                 RenderChecks(source?.Constraints, names, exact), RenderChecks(target?.Constraints, names, exact), names)
         };
+        // PostgreSQL: what a table is beyond its columns and keys (UNLOGGED, partitioning, row security, policies, ...)
+        if (exact)
+            sections.Add(BuildNamed("Table options", TableFacts(source), TableFacts(target), names));
 
         return [.. sections.Where(s => s.Rows.Count > 0)];
     }
@@ -189,6 +192,11 @@ public static class StructureDiffService
 
         return section;
     }
+
+    private static Dictionary<string, string> TableFacts(DbObject? o) =>
+        o is { Type: DbObjectType.Table }
+            ? o.Properties.Where(kv => kv.Value is not null).ToDictionary(kv => kv.Key, kv => kv.Value!, StringComparer.Ordinal)
+            : new Dictionary<string, string>(StringComparer.Ordinal);
 
     private static Dictionary<string, string> Render(List<IndexInfo>? indexes, CompareOptions options, StringComparer names)
     {

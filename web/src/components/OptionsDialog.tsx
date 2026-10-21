@@ -214,7 +214,21 @@ export function OptionsDialog({
             <button
               className="hover:underline"
               style={{ color: 'var(--accent)' }}
-              onClick={() => set('includedTypes', ['table', 'view', 'tableType', 'userDefinedType', 'sequence'])}
+              onClick={() =>
+                set('includedTypes', [
+                  'table',
+                  'view',
+                  'tableType',
+                  'userDefinedType',
+                  'sequence',
+                  // PostgreSQL
+                  'materializedView',
+                  'domain',
+                  'enumType',
+                  'compositeType',
+                  'extension',
+                ])
+              }
             >
               structure only
             </button>
@@ -229,6 +243,7 @@ export function OptionsDialog({
                   'aggregateFunction',
                   'trigger',
                   'view',
+                  'materializedView',
                 ])
               }
             >

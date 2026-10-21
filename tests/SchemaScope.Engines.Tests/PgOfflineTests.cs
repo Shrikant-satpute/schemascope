@@ -160,7 +160,9 @@ public class PgConnectionTests
         Assert.NotNull(ConnectionRules.Problem(Pg(s => s.Ssl = SslMode.Require)));
         Assert.NotNull(ConnectionRules.Problem(Pg(s => s.Ssl = SslMode.Prefer)));
         Assert.Null(ConnectionRules.Problem(Pg(s => { s.Ssl = SslMode.Require; s.TrustServerCertificate = true; })));
-        Assert.Null(ConnectionRules.Problem(Pg(s => s.Ssl = SslMode.Disable)));
+        // no TLS at all is weaker still: the same explicit tick
+        Assert.Contains("Disable", ConnectionRules.Problem(Pg(s => s.Ssl = SslMode.Disable)));
+        Assert.Null(ConnectionRules.Problem(Pg(s => { s.Ssl = SslMode.Disable; s.TrustServerCertificate = true; })));
     }
 
     [Theory]

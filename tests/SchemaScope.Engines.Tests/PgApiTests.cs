@@ -19,7 +19,7 @@ public sealed class PgRouteTests : IAsyncLifetime
 
     private static string PgConnection(string extra = "") => $$"""
         { "engine": "postgreSql", "label": "pg", "server": "127.0.0.1", "port": 1, "database": "app", "auth": "password",
-          "userName": "u", "password": "pw", "ssl": "disable" {{extra}} }
+          "userName": "u", "password": "pw", "ssl": "disable", "trustServerCertificate": true {{extra}} }
         """;
 
     private static async Task<string> Message(HttpResponseMessage r) =>

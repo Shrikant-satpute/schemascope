@@ -50,6 +50,9 @@ public static partial class ConnectionEndpoints
         }
 
         var keys = parsed.Keys.Cast<string>().Select(k => k.Trim().ToLowerInvariant()).ToHashSet();
+        // Two names for one setting (Host=a;Server=b): the drivers take the last one written, this reading would take
+        // the first. Rather than guess which, the destination is unknown.
+        if (Synonyms(engine).Any(names => keys.Count(names.Contains) > 1)) return null;
         string? Value(params string[] names)
         {
             foreach (var name in names)
@@ -69,6 +72,16 @@ public static partial class ConnectionEndpoints
             _ => null
         };
     }
+
+    /// <summary>The keys each driver reads as one setting: where the string goes, and to which database.</summary>
+    private static string[][] Synonyms(DatabaseEngine engine) => engine switch
+    {
+        DatabaseEngine.SqlServer => [["data source", "server", "address", "addr", "network address"], ["initial catalog", "database"]],
+        DatabaseEngine.PostgreSql => [["host", "server"], ["database", "db"]],
+        DatabaseEngine.MySql or DatabaseEngine.MariaDb =>
+            [["server", "host", "data source", "datasource", "address", "addr", "network address"], ["database", "initial catalog"]],
+        _ => []
+    };
 
     // Keys that only another engine's driver takes. SqlClient itself throws on unknown keywords before it connects;
     // these lists make the same refusal here, where there is no driver to ask.
@@ -165,7 +178,10 @@ public static partial class ConnectionEndpoints
 /// <summary>The one rule for which connection string keys hold a secret, for masking and scrubbing alike.</summary>
 public static class SecretKeys
 {
-    /// <summary>Password, PWD, SSL Password, CertificatePassword, Passphrase, Client Secret, Passfile, ...</summary>
+    /// <summary>
+    /// Password, PWD, SSL Password, CertificatePassword, Passphrase, Client Secret, Passfile, and Npgsql's PSW (its
+    /// third name for Password), ...
+    /// </summary>
     public static bool IsSecret(string key)
     {
         var k = key.Trim();
@@ -173,7 +189,8 @@ public static class SecretKeys
                k.Contains("pwd", StringComparison.OrdinalIgnoreCase) ||
                k.Contains("passphrase", StringComparison.OrdinalIgnoreCase) ||
                k.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
-               k.Equals("passfile", StringComparison.OrdinalIgnoreCase);
+               k.Equals("passfile", StringComparison.OrdinalIgnoreCase) ||
+               k.Equals("psw", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>The value of every secret key in a key=value string; none when it cannot be read.</summary>

@@ -181,6 +181,8 @@ export interface CompareOptions {
   excludedSchemas: string[]
   excludedNamePatterns: string[]
   includeSystemObjects: boolean
+  /** Which object types these options know about (the server's CompareOptions.TypeSet); kept as received. */
+  typeSet?: number
 }
 
 /** One database as it took part in a past compare. */

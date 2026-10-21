@@ -283,12 +283,12 @@ public sealed class SchemaScopeStore
         // connection at another server or login drops the password rather than
         // carrying it along to whoever answers there.
         // The same rule covers a masked raw connection string, and a change of engine or port: a secret
-        // saved for SQL Server on a host never follows the row to PostgreSQL on that host.
+        // saved for SQL Server on a host never follows the row to PostgreSQL on that host, nor to weaker TLS.
         byte[]? passwordEnc;
         byte[]? rawEnc;
         var existing = GetConnectionRawSecrets(s.Id);
         var saved = GetConnection(s.Id);
-        var sameDestination = saved is not null && ConnectionSettings.SameDestination(s, saved);
+        var sameDestination = saved is not null && ConnectionSettings.MayReleaseSecret(s, saved);
 
         if (string.IsNullOrEmpty(s.Password) || s.Password == "********")
             passwordEnc = sameDestination ? existing.Password : null;

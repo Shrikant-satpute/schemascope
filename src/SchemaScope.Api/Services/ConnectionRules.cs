@@ -55,7 +55,8 @@ public static class ConnectionRules
 
     /// <summary>
     /// PostgreSQL in this version: a user name and password, a port in range, TLS verified unless the user ticked
-    /// "Trust server certificate" (Require and Prefer never check the certificate, so they need that tick too), no
+    /// "Trust server certificate" (Require and Prefer never check the certificate, and Disable has no TLS at all, so
+    /// they need that tick too), no
     /// engine options, and a raw string Npgsql's way round - never a URI, never another driver's keys.
     /// </summary>
     private static string? PostgreSqlProblem(ConnectionSettings s)
@@ -80,10 +81,25 @@ public static class ConnectionRules
         if (s.Ssl is SslMode.Require or SslMode.Prefer && !s.TrustServerCertificate)
             return "SSL mode Require and Prefer do not check the server certificate. Tick \"Trust server certificate\" " +
                    "to connect that way on purpose, or use Verify full.";
+        if (s.Ssl is SslMode.Disable && !s.TrustServerCertificate)
+            return "SSL mode Disable sends the password and every query unencrypted. Tick \"Trust server certificate\" " +
+                   "to connect that way on purpose, or use Verify full.";
         if (s.EngineOptions is { Count: > 0 } options)
             return options.Keys.Any(SecretKeys.IsSecret)
                 ? "Engine options never hold a password or other secret."
                 : "PostgreSQL takes no engine options in this version.";
         return null;
     }
+
+    /// <summary>
+    /// Checked once the stored secret was put back (<see cref="SecretRelease.TryRehydrate"/>): a PostgreSQL sign-in
+    /// from the form always carries its password. Given none, Npgsql would send one SchemaScope never stored - the
+    /// PGPASSWORD environment variable or a pgpass.conf entry, which may match any host - so an empty one is refused.
+    /// A raw string is used as typed: one without a password gets the driver's own fallbacks, as it would anywhere.
+    /// </summary>
+    public static string? MissingPassword(ConnectionSettings s) =>
+        s.Engine == DatabaseEngine.PostgreSql && !s.UseRawConnectionString && s.Auth == AuthMode.Password &&
+        string.IsNullOrEmpty(s.Password)
+            ? "Type the password: a PostgreSQL connection without one is not attempted."
+            : null;
 }

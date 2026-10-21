@@ -331,6 +331,8 @@ public static class SchemaScopeApi
                 return Results.BadRequest(new { message = off });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
+            if (ConnectionRules.MissingPassword(settings) is { } missing)
+                return Results.BadRequest(new { message = missing });
 
             return Results.Ok(store.SaveConnection(settings).WithoutSecrets());
         });
@@ -359,6 +361,8 @@ public static class SchemaScopeApi
                 return Results.BadRequest(new { message = off });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
+            if (ConnectionRules.MissingPassword(settings) is { } missing)
+                return Results.BadRequest(new { message = missing });
 
             var svc = provider.Connections;
             var cs = svc.BuildConnectionString(settings);
@@ -377,6 +381,8 @@ public static class SchemaScopeApi
                 return Results.BadRequest(new { message = off });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
+            if (ConnectionRules.MissingPassword(settings) is { } missing)
+                return Results.BadRequest(new { message = missing });
 
             var svc = provider.Connections;
             try

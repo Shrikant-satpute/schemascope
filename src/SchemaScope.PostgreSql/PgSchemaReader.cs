@@ -39,16 +39,18 @@ public sealed class PgSchemaReader : ISchemaReader
         };
 
         progress?.Report(new ReadProgress(source.Id, "Connecting", 0));
-        await using var conn = new NpgsqlConnection(source.ConnectionString);
+        PgOpenConnection open;
         try
         {
-            await conn.OpenAsync(ct);
+            open = await PgConnectionService.OpenAsync(source.ConnectionString, ct);
         }
         catch (Exception ex) when (ex is NpgsqlException or TimeoutException or ArgumentException)
         {
             throw new SchemaReadException($"Could not connect to {source.DisplayName}: {PgConnectionService.MessageOf(ex)}",
                 PgConnectionService.HintFor(ex));
         }
+        await using var _ = open;
+        var conn = open.Connection;
 
         var connectMs = total.ElapsedMilliseconds;
         if (string.IsNullOrEmpty(snapshot.Server)) snapshot.Server = conn.Host ?? "";
@@ -79,7 +81,8 @@ public sealed class PgSchemaReader : ISchemaReader
 
             progress?.Report(new ReadProgress(source.Id, "Building model", 70));
             stage.Restart();
-            snapshot.Objects = Assemble(raw, options);
+            // PostgreSQL's own excluded schemas in place of SQL Server's defaults, and names matched exactly
+            snapshot.Objects = Assemble(raw, options.ForEngine(Dialect.DefaultExcludedSchemas, exactNames: true));
             snapshot.FetchedBodies = snapshot.Objects.Count(o => o.Type.IsModule());
             snapshot.TimingsMs["assemble"] = stage.ElapsedMilliseconds;
         }
@@ -128,7 +131,11 @@ public sealed class PgSchemaReader : ISchemaReader
 
     // ------------------------------------------------------------------ raw catalog rows
 
-    private sealed record Rel(uint Oid, string Schema, string Name, char Kind, string? ViewDef);
+    private sealed record Rel(uint Oid, string Schema, string Name, char Kind, string? ViewDef, char Persistence,
+        bool RowSecurity, bool ForceRowSecurity, string[] Options, string? PartitionKey, bool IsPartition,
+        string? PartitionBound, string[] Parents);
+    private sealed record Policy(uint Rel, string Name, bool Permissive, char Command, string[] Roles, string? Using,
+        string? WithCheck);
     private sealed record Col(uint Rel, int Num, string Name, string Type, bool NotNull, string Identity, string Generated,
         string? Default, string? Collation, long? SeqStart, long? SeqIncrement);
     private sealed record Con(uint Rel, uint TypeOid, string Name, char Kind, string Definition, bool Validated,
@@ -155,6 +162,7 @@ public sealed class PgSchemaReader : ISchemaReader
         public List<Seq> Sequences { get; } = [];
         public List<Typ> Types { get; } = [];
         public List<(string Name, string Version, string Schema)> Extensions { get; } = [];
+        public List<Policy> Policies { get; } = [];
     }
 
     private async Task<RawCatalog> ReadCatalogAsync(NpgsqlConnection conn, NpgsqlTransaction tx, int versionNum, CancellationToken ct)
@@ -170,7 +178,9 @@ public sealed class PgSchemaReader : ISchemaReader
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
-            raw.Relations.Add(new Rel(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), Str(r, 4)));
+            raw.Relations.Add(new Rel(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), Str(r, 4), Ch(r, 5),
+                r.GetBoolean(6), r.GetBoolean(7), r.GetFieldValue<string[]>(8), Str(r, 9), r.GetBoolean(10), Str(r, 11),
+                r.GetFieldValue<string[]>(12)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -211,6 +221,11 @@ public sealed class PgSchemaReader : ISchemaReader
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct)) raw.Extensions.Add((r.GetString(0), r.GetString(1), r.GetString(2)));
 
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.Policies.Add(new Policy(r.GetFieldValue<uint>(0), r.GetString(1), r.GetBoolean(2), Ch(r, 3),
+                r.GetFieldValue<string[]>(4), Str(r, 5), Str(r, 6)));
+
         return raw;
     }
 
@@ -235,6 +250,7 @@ public sealed class PgSchemaReader : ISchemaReader
         var constraints = raw.Constraints.ToLookup(c => c.Rel);
         var typeConstraints = raw.Constraints.Where(c => c.TypeOid != 0).ToLookup(c => c.TypeOid);
         var indexes = raw.Indexes.ToLookup(i => i.Rel);
+        var policies = raw.Policies.ToLookup(p => p.Rel);
 
         foreach (var rel in raw.Relations)
         {
@@ -249,13 +265,22 @@ public sealed class PgSchemaReader : ISchemaReader
                     o.Constraints.Add(new ConstraintInfo { Kind = ConstraintKind.Default, ColumnName = c.Name, Definition = c.Default!, IsSystemNamed = true });
                 foreach (var con in constraints[rel.Oid]) AddConstraint(o, con);
                 o.Indexes.AddRange(indexes[rel.Oid].Select(Index));
+                TableFacts(o, rel, policies[rel.Oid], options);
             }
             else
             {
+                // a view's WITH CHECK OPTION is kept in its options, not in pg_get_viewdef: written out the way pg_dump does
+                var checkOption = rel.Options.FirstOrDefault(x => x.StartsWith("check_option=", StringComparison.Ordinal));
+                var storage = StorageOptions(rel.Options, options).Where(x => x != checkOption).ToList();
+                var body = (rel.ViewDef ?? "").TrimEnd();
+                if (checkOption is not null)
+                    body = $"{body.TrimEnd(';').TrimEnd()}\n  WITH {checkOption["check_option=".Length..].ToUpperInvariant()} CHECK OPTION;";
+
                 var sb = new StringBuilder();
                 sb.Append(type == DbObjectType.View ? "CREATE OR REPLACE VIEW " : "CREATE MATERIALIZED VIEW ")
-                  .Append(PgCanonicalWriter.Q(rel.Schema)).Append('.').Append(PgCanonicalWriter.Q(rel.Name)).Append(" AS\n")
-                  .Append((rel.ViewDef ?? "").TrimEnd());
+                  .Append(PgCanonicalWriter.Q(rel.Schema)).Append('.').Append(PgCanonicalWriter.Q(rel.Name))
+                  .Append(storage.Count > 0 ? $" WITH ({string.Join(", ", storage)})" : "").Append(" AS\n")
+                  .Append(body);
                 // a materialized view's indexes are part of what it is
                 foreach (var ix in indexes[rel.Oid].OrderBy(i => i.Name, StringComparer.Ordinal))
                 {
@@ -346,6 +371,45 @@ public sealed class PgSchemaReader : ISchemaReader
 
         return objects;
     }
+
+    /// <summary>
+    /// What a table is beyond its columns and keys, as <see cref="PgCanonicalWriter"/> writes it: UNLOGGED, the partition
+    /// key, the parent and bounds of a partition, plain inheritance, WITH (...) options, row level security (and FORCE)
+    /// and each policy. Only what is set is recorded, so a plain table carries none of these.
+    /// </summary>
+    private static void TableFacts(DbObject o, Rel rel, IEnumerable<Policy> policies, CompareOptions options)
+    {
+        if (rel.Persistence == 'u') o.Properties["persistence"] = "UNLOGGED";
+        if (rel.PartitionKey is not null) o.Properties["partitionBy"] = rel.PartitionKey;
+        if (rel.IsPartition && rel.Parents.Length > 0)
+        {
+            o.Properties["partitionOf"] = rel.Parents[0];
+            o.Properties["partitionBound"] = rel.PartitionBound ?? "";
+        }
+        else if (rel.Parents.Length > 0)
+        {
+            o.Properties["inherits"] = string.Join(", ", rel.Parents);
+        }
+        if (StorageOptions(rel.Options, options).ToList() is { Count: > 0 } storage) o.Properties["options"] = string.Join(", ", storage);
+        if (rel.RowSecurity) o.Properties["rowSecurity"] = "ENABLE";
+        if (rel.ForceRowSecurity) o.Properties["forceRowSecurity"] = "FORCE";
+
+        foreach (var p in policies)
+        {
+            var command = p.Command switch { 'r' => "SELECT", 'a' => "INSERT", 'w' => "UPDATE", 'd' => "DELETE", _ => "ALL" };
+            var text = new StringBuilder($"CREATE POLICY {PgCanonicalWriter.Q(p.Name)} ON {PgCanonicalWriter.Q(o.Schema)}.{PgCanonicalWriter.Q(o.Name)}");
+            text.Append(p.Permissive ? " AS PERMISSIVE" : " AS RESTRICTIVE").Append($" FOR {command}");
+            text.Append($" TO {string.Join(", ", p.Roles)}");
+            if (p.Using is not null) text.Append($" USING ({p.Using})");
+            if (p.WithCheck is not null) text.Append($" WITH CHECK ({p.WithCheck})");
+            o.Properties[PgCanonicalWriter.PolicyPrefix + p.Name] = text.Append(';').ToString();
+        }
+    }
+
+    /// <summary>A relation's WITH (...) options in a fixed order, fillfactor left out when told to ignore it.</summary>
+    private static IEnumerable<string> StorageOptions(string[] reloptions, CompareOptions options) =>
+        reloptions.Where(x => !(options.IgnoreFillFactor && x.StartsWith("fillfactor=", StringComparison.Ordinal)))
+            .Order(StringComparer.Ordinal);
 
     private static ColumnInfo Column(Col c) => new()
     {

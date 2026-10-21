@@ -18,7 +18,8 @@ public static class SecretRelease
     /// against. If the caller changed the engine, server, port, login or auth mode,
     /// the password has to be typed again - otherwise anything able to reach the
     /// API could name a saved connection, point it at a host of its own choosing,
-    /// and harvest the password from the other end.
+    /// and harvest the password from the other end. The same goes for asking for
+    /// weaker TLS than the secret was saved with (<see cref="ConnectionSettings.WeakerTls"/>).
     /// </summary>
     public static bool TryRehydrate(ConnectionSettings incoming, SchemaScopeStore store, out string? error)
     {
@@ -43,6 +44,13 @@ public static class SecretRelease
         {
             error = "The server or login was changed, so the saved password no longer applies. " +
                     "Type the password again.";
+            return false;
+        }
+
+        if (ConnectionSettings.WeakerTls(incoming, saved))
+        {
+            error = "The SSL mode is weaker than the one the password was saved with, so the saved password is not sent. " +
+                    "Type the password again to connect this way.";
             return false;
         }
 

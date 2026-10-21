@@ -247,7 +247,7 @@ export function ConnectionForm({
                 label="Trust server certificate"
                 hint={
                   text.sslMode
-                    ? 'Encrypts without checking the certificate (SSL mode Require). Only for a server you trust on a network you trust.'
+                    ? 'Encrypts without checking the certificate (SSL mode Require); with SSL mode Disable, the explicit opt-in to no TLS. Only for a server you trust on a network you trust.'
                     : 'Needed for most internal servers that use a self-signed certificate.'
                 }
               />
@@ -311,8 +311,8 @@ export function ConnectionForm({
 
 /**
  * TLS for engines that take an SSL mode. Verify full is the default; connecting without checking the certificate
- * is the separate, explicit "Trust server certificate" switch (Require and Prefer never check it, so the server
- * refuses them without that switch).
+ * is the separate, explicit "Trust server certificate" switch (Require and Prefer never check it, and Disable has
+ * no TLS at all, so the server refuses them without that switch).
  */
 function SslModeField({
   form,
@@ -335,7 +335,9 @@ function SslModeField({
       label="SSL mode"
       hint={
         mode === 'disable'
-          ? 'Unencrypted: the password and every query cross the network in clear text.'
+          ? form.trustServerCertificate
+            ? 'Unencrypted: the password and every query cross the network in clear text.'
+            : 'Unencrypted: the password and every query cross the network in clear text. Tick "Trust server certificate" under Advanced to connect this way on purpose.'
           : trusted
             ? 'Trust server certificate is on: encrypted, but the certificate is not checked.'
             : undefined

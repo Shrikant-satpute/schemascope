@@ -5,14 +5,7 @@ import { connectionColour } from '../dbColour'
 import { api } from '../api'
 import { Button, EmptyState, Panel } from './ui'
 import { ConnectionDialog } from './ConnectionDialog'
-
-const AUTH_SHORT: Record<string, string> = {
-  windows: 'Windows auth',
-  sqlLogin: 'SQL login',
-  azureAdPassword: 'Entra password',
-  azureAdInteractive: 'Entra interactive',
-  azureAdDefault: 'Entra default',
-}
+import { authText, useEngines } from '../engines'
 
 export function ConnectionsView({
   connections,
@@ -26,6 +19,7 @@ export function ConnectionsView({
   const [editing, setEditing] = useState<ConnectionSettings | null>(null)
   const [adding, setAdding] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const engines = useEngines()
 
   async function remove(id: string) {
     await api.connections.remove(id)
@@ -123,7 +117,7 @@ export function ConnectionsView({
                   </div>
   
                   <span className="shrink-0 text-[11.5px]" style={{ color: 'var(--text-3)' }}>
-                    {AUTH_SHORT[c.auth] ?? c.auth}
+                    {authText(engines, c, true)}
                   </span>
   
                   <div className="flex shrink-0 gap-1">

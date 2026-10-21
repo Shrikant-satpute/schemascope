@@ -1,3 +1,5 @@
+using SchemaScope.Scripting.Planning;
+
 namespace SchemaScope.Scripting;
 
 // 05_constraints and 06_indexes (generate.py "folder 04" and "folder 05").
@@ -11,7 +13,10 @@ internal sealed partial class CoreRun
     /// (schema/table parts folded on case-insensitive databases); <see cref="Sort"/> is the tuple in its own
     /// spelling joined by NUL, which sorts ordinally exactly as Python sorts the tuple.
     /// </summary>
-    internal readonly record struct RowKey(string Eq, string Sort);
+    internal readonly record struct RowKey(string Eq, string Sort)
+    {
+        public PlanKey Plan => new(Eq, Sort);
+    }
 
     private RowKey Key(params (string Value, bool IsName)[] parts) => new(
         string.Join('\0', parts.Select(p => p.IsName ? Fold(p.Value) : p.Value)),
@@ -29,20 +34,8 @@ internal sealed partial class CoreRun
     /// generate.py <c>[r for k, r in sorted(keyset(seq, kf).items()) if k not in have]</c>: source rows keyed (a
     /// repeated key keeps the last row, like the dict), sorted by key, minus keys the target already has.
     /// </summary>
-    private static List<T> Todo<T>(IEnumerable<T> source, IEnumerable<T> target, Func<T, RowKey> kf)
-    {
-        var have = new HashSet<string>(target.Select(r => kf(r).Eq), StringComparer.Ordinal);
-        var keyed = new Dictionary<string, (string Sort, T Row)>(StringComparer.Ordinal);
-        foreach (var r in source)
-        {
-            var k = kf(r);
-            keyed[k.Eq] = (keyed.TryGetValue(k.Eq, out var old) ? old.Sort : k.Sort, r);
-        }
-        return keyed.Where(e => !have.Contains(e.Key))
-            .OrderBy(e => e.Value.Sort, StringComparer.Ordinal)
-            .Select(e => e.Value.Row)
-            .ToList();
-    }
+    private static List<T> Todo<T>(IEnumerable<T> source, IEnumerable<T> target, Func<T, RowKey> kf) =>
+        PlanRows.Todo(source, target, r => kf(r).Plan);
 
     /// <summary>
     /// Source rows the target also has (same key), each with its target row, sorted by key. Within a key, rows
@@ -51,29 +44,8 @@ internal sealed partial class CoreRun
     /// </summary>
     internal static List<(T Source, T Target)> Pairs<T>(IEnumerable<T> source, IEnumerable<T> target, Func<T, RowKey> kf,
         IEqualityComparer<string> names)
-        where T : class, INamedConstraint
-    {
-        var have = target.GroupBy(r => kf(r).Eq, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
-        var pairs = new List<(T, T)>();
-        foreach (var g in source.GroupBy(r => kf(r).Eq, StringComparer.Ordinal)
-                     .Where(g => have.ContainsKey(g.Key))
-                     .OrderBy(g => kf(g.First()).Sort, StringComparer.Ordinal))
-        {
-            var free = new List<T>(have[g.Key]);
-            var rest = new List<T>();
-            foreach (var s in g)
-                if (free.FirstOrDefault(x => names.Equals(x.CName, s.CName)) is { } t) { pairs.Add((s, t)); free.Remove(t); }
-                else rest.Add(s);
-            foreach (var s in rest)
-            {
-                if (free.Count == 0) break;
-                var t = free.FirstOrDefault(x => State(x) == State(s)) ?? free[0];
-                pairs.Add((s, t));
-                free.Remove(t);
-            }
-        }
-        return pairs;
-    }
+        where T : class, INamedConstraint =>
+        PlanRows.Pairs(source, target, r => kf(r).Plan, r => r.CName, r => State(r), names);
 
     /// <summary>A check's or foreign key's (is_disabled, is_not_trusted).</summary>
     private static (bool Disabled, bool NotTrusted) State(INamedConstraint r) => r switch

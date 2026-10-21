@@ -104,7 +104,7 @@ public static partial class ConnectionEndpoints
     }
 
     /// <summary>"tcp:host\instance,port", "np:\\host\pipe\...", "(localdb)\name": the host, instance and port.</summary>
-    private static (string Host, string? Instance, int? Port)? SqlServerHost(string dataSource)
+    public static (string Host, string? Instance, int? Port)? SqlServerHost(string dataSource)
     {
         var s = dataSource.Trim();
         foreach (var prefix in new[] { "tcp:", "np:", "lpc:", "admin:" })
@@ -174,5 +174,22 @@ public static class SecretKeys
                k.Contains("passphrase", StringComparison.OrdinalIgnoreCase) ||
                k.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
                k.Equals("passfile", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The value of every secret key in a key=value string; none when it cannot be read.</summary>
+    public static List<string> ValuesIn(string? connectionString)
+    {
+        var values = new List<string>();
+        if (string.IsNullOrEmpty(connectionString)) return values;
+        var parsed = new DbConnectionStringBuilder();
+        try { parsed.ConnectionString = connectionString; }
+        catch (ArgumentException) { return values; }
+
+        foreach (string key in parsed.Keys)
+        {
+            if (IsSecret(key) && parsed.TryGetValue(key, out var value) && value?.ToString() is { Length: > 0 } secret)
+                values.Add(secret);
+        }
+        return values;
     }
 }

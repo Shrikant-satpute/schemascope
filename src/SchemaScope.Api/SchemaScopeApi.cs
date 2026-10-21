@@ -2,7 +2,6 @@ using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.FileProviders;
 using SchemaScope.Api.Services;
 using SchemaScope.Core.Comparison;
@@ -56,11 +55,19 @@ public static class SchemaScopeApi
 
         builder.Services.AddSingleton(auth);
         builder.Services.AddSingleton(_ => new SchemaScopeStore(storePath));
+        // Still registered on its own: older code and the tests take it directly.
         builder.Services.AddSingleton<SqlServerConnectionService>();
+        // The engines this build can talk to. Owner app only: ViewerHost.Build registers none of these.
+        builder.Services.AddSingleton<IEngineProvider>(sp => new SqlServerEngineProvider(sp.GetRequiredService<SqlServerConnectionService>()));
+        builder.Services.AddSingleton<EngineRegistry>();
+        builder.Services.AddSingleton<IApplyExecutor>(SqlServerApplyExecutor.Instance);
+        builder.Services.AddSingleton<IScriptGeneratorFactory, ScriptGeneratorFactory>();
         builder.Services.AddSingleton<CompareSessionStore>();
         builder.Services.AddSingleton<ScriptProgressStore>();
         builder.Services.AddSingleton<ExportService>();
-        builder.Services.AddSingleton<CompareService>();
+        builder.Services.AddSingleton(sp => new CompareService(sp.GetRequiredService<CompareSessionStore>(),
+            sp.GetRequiredService<SchemaScopeStore>(), sp.GetRequiredService<EngineRegistry>(),
+            sp.GetRequiredService<ILogger<CompareService>>()));
         builder.Services.AddSingleton<ShareStore>();
         builder.Services.AddSingleton<ViewerHost>();
         builder.Services.AddSingleton<WriteMode>();
@@ -107,6 +114,7 @@ public static class SchemaScopeApi
         app.UseStaticFiles();
 
         MapHealth(app);
+        MapEngines(app);
         MapConnections(app);
         MapHistory(app);
         MapShares(app, embedded);
@@ -240,6 +248,15 @@ public static class SchemaScopeApi
             Enum.GetValues<DbObjectType>().Select(t => new { value = t.ToString(), label = t.Label() })));
     }
 
+    /// <summary>
+    /// What each engine of this build offers, for the UI's forms and labels. Capabilities and wording only, never a
+    /// connection or a secret; behind the launch token like every /api route, and not on the share viewer.
+    /// </summary>
+    private static void MapEngines(WebApplication app)
+    {
+        app.MapGet("/api/engines", (EngineRegistry engines) => Results.Ok(engines.All.Select(EngineDescriptors.Describe)));
+    }
+
     private static void MapConnections(WebApplication app)
     {
         var conns = app.MapGroup("/api/connections");
@@ -275,7 +292,7 @@ public static class SchemaScopeApi
         conns.MapPost("/test", async (
             ConnectionSettings settings,
             SchemaScopeStore store,
-            SqlServerConnectionService svc,
+            EngineRegistry engines,
             CancellationToken ct) =>
         {
             if (ConnectionRules.Problem(settings) is { } problem)
@@ -283,6 +300,7 @@ public static class SchemaScopeApi
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
 
+            var svc = engines.Get(settings.Engine).Connections;
             var cs = svc.BuildConnectionString(settings);
             return Results.Ok(await svc.TestAsync(cs, ct));
         });
@@ -290,7 +308,7 @@ public static class SchemaScopeApi
         conns.MapPost("/databases", async (
             ConnectionSettings settings,
             SchemaScopeStore store,
-            SqlServerConnectionService svc,
+            EngineRegistry engines,
             CancellationToken ct) =>
         {
             if (ConnectionRules.Problem(settings) is { } problem)
@@ -298,9 +316,10 @@ public static class SchemaScopeApi
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
 
+            var svc = engines.Get(settings.Engine).Connections;
             try
             {
-                var cs = svc.BuildConnectionString(settings, "master");
+                var cs = svc.BuildConnectionString(settings, svc.BrowseDatabase);
                 return Results.Ok(await svc.ListDatabasesAsync(cs, ct));
             }
             catch (Exception ex)
@@ -673,6 +692,7 @@ public static class SchemaScopeApi
             ScriptProgressStore progressStore,
             WriteMode writeMode,
             ApplyPlanStore plans,
+            IScriptGeneratorFactory generators,
             ILoggerFactory loggers,
             CancellationToken ct) => // bound to HttpContext.RequestAborted: closing the dialog stops the reads
         {
@@ -706,13 +726,16 @@ public static class SchemaScopeApi
             var source = Endpoint(session.SourceConnection!, result.Source.Label);
             var target = Endpoint(session.TargetConnections[index], result.Targets[index].Label);
             var options = Normalise(request.Options);
+            if (generators.For(source.Engine, target.Engine) is not { } generator)
+                return Results.BadRequest(new { message = $"Scripts are not available for {source.Engine} to {target.Engine} in this version." });
 
             ScriptOutcome outcome;
             using var progress = request.ProgressId is { } progressId ? progressStore.Track(progressId) : null;
             try
             {
-                outcome = await new ScriptGenerator().GenerateAsync(
-                    source, target, options, FormattingCandidates(result, index), ct, progress, DifferentCandidates(result, index));
+                outcome = await generator.GenerateAsync(new ScriptRequestContext(source, target, session.Source,
+                    index < session.Targets.Count ? session.Targets[index] : null, result, index, options,
+                    FormattingCandidates(result, index), DifferentCandidates(result, index)), ct, progress);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -778,6 +801,7 @@ public static class SchemaScopeApi
             WriteMode writeMode,
             ApplyPlanStore plans,
             SchemaScopeStore store,
+            EngineRegistry engines,
             ILoggerFactory loggers,
             CancellationToken ct) =>
         {
@@ -812,6 +836,9 @@ public static class SchemaScopeApi
 
             var source = Endpoint(session.SourceConnection, result.Source.Label);
             var target = Endpoint(session.TargetConnections[index], result.Targets[index].Label);
+            // the single-object generator is the SQL Server one (ObjectScripts); other engines have none yet
+            if (source.Engine != target.Engine || !engines.Supports(source.Engine, EngineFeature.ObjectScripts))
+                return Bad($"Single-object scripts are not available for {source.Engine} to {target.Engine} in this version.");
 
             ObjectScriptOutcome outcome;
             using var progress = request.ProgressId is { } id ? progressStore.Track(id) : null;
@@ -894,6 +921,7 @@ public static class SchemaScopeApi
             ApplyService applier,
             SchemaScopeStore store,
             ScriptProgressStore progressStore,
+            EngineRegistry engines,
             ILoggerFactory loggers) =>
         {
             if (!http.HasJsonContentType())
@@ -920,6 +948,10 @@ public static class SchemaScopeApi
             if ((CheckRun(session) ?? CheckTarget(session, request.TargetIndex)) is { } problem)
                 return Refuse(StatusCodes.Status400BadRequest, problem);
             var index = request.TargetIndex!.Value;
+            // the engine is the session's, never the request's
+            var engine = session.TargetConnections[index].Engine;
+            if (!engines.Supports(engine, EngineFeature.Apply) || applier.ExecutorFor(engine) is not { } executor)
+                return Refuse(StatusCodes.Status400BadRequest, $"Applying scripts to {engine} is not available in this version.");
 
             var plan = plans.Get(request.PlanId);
             if (plan is null)
@@ -943,11 +975,14 @@ public static class SchemaScopeApi
                 return Refuse(StatusCodes.Status400BadRequest, "Tick \"I understand this can lose data\" to apply changes that can lose data.");
 
             var connection = session.TargetConnections[index].ConnectionString;
-            var facts = await ApplyService.InspectAsync(connection);
+            var facts = await executor.InspectAsync(connection);
+            // only SQL Server goes on without an answer (its files then report the unreachable server); any other engine is refused
+            if (facts is null && engine != DatabaseEngine.SqlServer)
+                return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} could not be asked who it is, so nothing was applied.");
             // the name the server reports for itself, against the protected connections: an alias or address is no way round
-            if (facts is not null && OnProtectedServer(store, facts.Key[..facts.Key.IndexOf('|')]))
+            if (facts is not null && OnProtectedServer(store, engine, facts.Key[..facts.Key.IndexOf('|')]))
                 return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is on a server marked \"Protected - never apply scripts here\". Nothing was applied.");
-            var key = ApplyService.TargetKey(facts, target.Server, target.Database);
+            var key = executor.TargetKey(facts, target.Server, target.Database);
             if (!applier.TryLock(key))
                 return Refuse(StatusCodes.Status409Conflict, $"An apply to {target.Label} is already running - wait for it to finish.");
             try
@@ -957,9 +992,9 @@ public static class SchemaScopeApi
                     return Refuse(StatusCodes.Status400BadRequest, "That apply plan is unknown or has expired - generate the scripts again.");
 
                 var files = plan.Files.Where(f => sections.Contains(f.Folder, StringComparer.OrdinalIgnoreCase)).ToList();
-                if (ApplyService.Verify(files, out var verified) is { } tampered)
+                if (ApplyService.Verify(files, executor.Splitter, out var verified) is { } tampered)
                     return Refuse(StatusCodes.Status400BadRequest, tampered);
-                if (facts is not null && ApplyService.MemoryOptimizedProblem(verified, facts.InMemory) is { } inMemory)
+                if (facts is not null && executor.Preflight(verified, facts) is { } inMemory)
                     return Refuse(StatusCodes.Status400BadRequest, inMemory);
 
                 var ordered = plan.Sections.Select(s => s.Folder).Where(f => sections.Contains(f, StringComparer.OrdinalIgnoreCase)).ToList();
@@ -1029,7 +1064,7 @@ public static class SchemaScopeApi
             Engine = ep.Engine,
             Server = ep.Server,
             Database = ep.Database,
-            Login = LoginOf(source.ConnectionString),
+            Login = LoginOf(source),
             Protected = IsProtected(source, ep.Server, store),
         };
     }
@@ -1063,15 +1098,8 @@ public static class SchemaScopeApi
     private static List<string>? TargetServers(SchemaSource target, EndpointInfo ep)
     {
         if (target.Engine != DatabaseEngine.SqlServer) return [.. ep.Hosts];
-        try
-        {
-            var partner = new SqlConnectionStringBuilder(target.ConnectionString).FailoverPartner;
-            return string.IsNullOrWhiteSpace(partner) ? [] : [partner.Trim()];
-        }
-        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
-        {
-            return null;
-        }
+        // the driver's own reading: the Data Source, then the failover partner
+        return ParseEndpoint(target) is { Servers: { } servers } ? [.. servers.Skip(1).Select(s => s.Trim())] : null;
     }
 
     /// <summary>
@@ -1128,18 +1156,8 @@ public static class SchemaScopeApi
     {
         if (!c.UseRawConnectionString) return [c.Server.Trim()];
         if (string.IsNullOrWhiteSpace(c.RawConnectionString)) return null;
-        try
-        {
-            var b = new SqlConnectionStringBuilder(c.RawConnectionString);
-            if (string.IsNullOrWhiteSpace(b.DataSource)) return null;
-            List<string> servers = [b.DataSource.Trim()];
-            if (!string.IsNullOrWhiteSpace(b.FailoverPartner)) servers.Add(b.FailoverPartner.Trim());
-            return servers;
-        }
-        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
-        {
-            return null;
-        }
+        var ep = Engines.Get(DatabaseEngine.SqlServer).Connections.ParseEndpoint(c.RawConnectionString);
+        return ep?.Servers is { Count: > 0 } servers ? [.. servers.Select(s => s.Trim())] : null;
     }
 
     /// <summary>The target is the very database the run read as its source.</summary>
@@ -1152,22 +1170,19 @@ public static class SchemaScopeApi
                string.Equals(s.Database.Trim(), t.Database.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>Who an apply signs in as: "Windows: DOMAIN\user" or "SQL login: name". Never the password.</summary>
-    private static string LoginOf(string connectionString)
-    {
-        try
-        {
-            var b = new SqlConnectionStringBuilder(connectionString);
-            if (b.IntegratedSecurity) return $"Windows: {Environment.UserDomainName}\\{Environment.UserName}";
-            if (b.Authentication is SqlAuthenticationMethod.NotSpecified or SqlAuthenticationMethod.SqlPassword)
-                return $"SQL login: {b.UserID}";
-            return string.IsNullOrEmpty(b.UserID) ? "Microsoft Entra ID" : $"Microsoft Entra ID: {b.UserID}";
-        }
-        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
-        {
-            return "Unknown";
-        }
-    }
+    /// <summary>Who an apply signs in as, as the provider reads it: "Windows: DOMAIN\user" or "SQL login: name". Never the password.</summary>
+    private static string LoginOf(SchemaSource s) =>
+        ParseEndpoint(s) is { LoginDescription.Length: > 0 } ep ? ep.LoginDescription : "Unknown";
+
+    /// <summary>
+    /// The providers the static helpers here read connection strings with: stateless, and the same SQL Server provider
+    /// DI registers in <see cref="Build"/>. Tests call these helpers without a running app.
+    /// </summary>
+    internal static EngineRegistry Engines { get; } = EngineRegistries.SqlServerOnly();
+
+    /// <summary>Where <paramref name="s"/> really goes, read by its engine's driver; null when unreadable or the engine has no provider.</summary>
+    private static EndpointInfo? ParseEndpoint(SchemaSource s) =>
+        Engines.TryGet(s.Engine, out var provider) ? provider.Connections.ParseEndpoint(s.ConnectionString) : null;
 
     /// <summary>
     /// The 400 rules of DESIGN §6, in the order a user would hit them. Null means the request
@@ -1311,15 +1326,11 @@ public static class SchemaScopeApi
     private static ScriptEndpoint Endpoint(SchemaSource s, string? label)
     {
         string server = s.Server, database = s.Database;
-        try
+        // an unreadable string keeps the form's values; the generator reports a connection failure on its own
+        if (ParseEndpoint(s) is { } ep)
         {
-            var b = new SqlConnectionStringBuilder(s.ConnectionString);
-            if (!string.IsNullOrWhiteSpace(b.DataSource)) server = b.DataSource;
-            if (!string.IsNullOrWhiteSpace(b.InitialCatalog)) database = b.InitialCatalog;
-        }
-        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
-        {
-            // keep the form's values; the generator reports a connection failure on its own
+            if ((ep.Servers ?? ep.Hosts).FirstOrDefault() is { } named && !string.IsNullOrWhiteSpace(named)) server = named;
+            if (!string.IsNullOrWhiteSpace(ep.Database)) database = ep.Database;
         }
         return new(string.IsNullOrWhiteSpace(label) ? s.DisplayName : label, server, database, s.ConnectionString, s.Engine);
     }

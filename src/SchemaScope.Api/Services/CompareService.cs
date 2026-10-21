@@ -1,17 +1,28 @@
 using SchemaScope.Core.Comparison;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 using SchemaScope.Core.Storage;
 using SchemaScope.SqlServer;
 
 namespace SchemaScope.Api.Services;
 
-/// <summary>Turns an API request into a running compare, and serves object detail afterwards.</summary>
+/// <summary>
+/// Turns an API request into a running compare, and serves object detail afterwards. Each database is reached
+/// through its engine's provider in <paramref name="engines"/>.
+/// </summary>
 public sealed class CompareService(
     CompareSessionStore sessions,
     SchemaScopeStore store,
-    SqlServerConnectionService connections,
+    EngineRegistry engines,
     ILogger<CompareService> log)
 {
+    /// <summary>SQL Server only, on the given connection service (tests and older callers).</summary>
+    public CompareService(CompareSessionStore sessions, SchemaScopeStore store, SqlServerConnectionService connections,
+        ILogger<CompareService> log)
+        : this(sessions, store, EngineRegistries.SqlServerOnly(connections), log)
+    {
+    }
+
     public CompareSession Start(CompareRequest request)
     {
         var options = ResolveOptions(request);
@@ -87,7 +98,7 @@ public sealed class CompareService(
 
         try
         {
-            var runner = new CompareRunner(new SqlServerSchemaReader());
+            var runner = new CompareRunner(src => engines.Get(src.Engine).CreateReader());
             var run = await runner.RunAsync(source, targets, options, progress, session.Cancellation.Token);
 
             session.Result = run.Result;
@@ -202,7 +213,7 @@ public sealed class CompareService(
             Engine = settings.Engine,
             Server = settings.Server,
             Database = database,
-            ConnectionString = connections.BuildConnectionString(settings, database),
+            ConnectionString = engines.Get(settings.Engine).Connections.BuildConnectionString(settings, database),
             // An inline connection may be a saved one edited in the form: keep its id, so applying
             // re-reads the saved "Protected" flag too.
             ConnectionId = reference.ConnectionId ?? reference.Inline?.Id,

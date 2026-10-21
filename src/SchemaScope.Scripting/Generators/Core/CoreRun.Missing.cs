@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using SchemaScope.Scripting.Planning;
 
 namespace SchemaScope.Scripting;
 
@@ -329,20 +330,16 @@ internal sealed partial class CoreRun
         bool InTarget(ObjectName o) => objects?.ContainsKey(o) ?? (tgt.Tables.Contains(o) || tgt.Modules.ContainsKey(o));
         bool Available(ObjectName o) => !Known(o) || InTarget(o) || newTables.Contains(o) || creatable.Contains(o) || newSynonyms.Contains(o);
 
-        for (var changed = true; changed;)
+        PlanOrder.HoldUntilStable(candidates, m =>
         {
-            changed = false;
-            foreach (var m in candidates)
-            {
-                if (!creatable.Contains(m.Name) || !(m.OType is "V" or "IF" || IsSchemaBound(m.Definition))) continue;
-                var missing = refs[m.Name].Select(d => (ObjectName?)d.Referenced)
-                    .FirstOrDefault(r => !src.NameComparer.Equals(r!.Value, m.Name) && !Available(r.Value));
-                if (missing is not { } r) continue;
-                HoldModule(m, $"a {TypeWord(m.OType)} binds every name it reads when it is created, and it reads {r}, which {tgtLabel} " +
-                              "does not have and 03_missing does not create - CREATE would fail (Msg 208)");
-                changed = true;
-            }
-        }
+            if (!creatable.Contains(m.Name) || !(m.OType is "V" or "IF" || IsSchemaBound(m.Definition))) return false;
+            var missing = refs[m.Name].Select(d => (ObjectName?)d.Referenced)
+                .FirstOrDefault(r => !src.NameComparer.Equals(r!.Value, m.Name) && !Available(r.Value));
+            if (missing is not { } r) return false;
+            HoldModule(m, $"a {TypeWord(m.OType)} binds every name it reads when it is created, and it reads {r}, which {tgtLabel} " +
+                          "does not have and 03_missing does not create - CREATE would fail (Msg 208)");
+            return true;
+        });
     }
 
     /// <summary>
@@ -389,73 +386,9 @@ internal sealed partial class CoreRun
         return result;
     }
 
-    /// <summary>
-    /// A stable topological order of 0..<paramref name="count"/>-1. Each dependency cycle (a strongly connected
-    /// component) is first collapsed into one block that keeps its members in plain order and sits where its
-    /// lowest member is; then Kahn's algorithm always takes the ready block with the lowest index. So an order that
-    /// already satisfies every edge comes back as 0, 1, 2, ..., and an item moves only as far as an edge forces it.
-    /// The members of every cycle are added to <paramref name="forced"/>: no order satisfies their edges.
-    /// </summary>
-    /// <param name="edges">(Before, After): Before must come first. Duplicates and self-edges are ignored.</param>
-    internal static List<int> StableOrder(int count, IEnumerable<(int Before, int After)> edges, List<int> forced)
-    {
-        var next = new List<int>[count];
-        for (var i = 0; i < count; i++) next[i] = [];
-        foreach (var (b, a) in edges)
-            if (a != b && !next[b].Contains(a)) next[b].Add(a);
-
-        // Tarjan: comp[i] = component id; members of a component in ascending (plain) order
-        var comp = new int[count];
-        var low = new int[count];
-        var num = new int[count];
-        Array.Fill(num, -1);
-        var onStack = new bool[count];
-        var stack = new Stack<int>();
-        var members = new List<List<int>>();
-        var counter = 0;
-        void Visit(int v)
-        {
-            num[v] = low[v] = counter++;
-            stack.Push(v);
-            onStack[v] = true;
-            foreach (var w in next[v])
-            {
-                if (num[w] < 0) { Visit(w); low[v] = Math.Min(low[v], low[w]); }
-                else if (onStack[w]) low[v] = Math.Min(low[v], num[w]);
-            }
-            if (low[v] != num[v]) return;
-            var group = new List<int>();
-            int x;
-            do { x = stack.Pop(); onStack[x] = false; comp[x] = members.Count; group.Add(x); } while (x != v);
-            group.Sort();
-            members.Add(group);
-        }
-        for (var v = 0; v < count; v++) if (num[v] < 0) Visit(v);
-
-        // Kahn over the components, keyed by each component's lowest member
-        var compCount = members.Count;
-        var waiting = new int[compCount];
-        var after = new List<int>[compCount];
-        for (var c = 0; c < compCount; c++) after[c] = [];
-        var seen = new HashSet<(int, int)>();
-        for (var b = 0; b < count; b++)
-            foreach (var a in next[b])
-                if (comp[a] != comp[b] && seen.Add((comp[b], comp[a]))) { after[comp[b]].Add(comp[a]); waiting[comp[a]]++; }
-
-        var ready = new SortedSet<(int Key, int Comp)>();
-        for (var c = 0; c < compCount; c++) if (waiting[c] == 0) ready.Add((members[c][0], c));
-        var result = new List<int>(count);
-        while (ready.Count > 0)
-        {
-            var (_, c) = ready.Min;
-            ready.Remove(ready.Min);
-            result.AddRange(members[c]);
-            if (members[c].Count > 1) forced.AddRange(members[c]);
-            foreach (var d in after[c])
-                if (--waiting[d] == 0) ready.Add((members[d][0], d));
-        }
-        return result;
-    }
+    /// <summary>A stable topological order: <see cref="PlanOrder.StableOrder"/>, kept here for the generators and tests that call it.</summary>
+    internal static List<int> StableOrder(int count, IEnumerable<(int Before, int After)> edges, List<int> forced) =>
+        PlanOrder.StableOrder(count, edges, forced);
 
     /// <summary>
     /// The first of <paramref name="names"/> that appears as a word in <paramref name="definition"/> (comments and

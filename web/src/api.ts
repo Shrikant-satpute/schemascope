@@ -7,6 +7,7 @@ import type {
   ConnectionSettings,
   ConnectionTestResult,
   DatabaseListItem,
+  EngineDescriptor,
   ExportResult,
   Health,
   ObjectDetail,
@@ -104,6 +105,9 @@ async function read<T>(res: Response): Promise<T> {
 
 export const api = {
   health: () => req<Health>('/api/health'),
+
+  /** What each engine of this build offers (cached by engines.ts). */
+  engines: () => req<EngineDescriptor[]>('/api/engines'),
 
   connections: {
     list: () => req<ConnectionSettings[]>('/api/connections'),

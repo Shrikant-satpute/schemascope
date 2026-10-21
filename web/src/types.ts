@@ -6,6 +6,82 @@ export type AuthMode =
   | 'azureAdPassword'
   | 'azureAdInteractive'
   | 'azureAdDefault'
+  | 'password'
+  | 'kerberos'
+  | 'clientCertificate'
+
+/** Append-only on the server; every connection saved before engines existed is sqlServer. */
+export type DatabaseEngine = 'sqlServer' | 'postgreSql' | 'mySql' | 'mariaDb' | 'oracle' | 'sqlite'
+
+export type EngineFeature =
+  | 'compare'
+  | 'scripts'
+  | 'objectScripts'
+  | 'apply'
+  | 'destructive'
+  | 'crossCompare'
+  | 'crossScripts'
+
+export type TransactionSemantics = 'perFileTransactional' | 'noDdlRollback'
+
+export interface EngineCapabilities {
+  schemas: boolean
+  sequences: boolean
+  synonyms: boolean
+  tableTypes: boolean
+  aliasTypes: boolean
+  filteredIndexes: boolean
+  includeColumns: boolean
+  routineOverloads: boolean
+  byteExactModuleText: boolean
+  ddl: TransactionSemantics
+  maxIdentifierBytes: number
+  objectTypes: string[]
+  features: EngineFeature[]
+  preview: boolean
+}
+
+export interface EngineAuthOption {
+  mode: AuthMode
+  label: string
+  /** The few words a connection list shows. */
+  short: string
+  needsUser: boolean
+}
+
+export interface EngineFormText {
+  serverLabel: string
+  serverHint: string
+  serverPlaceholder: string
+  connectionStringHint: string
+  connectionStringPlaceholder: string
+  databasePlaceholder: string
+  port: boolean
+  sslMode: boolean
+  encrypt: boolean
+  trustServerCertificate: boolean
+  readOnlyIntent: boolean
+}
+
+/** GET /api/engines: one engine as the UI renders it. Capabilities and wording only. */
+export interface EngineDescriptor {
+  engine: DatabaseEngine
+  displayName: string
+  /** For engine chips ("SQL", "PG"). */
+  shortName: string
+  preview: boolean
+  defaultPort?: number | null
+  browseDatabase?: string | null
+  defaultSchema: string
+  defaultExcludedSchemas: string[]
+  monacoLanguage: string
+  wordSeparators: string
+  transactions: TransactionSemantics
+  capabilities: EngineCapabilities
+  auth: EngineAuthOption[]
+  form: EngineFormText
+  defaults: { auth: AuthMode; encrypt: boolean; trustServerCertificate: boolean; connectTimeoutSeconds: number }
+}
 
 export type ObjectStatus =
   | 'same'
@@ -32,7 +108,11 @@ export type DbObjectType =
 export interface ConnectionSettings {
   id: string
   label: string
+  /** Missing on rows from older builds: SQL Server. */
+  engine?: DatabaseEngine
   server: string
+  /** Null = the engine's default port. SQL Server keeps its port in the server name. */
+  port?: number | null
   database: string
   auth: AuthMode
   userName?: string | null

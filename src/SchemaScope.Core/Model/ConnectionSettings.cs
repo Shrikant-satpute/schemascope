@@ -126,7 +126,7 @@ public sealed class ConnectionSettings
     /// anything but the secrets - or a URI-form string (its password sits in the host part), or one it cannot read -
     /// the whole string is masked.
     /// </summary>
-    private static string MaskConnectionString(string cs)
+    public static string MaskConnectionString(string cs)
     {
         const string masked = "********";
         if (ConnectionEndpoints.IsUri(cs)) return masked;

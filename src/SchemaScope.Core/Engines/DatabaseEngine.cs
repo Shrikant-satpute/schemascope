@@ -29,8 +29,13 @@ public enum SslMode
 /// Where a connection string really goes, as far as secret release and the Protected rule care: every host it may
 /// connect to (multi-host and failover strings name more than one), the port, and for SQL Server the instance.
 /// </summary>
+/// <param name="LoginDescription">Who it signs in as, never the password: "SQL login: name". Empty when not read.</param>
+/// <param name="Servers">
+/// Each destination as the string spells it, for labels, RUN.ps1 and the SQL Server Protected rule (SQL Server: the
+/// Data Source, then the failover partner). Null when the provider keeps only <paramref name="Hosts"/>.
+/// </param>
 public sealed record EndpointInfo(DatabaseEngine Engine, IReadOnlyList<string> Hosts, int? Port,
-    string? Instance, string Database, string LoginDescription);
+    string? Instance, string Database, string LoginDescription, IReadOnlyList<string>? Servers = null);
 
 public static class DatabaseEngines
 {

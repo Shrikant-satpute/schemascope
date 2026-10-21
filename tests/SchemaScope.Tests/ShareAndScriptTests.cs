@@ -515,6 +515,7 @@ public sealed class OwnerRouteTests : IAsyncLifetime
         { "POST", "/api/compare/abc/apply" },
         { "POST", "/api/apply/abcdefgh/stop" },
         { "GET", "/api/apply-history" },
+        { "GET", "/api/engines" },
     };
 
     [Theory]

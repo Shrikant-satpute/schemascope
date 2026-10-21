@@ -1,4 +1,3 @@
-using System.Data.Common;
 using SchemaScope.Core.Engines;
 
 namespace SchemaScope.Api.Services;
@@ -32,16 +31,8 @@ internal static class SecretScrubber
                 continue;
             }
 
-            var parsed = new DbConnectionStringBuilder();
-            try { parsed.ConnectionString = cs; }
-            catch (ArgumentException) { continue; }
-
             // every driver's secret keys: Password, Pwd, SSL Password, CertificatePassword, Passphrase, ... (SecretKeys)
-            foreach (string key in parsed.Keys)
-            {
-                if (SecretKeys.IsSecret(key) && parsed.TryGetValue(key, out var value) && value?.ToString() is { Length: > 0 } secret)
-                    secrets.Add(secret);
-            }
+            secrets.AddRange(SecretKeys.ValuesIn(cs));
         }
         return [.. secrets.Distinct(StringComparer.Ordinal).OrderByDescending(s => s.Length)];
     }

@@ -4,7 +4,8 @@ import { api } from '../api'
 import type { ConnectionSettings, DatabaseListItem } from '../types'
 import { connectionColour } from '../dbColour'
 import { Button, Input, Modal, Spinner } from './ui'
-import { ConnectionForm, BLANK_CONNECTION, AUTH_LABELS } from './ConnectionForm'
+import { ConnectionForm } from './ConnectionForm'
+import { authText, blankConnection, useEngines } from '../engines'
 
 export interface PickedConnection {
   connectionId: string
@@ -40,13 +41,14 @@ export function ConnectionPicker({
   const [databases, setDatabases] = useState<DatabaseListItem[] | null>(null)
   const [loadingDbs, setLoadingDbs] = useState(false)
 
-  const [form, setForm] = useState<Partial<ConnectionSettings>>(BLANK_CONNECTION)
+  const [form, setForm] = useState<Partial<ConnectionSettings>>(blankConnection)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const engines = useEngines()
 
   const excluded = new Set(exclude ?? [])
 
@@ -256,7 +258,7 @@ export function ConnectionPicker({
                         </span>
                       </span>
                       <span className="shrink-0 text-[11px]" style={{ color: 'var(--text-3)' }}>
-                        {AUTH_LABELS[c.auth]?.split(' ')[0] ?? c.auth}
+                        {authText(engines, c, true)}
                       </span>
                       {active && <Check size={15} style={{ color: colour.ink }} />}
                     </button>

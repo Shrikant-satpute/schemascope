@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { api } from '../api'
 import type { ConnectionSettings } from '../types'
 import { Button, Modal, Spinner } from './ui'
-import { ConnectionForm, BLANK_CONNECTION } from './ConnectionForm'
+import { ConnectionForm } from './ConnectionForm'
+import { blankConnection } from '../engines'
 
 /** Add or edit a saved connection from the Connections screen. */
 export function ConnectionDialog({
@@ -14,7 +15,7 @@ export function ConnectionDialog({
   onClose: () => void
   onSaved: (c: ConnectionSettings) => void
 }) {
-  const [form, setForm] = useState<Partial<ConnectionSettings>>(initial ?? BLANK_CONNECTION)
+  const [form, setForm] = useState<Partial<ConnectionSettings>>(() => initial ?? blankConnection())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 

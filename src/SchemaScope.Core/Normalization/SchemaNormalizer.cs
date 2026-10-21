@@ -65,7 +65,7 @@ public sealed class SchemaNormalizer(CompareOptions options)
     /// [dbo].[Foo] vs dbo.Foo is caught by a hash compare instead of needing a
     /// full parse, which is the difference between milliseconds and seconds.
     /// </summary>
-    private static string Loosen(string text)
+    public static string Loosen(string text)
     {
         var stripped = TSqlText.StripComments(text);
         var collapsed = TSqlText.CollapseWhitespace(stripped);

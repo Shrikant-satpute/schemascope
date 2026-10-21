@@ -1,0 +1,161 @@
+{
+ "title": "Compare databases - SchemaScope v3 walkthrough",
+ "duration_s": 65.4,
+ "voice": "Kokoro am_michael, about 2.2-2.4 words/s, no lone one-word lines",
+ "style": "White / light theme throughout. Character only in scene 1. Yellow highlight bar only in scene 1 (hook) and scene 13 (close). Scenes 4-12 copy the v1 walkthrough: one steady real app frame per step, a numbered blue step pill (1-8) with one short caption at the bottom, one slow camera move per step, a cursor doing the work. No big headlines over the app.",
+ "reuse": "All app frames are v2 shots (assets/video/v2/shots, 2x, boxes in 1920x1080 CSS px from manifest.json). Character: assets/video/v2/character/character.svg (scene 1 only). Engine to copy (not modify): v2/scene.html renderAt(t), render.mjs, voice.py, sound.py. v1 caption pill style: assets/video/scene.html #cap/#capnum/#captext, restyled for light theme.",
+ "redactions": [
+  "Runs as 'Windows: DESKTOP-...\\Admin' on the apply dialog (29/30/31) and the Protected dialog (37): grey redaction chip 'Windows: (hidden)', exactly as in v2",
+  "Output folder path 'C:\\Users\\Admin\\...' on 26-* and 28-scripts-written: redaction chip, as in v2",
+  "Any LAN IP or local folder path that appears anywhere else: redaction chip (none expected in the frames chosen; keep the v2 rule)"
+ ],
+ "scenes": [
+  {
+   "start_s": 0.0, "end_s": 4.4, "step": "hook",
+   "name": "Compare databases",
+   "visual": "White canvas, faint 40px grid. 'Compare databases.' lands on the yellow highlight bar, heavy near-black type, centre-left. Under it three small grey pills type on with the voice: 'Staging' - 'Production' - 'Every client database'. The last pill fans into eight tiny database icons (Client01-08). The developer character (v2/character/character.svg, neutral, friendly) pops up bottom-right and points at the pills. This is the ONLY appearance of the character in the whole video; he slides out at 4.0-4.4 s and never comes back. Tag bottom-left in small grey: 'illustration'.",
+   "shots_used": ["v2/character/character.svg"],
+   "caption": "[Compare databases.]  Staging - Production - Every client database",
+   "voiceover": "Compare databases. Staging, production, and every client database.",
+   "sound": "One soft bass hit as the yellow bar wipes in; three light ticks for the three pills; calm music bed starts under it."
+  },
+  {
+   "start_s": 4.4, "end_s": 15.0, "step": "story",
+   "name": "One database, many clients - who has what?",
+   "visual": "Same white grid, no character, no yellow. One blue source database card in the middle-left ('SSDemo_Dev', name on screen only). Thin lines draw out to eight client cards on the right (Client01-08). As the voice says each phrase, a small grey question tag appears on the client cards: 'which tables?', then 'which procedure is missing?', then 'which schema never shipped?'. On the last one, Client04's card shows an empty 'support' folder outline. Slow push-in, no other motion. Small grey tag: 'illustration'.",
+   "shots_used": [],
+   "caption": "which tables?  -  which procedure is missing?  -  which schema never shipped?",
+   "voiceover": "We ship one database to many clients. Soon nobody knows which client has which tables, which procedure is missing, or which schema never shipped.",
+   "sound": "Music bed only, low and calm; a soft paper tick per question tag."
+  },
+  {
+   "start_s": 15.0, "end_s": 18.4, "step": "solution",
+   "name": "The easy fix",
+   "visual": "The illustration cross-fades into the real app, empty compare screen (01-empty-compare.png), Write mode switch visibly Off. Camera starts slightly pushed in on the header with the SchemaScope logo, then eases out to the full window. Small grey line under the window: 'Real app, demo data'. No pill yet.",
+   "shots_used": ["01-empty-compare.png"],
+   "caption": "SchemaScope - real app, demo data",
+   "voiceover": "The easy fix: compare them with SchemaScope.",
+   "sound": "A gentle rising swell into the cross-fade, then music continues."
+  },
+  {
+   "start_s": 18.4, "end_s": 21.4, "step": "1",
+   "name": "Pick the source you trust",
+   "visual": "Cursor clicks the Source slot (box 67,58 224x33) on 01-empty-compare; the real picker opens (02-picker-source: filtered 'SSDemo', SSDemo_Dev row selected). Cursor clicks 'Use this database' (1144,814); cut to 03-source-picked with SSDemo_Dev in the source slot. Camera: one slow push-in toward the dialog, then settles on the source slot. Step pill 1.",
+   "shots_used": ["01-empty-compare.png", "02-picker-source.png", "03-source-picked.png"],
+   "caption": "1  Pick the source you trust",
+   "voiceover": "First, pick the database you trust.",
+   "sound": "Soft tick as pill 1 appears; mouse click on 'Use this database'."
+  },
+  {
+   "start_s": 21.4, "end_s": 25.4, "step": "2",
+   "name": "Add every target",
+   "visual": "Steady app frame. Cursor clicks 'Add target' (04-picker-target, SSDemo_QA selected), then the chips fill in one by one: 05-targets-01 .. 05-targets-09 (about 0.3 s each: QA, Client01 ... Client08), ending on 06-setup-ready with all nine chips. Camera: one slow pan left to right along the chip row (target-chips box 534,65 1349x33).",
+   "shots_used": ["04-picker-target.png", "05-targets-01.png", "05-targets-02.png", "05-targets-03.png", "05-targets-04.png", "05-targets-05.png", "05-targets-06.png", "05-targets-07.png", "05-targets-08.png", "05-targets-09.png", "06-setup-ready.png"],
+   "caption": "2  Add every target - QA + 8 clients",
+   "voiceover": "Add every target: Q A and eight clients.",
+   "sound": "A light pop per chip (nine pops), quiet."
+  },
+  {
+   "start_s": 25.4, "end_s": 30.0, "step": "3",
+   "name": "Compare - all at once",
+   "visual": "07-compare-hover: cursor on Compare (116,115 96x31), click. 09-comparing-warm: the progress strip shows all ten databases 'Reading catalog' at the same time (hold ~1 s, the real warm run length). Cut to 10-results-dashboard. Camera: slow pull-out from the button to the progress strip to the whole window. Small grey note under the caption: '9 targets in 890-985 ms warm (5 runs) - first run after app start 2.8 s - LocalDB, demo data'. The app's own '1130 ms' (UI round-trip) stays visible and is not hidden.",
+   "shots_used": ["07-compare-hover.png", "09-comparing-warm.png", "10-results-dashboard.png"],
+   "caption": "3  Compare - all 9 at once, about a second",
+   "voiceover": "Press Compare. All nine at once, in about a second.",
+   "sound": "Click on Compare, a short soft whoosh while the bars run, a clean chime when the dashboard lands."
+  },
+  {
+   "start_s": 30.0, "end_s": 33.4, "step": "4",
+   "name": "A score for every client, worst first",
+   "visual": "10-results-dashboard: camera pushes gently onto the tile row (dashboard box 0,158 1920x244) starting at Client03 88.8% and Client04 88.9%, then cross-dissolves to 11-results-dashboard-scrolled while panning right to the healthy end (Client06 98.9, Client01 99.2, QA 99.8). One thin blue underline sweeps under the scores left to right; nothing else added.",
+   "shots_used": ["10-results-dashboard.png", "11-results-dashboard-scrolled.png"],
+   "caption": "4  A score for every client - worst first",
+   "voiceover": "Every client gets a score, worst first.",
+   "sound": "Nine very soft ticks as the underline passes each score."
+  },
+  {
+   "start_s": 33.4, "end_s": 41.2, "step": "5",
+   "name": "Find what is missing",
+   "visual": "Part A (33.4-37.4): 14-matrix-grid-tall (all 9 targets, differences only, 454 of 1,241). Camera pushes into the first row 'Schema support.support' and the red X under SSDEMO_CLIENT04 (row y~277, column x~1326 CSS px); a thin red ring draws round that X. Small label next to it: 'Client04: 127 missing - the whole support schema never deployed'. Part B (37.4-41.2): camera slides left to the SSDEMO_CLIENT03 column (x~1194) and its red X marks: billing.BillingCycle (y~512) and hr.Department (y~850) - missing tables. Label: 'Client03: 58 missing'. If shot 46 (needed_new_shots) is captured, Part B instead uses it to show Client03's missing tables AND procedures in one filtered list; if not, the voiceover line for Client03 becomes 'Client three is missing tables.'",
+   "shots_used": ["14-matrix-grid-tall.png", "45-matrix-missing-client04.png (optional, new)", "46-matrix-missing-client03.png (optional, new)"],
+   "caption": "5  Find what is missing",
+   "voiceover": "See what is missing. Client four never got the support schema. Client three lacks tables and procedures.",
+   "sound": "A soft low tone as the red ring draws; nothing else."
+  },
+  {
+   "start_s": 41.2, "end_s": 45.2, "step": "6",
+   "name": "Open any object side by side",
+   "visual": "15-diff-changed-proc: core.usp_Currency_List, SSDemo_Dev on the left vs SSDemo_Client03 on the right. Cursor clicks the grid row (0,266), the diff opens. Camera: one slow push-in onto the changed line on the right, 'AND t.Status <> 9' (box 990,785 900x16), with a pale yellow wash on that single line only (not a headline bar). Status badge 'Different +1 -0' stays visible top-right.",
+   "shots_used": ["15-diff-changed-proc.png"],
+   "caption": "6  Open any object side by side - see the exact lines",
+   "voiceover": "Open any object to see the exact lines.",
+   "sound": "Click; a soft page turn as the diff opens."
+  },
+  {
+   "start_s": 45.2, "end_s": 48.8, "step": "7",
+   "name": "Create the fix scripts",
+   "visual": "20-hero-tile-create-scripts-hover: cursor on the 'Create scripts' icon of the SSDemo_Client05 tile (97.7%). Click: 21-create-scripts-dialog-readonly (numbered folders). Cut to 28-scripts-written: real folder list (01_columns 4, 03_missing 13, 04_columntypes 4, 05_constraints 6, 06_indexes 7) and the green line 'Checked offline: 173 batches parse, and 24 of 24 code bodies match the source exactly.' Camera: slow push-in onto the green line. The 'Written to' path is covered by the redaction chip. Write mode is still Off in 20/21 (28 was captured with Write mode On; the amber strip is visible - acceptable, it leads into step 8).",
+   "shots_used": ["20-hero-tile-create-scripts-hover.png", "21-create-scripts-dialog-readonly.png", "28-scripts-written.png"],
+   "caption": "7  Create the fix scripts - checked offline",
+   "voiceover": "Create the fix scripts, checked offline first.",
+   "sound": "Click; a light paper swish as the folder list appears; a small chime on the green line."
+  },
+  {
+   "start_s": 48.8, "end_s": 54.4, "step": "8",
+   "name": "Write mode (new in 1.2) - type the name to apply",
+   "visual": "Small 'NEW IN 1.2' tag above pill 8 (tag, not a headline). 22-write-mode-switch-off: camera eases to the header switch 'Write mode Off'. Cursor clicks: 23b-write-mode-confirm-hover ('Turn on write mode?' dialog, cursor on 'Enable for this session'). Click: 24-write-mode-on (switch amber, amber strip). Cut to the apply dialog 29-apply-dialog, then the confirm box types the name: 30-apply-typing-03 / 07 / 11 / 13, ending on 31-apply-name-typed with 'Apply 34 files to SSDemo_Client05' enabled. 'Runs as' covered by the redaction chip. Camera: one slow move from the header switch down to the confirm box.",
+   "shots_used": ["22-write-mode-switch-off.png", "23b-write-mode-confirm-hover.png", "24-write-mode-on.png", "29-apply-dialog.png", "30-apply-typing-03.png", "30-apply-typing-07.png", "30-apply-typing-11.png", "30-apply-typing-13.png", "31-apply-name-typed.png"],
+   "caption": "8  Write mode - turn it on, type the name, apply",
+   "voiceover": "New in one point two: write mode. Type the name to apply.",
+   "sound": "A solid latch click when the switch turns amber; soft key clicks per letter."
+  },
+  {
+   "start_s": 54.4, "end_s": 59.6, "step": "8",
+   "name": "Client05 at 100% - Protected servers refused",
+   "visual": "Pill 8 stays. Cursor clicks Apply. 34-apply-result: 'Applied all 34 file(s) to SSDemo_Client05.' and the line 'Compared again: SSDemo_Client05 now matches the source 100%'. Cut to 35-recompared-hero-100: camera settles on the SSDemo_Client05 tile at 100.0% (box 1310,241). Small grey label: 'was 97.7% in the 9-target compare'. Then (57.6-59.6) a clean cut to 37-protected-apply-refused: Apply to SSDemo_Client08 on a Protected connection - red banner 'Protected server - scripts only.', no confirm box, only Close. Camera pushes gently onto the red banner. 'Runs as' covered by the redaction chip.",
+   "shots_used": ["34-apply-result.png", "35-recompared-hero-100.png", "37-protected-apply-refused.png"],
+   "caption": "8  Client05: 97.7% -> 100%  -  Protected servers: refused",
+   "voiceover": "Client five goes to one hundred percent. Protected servers are refused.",
+   "sound": "Click on Apply, a quick run of tiny ticks, a warm resolve chord at 100%; a dull soft thud on the Protected banner."
+  },
+  {
+   "start_s": 59.6, "end_s": 65.4, "step": "close",
+   "name": "Stop comparing in pairs",
+   "visual": "Cross-fade to the white grid. SchemaScope logo centred. 'Stop comparing in pairs.' lands on the yellow highlight bar (second and last use of the bar). Under it a quiet row of pills: Free - Open source - SQL Server 2012+ - Azure SQL - Windows 10 & 11. Button: 'Free download - schemascope.shadowmark.in'. No character.",
+   "shots_used": [],
+   "caption": "[Stop comparing in pairs.]  Free download - schemascope.shadowmark.in",
+   "voiceover": "Stop comparing in pairs. Free at schema scope dot shadow mark dot in.",
+   "sound": "Music swells gently and resolves; one soft hit as the yellow bar lands."
+  }
+ ],
+ "needed_new_shots": [
+  {
+   "name": "45-matrix-missing-client04.png (optional)",
+   "ui_state": "Same 9-target compare as 10-results-dashboard (light theme, 1920x1080 at 2x, Write mode Off). Dashboard collapsed as in 14-matrix-grid-tall. Status filter = Missing only, target dropdown = 'Only SSDemo_Client04', Differences only ticked. Grid lists Schema support.support and the support.* objects (Ticket, TicketComment, Sla, SupportQueue, ...) each with the red X under SSDEMO_CLIENT04. Record the row count the toolbar shows and add element boxes for the support.support row and the CLIENT04 column header to manifest.",
+   "why": "Makes step 5 'Client04 never got the support schema' unmistakable: a whole list of support objects missing, not just one row. 14-matrix-grid-tall already shows the support.support X, so this is an upgrade, not a blocker."
+  },
+  {
+   "name": "46-matrix-missing-client03.png (needed for the Client03 'procedures' claim)",
+   "ui_state": "Same compare, dashboard collapsed. Status filter = Missing only, target dropdown = 'Only SSDemo_Client03'. Grid scrolled so both missing Tables (billing.BillingCycle, hr.Department, ...) and missing Procedures (type column 'Procedure') are visible with red X under SSDEMO_CLIENT03. Add boxes for one missing table row and one missing procedure row.",
+   "why": "No existing frame shows a missing procedure for Client03 (14 only shows missing tables; 13 is filtered to Different, not Missing). Without this shot, change the step 5 voiceover to 'Client three is missing tables.' to stay honest."
+  }
+ ],
+ "hook_loop": "6 s silent loop, no voiceover, no character: white grid; 'Compare databases.' lands on the yellow bar; the real 10-results-dashboard tile row slides up under it with all nine scores (88.8 ... 99.8) landing in the same frame; one blue sweep crosses the row; fade back to the empty grid for a seamless loop.",
+ "honesty_notes": [
+  "All scores, counts and timings come from v2/demo-db/measurements.json and the v2 screenshots.",
+  "Compare time: 890-985 ms warm over 5 runs, 2.8 s for the first run after app start. Both are on screen in step 3. The app's own 1130 ms UI round-trip is left visible.",
+  "Client04: 127 missing, the support schema was never created (build.py DRIFT missing_schemas=('support',)).",
+  "Client03: 58 missing (3 tables + 55 modules). The word 'procedures' is spoken only if shot 46 shows a missing procedure; otherwise the line is 'Client three is missing tables.'",
+  "Client05: 97.7% in the 9-target compare; after applying 34 files the re-compare reports 100%. The tile label says which compare each figure comes from.",
+  "Client08 was marked Protected for the demo; the apply panel refuses it.",
+  "Staging and production in the hook and the story are illustrations; the demo databases are QA and Client01-08 on LocalDB, labelled 'demo data'."
+ ],
+ "tts_rules": [
+  "Never speak 'Dev' (heard as 'death') - shown on screen only",
+  "'QA' spoken as 'Q A'",
+  "Numbers as words; 'Client04' spoken 'Client four', 'Client05' 'Client five'",
+  "'1.2' spoken 'one point two'",
+  "URL spoken 'schema scope dot shadow mark dot in'",
+  "No lone one-word lines"
+ ]
+}

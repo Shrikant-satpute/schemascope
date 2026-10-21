@@ -15,3 +15,20 @@ assets/video/kokoro-*.onnx
 assets/video/voices-*.bin
 assets/video/venv/
 assets/video/snd/
+
+# Video v2/v3 working files: renders, audio, raw captures (they show the machine name before
+# redaction) and the SchemaScope store backups taken while capturing. Only sources are committed.
+assets/video/v*/store-backup/
+assets/video/v*/store-live-aside/
+assets/video/v*/out/
+assets/video/v*/snd/
+assets/video/v*/stills/
+assets/video/v*/shots/
+assets/video/v*/shots-mark/
+assets/video/v*/qa/
+assets/video/v*/qa-sheets/
+assets/video/v*/site-media/
+__pycache__/
+assets/video/v*/thumbnail/*.png
+assets/video/v*/demo-db/generated/
+assets/video/v*/demo-db/scripts-out/

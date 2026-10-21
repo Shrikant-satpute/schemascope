@@ -2,6 +2,18 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { X } from 'lucide-react'
 import clsx from 'clsx'
 
+/** The SchemaScope mark (same as favicon.svg): three rows, the shorter yellow one has drifted. */
+export function LogoMark({ size = 18 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true" className="shrink-0">
+      <rect x="2" y="2" width="60" height="60" rx="14" fill="#2a78d6" />
+      <rect x="14" y="17" width="36" height="7" rx="3.5" fill="#fff" />
+      <rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#ffd60a" />
+      <rect x="14" y="40" width="36" height="7" rx="3.5" fill="#fff" />
+    </svg>
+  )
+}
+
 export function Button({
   children,
   variant = 'ghost',

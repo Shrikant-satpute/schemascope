@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SchemaScope OG Image</title>
+<!-- 1200x630 Open Graph image: thumbnail variant B re-laid-out for 1.91:1.
+     Render: node ../shoot.mjs og.html og.png 1200 630 1 B -->
+<style>
+  :root{
+    --page:#ffffff; --grid:#e8ebf0; --ink:#14171f; --muted:#5b6475;
+    --accent:#2a78d6; --yellow:#ffd60a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:1200px;height:630px;overflow:hidden;background:var(--page)}
+  body{
+    position:relative;color:var(--ink);
+    font-family:'Segoe UI Black','Segoe UI',system-ui,sans-serif;font-weight:900;
+    background-color:var(--page);
+    background-image:
+      linear-gradient(var(--grid) 1.5px, transparent 1.5px),
+      linear-gradient(90deg, var(--grid) 1.5px, transparent 1.5px);
+    background-size:48px 48px;background-position:-1px -1px;
+  }
+  /* fade the grid toward the edges so the frame feels lit, not flat */
+  body::before{content:'';position:absolute;inset:0;
+    background:radial-gradient(ellipse 80% 90% at 40% 45%, transparent 55%, rgba(255,255,255,.85) 100%)}
+  .logo{position:absolute;left:60px;top:40px;display:flex;align-items:center;gap:10px;
+    font-family:'Segoe UI',system-ui,sans-serif;font-weight:700;font-size:28px;letter-spacing:-.02em}
+  .logo svg{width:33px;height:33px;flex:none}
+  .head{position:absolute;left:60px;top:130px;font-size:var(--fs,124px);line-height:.94;letter-spacing:-.055em;white-space:nowrap}
+  .head div{position:relative}
+  .hl{display:inline-block;background:var(--yellow);padding:0 .14em .23em;margin-left:-.14em;margin-top:.1em;
+    border-radius:.06em;box-shadow:0 .05em 0 rgba(20,23,31,.08)}
+  .hl.tilt{transform:rotate(-2deg);transform-origin:left center}
+  .sub{position:absolute;left:60px;bottom:46px;display:flex;gap:12px;
+    font-family:'Segoe UI',system-ui,sans-serif;font-weight:700;font-size:24px;letter-spacing:-.01em}
+  .chip{padding:8px 16px;border-radius:999px;background:var(--ink);color:#fff}
+  .chip.line{background:#fff;color:var(--ink);box-shadow:inset 0 0 0 2.5px var(--ink)}
+  .who{position:absolute;filter:
+      drop-shadow(5px 0 0 #fff) drop-shadow(-5px 0 0 #fff) drop-shadow(0 5px 0 #fff) drop-shadow(0 -5px 0 #fff)
+      drop-shadow(0 22px 30px rgba(20,23,31,.22))}
+  .blob{position:absolute;border-radius:50%;background:var(--accent)}
+  .db{position:absolute;display:grid;grid-template-columns:repeat(4,38px);gap:10px}
+  .db i{display:block;width:38px;height:46px;border-radius:50%/9px;background:#fff;box-shadow:inset 0 0 0 3px var(--accent)}
+  .row{position:absolute;left:64px;bottom:62px;display:flex;align-items:center;gap:16px}
+  .row i{display:block;width:34px;height:42px;border-radius:50%/8px;background:#fff;
+    box-shadow:inset 0 0 0 3.5px var(--ink), inset 0 10px 0 -6.5px var(--ink)}
+  .row .src i{width:44px;height:54px;background:var(--accent);box-shadow:inset 0 11px 0 -7px #1d5fae}
+  .row .tgts{display:flex;gap:9px}
+  .row .arrow{width:52px;height:22px}
+  .v{display:none}
+  body.A .A, body.B .B{display:block}
+</style>
+</head>
+<body>
+  <div class="logo">
+    <svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="ssTile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b88e2"/><stop offset="1" stop-color="#1f66c2"/></linearGradient></defs><rect x="2" y="2" width="60" height="60" rx="14" fill="url(#ssTile)"/><rect x="14" y="17" width="36" height="7" rx="3.5" fill="#fff"/><rect x="14" y="28.5" width="24" height="7" rx="3.5" fill="#ffd60a"/><rect x="14" y="40" width="36" height="7" rx="3.5" fill="#fff"/></svg>
+    SchemaScope
+  </div>
+
+  <!-- Variant A (recommended): the promise in numbers -->
+  <div class="v A">
+    <div class="head" style="--fs:112px;top:128px">
+      <div>8 client</div>
+      <div>databases.</div>
+      <div><span class="hl">One compare.</span></div>
+    </div>
+    <div class="sub"><span class="chip">SQL Server</span><span class="chip line">9 targets, one compare</span></div>
+    <div class="blob" style="width:520px;height:520px;right:-70px;top:150px;background:#eaf2fc"></div>
+    <img class="who" src="../../v3/character.svg" style="right:-70px;bottom:-24px;height:640px" alt="">
+  </div>
+
+  <!-- Variant B: the pain, called out -->
+  <div class="v B">
+    <div class="head" style="--fs:112px;top:104px">
+      <div>Stop</div>
+      <div>comparing</div>
+      <div><span class="hl">in pairs.</span></div>
+    </div>
+    <div class="sub"><span class="chip">SQL Server</span><span class="chip line">free &amp; open source</span></div>
+    <div class="blob" style="width:500px;height:500px;right:-50px;top:96px;background:#eaf2fc"></div>
+    <img class="who" src="../character/character-happy.svg" style="right:-60px;bottom:-116px;height:690px" alt="">
+  </div>
+
+<script>
+  document.body.className = (location.hash.slice(1) || 'A').toUpperCase();
+</script>
+</body>
+</html>

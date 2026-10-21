@@ -1,0 +1,16 @@
+{
+  "name": "video",
+  "version": "1.0.0",
+  "description": "`scene.html` is a single self-contained 1920x1080 motion-graphics scene. Every frame\r is a pure function of time: `window.renderAt(seconds)` draws the frame, with no CSS\r transitions or timers. It uses the system fonts Segoe UI and Cascadia Mono, so it\r renders the same offline on Windows. `render.mjs` steps through the timeline at 30 fps\r with Playwright and pipes the frames into ffmpeg.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

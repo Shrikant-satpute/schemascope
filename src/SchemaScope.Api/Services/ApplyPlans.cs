@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json.Serialization;
+using SchemaScope.Core.Engines;
 using SchemaScope.Scripting;
 
 namespace SchemaScope.Api.Services;
@@ -22,6 +23,7 @@ public sealed class PlanSection
 public sealed class ApplyTarget
 {
     public string Label { get; set; } = "";
+    public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
     public string Database { get; set; } = "";
     /// <summary>"Windows: DOMAIN\user" or "SQL login: name".</summary>

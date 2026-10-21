@@ -1,5 +1,8 @@
+using SchemaScope.Core.Engines;
+
 namespace SchemaScope.Core.Model;
 
+/// <summary>How a connection signs in. Append-only: the number is stored. Each engine allows a subset.</summary>
 public enum AuthMode
 {
     /// <summary>Integrated Security - the Windows account running SchemaScope.</summary>
@@ -8,7 +11,11 @@ public enum AuthMode
     AzureAdPassword = 2,
     /// <summary>Opens a browser window, supports MFA.</summary>
     AzureAdInteractive = 3,
-    AzureAdDefault = 4
+    AzureAdDefault = 4,
+    /// <summary>A user name and password for engines other than SQL Server (PostgreSQL, MySQL).</summary>
+    Password = 5,
+    Kerberos = 6,
+    ClientCertificate = 7
 }
 
 /// <summary>
@@ -19,7 +26,20 @@ public sealed class ConnectionSettings
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("n");
     public string Label { get; set; } = "";
+
+    /// <summary>What is on the other end. Every connection saved before this existed is SQL Server.</summary>
+    public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
+
+    /// <summary>Null = the engine's default port. SQL Server keeps its port in <see cref="Server"/> ("host,port").</summary>
+    public int? Port { get; set; }
+
+    /// <summary>TLS mode for engines that take one. Null = the engine's safe default.</summary>
+    public SslMode? Ssl { get; set; }
+
+    /// <summary>Engine-specific switches. Never a secret: those go through DPAPI like the password.</summary>
+    public Dictionary<string, string>? EngineOptions { get; set; }
+
     public string Database { get; set; } = "";
     public AuthMode Auth { get; set; } = AuthMode.Windows;
     public string? UserName { get; set; }
@@ -58,19 +78,36 @@ public sealed class ConnectionSettings
 
     /// <summary>Whether this connection signs in with a password typed by the user.</summary>
     public bool UsesPassword =>
-        !UseRawConnectionString && Auth is AuthMode.SqlLogin or AuthMode.AzureAdPassword;
+        !UseRawConnectionString && Auth is AuthMode.SqlLogin or AuthMode.AzureAdPassword or AuthMode.Password;
+
+    /// <summary>The port this connects to: its own, or the engine's default.</summary>
+    public int? EffectivePort => Port ?? DatabaseEngines.DefaultPort(Engine);
 
     /// <summary>
     /// The one rule for releasing a stored secret: it only ever goes back to the
-    /// server, login and auth mode it was saved against. The database may differ
-    /// - one server is often compared against itself - because a database name
-    /// cannot redirect a credential elsewhere.
+    /// engine, server, port, login and auth mode it was saved against. The database
+    /// may differ - one server is often compared against itself - because a database
+    /// name cannot redirect a credential elsewhere. A raw connection string must also
+    /// name the same hosts and port as the saved one; when either side cannot be read,
+    /// it is not the same destination.
     /// </summary>
-    public static bool SameDestination(ConnectionSettings a, ConnectionSettings b) =>
-        string.Equals(a.Server, b.Server, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(a.UserName ?? "", b.UserName ?? "", StringComparison.OrdinalIgnoreCase) &&
-        a.Auth == b.Auth &&
-        a.UseRawConnectionString == b.UseRawConnectionString;
+    public static bool SameDestination(ConnectionSettings a, ConnectionSettings b)
+    {
+        if (a.Engine != b.Engine || a.EffectivePort != b.EffectivePort ||
+            !string.Equals(a.Server, b.Server, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(a.UserName ?? "", b.UserName ?? "", StringComparison.OrdinalIgnoreCase) ||
+            a.Auth != b.Auth ||
+            a.UseRawConnectionString != b.UseRawConnectionString)
+            return false;
+        if (!a.UseRawConnectionString) return true;
+
+        var ea = ConnectionEndpoints.Parse(a.Engine, a.RawConnectionString);
+        var eb = ConnectionEndpoints.Parse(b.Engine, b.RawConnectionString);
+        return ea is not null && eb is not null &&
+               ea.Port == eb.Port &&
+               string.Equals(ea.Instance ?? "", eb.Instance ?? "", StringComparison.OrdinalIgnoreCase) &&
+               ea.Hosts.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(eb.Hosts);
+    }
 
     public ConnectionSettings WithoutSecrets()
     {
@@ -89,8 +126,7 @@ public sealed class ConnectionSettings
             var eq = parts[i].IndexOf('=');
             if (eq <= 0) continue;
             var key = parts[i][..eq].Trim();
-            if (key.Contains("password", StringComparison.OrdinalIgnoreCase) ||
-                key.Equals("pwd", StringComparison.OrdinalIgnoreCase))
+            if (SecretKeys.IsSecret(key))
                 parts[i] = $"{key}=********";
         }
         return string.Join(';', parts);

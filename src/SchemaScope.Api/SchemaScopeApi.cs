@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.FileProviders;
 using SchemaScope.Api.Services;
 using SchemaScope.Core.Comparison;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 using SchemaScope.Core.Storage;
 using SchemaScope.Scripting;
@@ -250,6 +251,8 @@ public static class SchemaScopeApi
         // another server or login means typing the password again.
         conns.MapPost("", (ConnectionSettings settings, SchemaScopeStore store) =>
         {
+            if (ConnectionRules.Problem(settings) is { } problem)
+                return Results.BadRequest(new { message = problem });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
 
@@ -274,6 +277,8 @@ public static class SchemaScopeApi
             SqlServerConnectionService svc,
             CancellationToken ct) =>
         {
+            if (ConnectionRules.Problem(settings) is { } problem)
+                return Results.BadRequest(new { message = problem });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
 
@@ -287,6 +292,8 @@ public static class SchemaScopeApi
             SqlServerConnectionService svc,
             CancellationToken ct) =>
         {
+            if (ConnectionRules.Problem(settings) is { } problem)
+                return Results.BadRequest(new { message = problem });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
 
@@ -447,8 +454,16 @@ public static class SchemaScopeApi
             if (request.Targets.Count == 0)
                 return Results.BadRequest(new { message = "Add at least one target database to compare against." });
 
-            var session = svc.Start(request);
-            return Results.Ok(new CompareStarted { RunId = session.Id });
+            try
+            {
+                var session = svc.Start(request);
+                return Results.Ok(new CompareStarted { RunId = session.Id });
+            }
+            catch (SchemaReadException ex)
+            {
+                // a connection that may not be used, or a saved password that may not follow an edited one
+                return Results.BadRequest(new { message = ex.Message });
+            }
         });
 
         app.MapGet("/api/compare/{runId}", (string runId, CompareSessionStore sessions) =>
@@ -1010,6 +1025,7 @@ public static class SchemaScopeApi
         return new ApplyTarget
         {
             Label = ep.Label,
+            Engine = ep.Engine,
             Server = ep.Server,
             Database = ep.Database,
             Login = LoginOf(source.ConnectionString),
@@ -1019,11 +1035,13 @@ public static class SchemaScopeApi
 
     /// <summary>
     /// Protected when the connection was protected at compare time, when its saved connection is protected now, or
-    /// when any saved connection to the same server is. A store that cannot be read counts as protected.
+    /// when any saved connection to the same server is. A store that cannot be read, or a connection string whose
+    /// destination cannot be read, counts as protected.
     /// </summary>
     private static bool IsProtected(SchemaSource target, string server, SchemaScopeStore store)
     {
         if (target.ProtectedServer) return true;
+        if (ConnectionEndpoints.Parse(target.Engine, target.ConnectionString) is null) return true;
         try
         {
             if (target.ConnectionId is { } id && store.GetConnection(id) is { ProtectedServer: true }) return true;
@@ -1036,14 +1054,16 @@ public static class SchemaScopeApi
     }
 
     /// <summary>
-    /// Any protected saved connection names one of <paramref name="servers"/>, compared as <see cref="ServerNames"/>
-    /// spells them ('.', localhost and the machine name are one server). A store that cannot be read counts as protected.
+    /// Any protected saved connection names one of <paramref name="servers"/> (SQL Server names), compared as
+    /// <see cref="ServerNames"/> spells them ('.', localhost and the machine name are one server). A protected connection
+    /// to another engine protects the whole host - every engine and port on it. A protected connection whose server
+    /// cannot be read protects everything, and a store that cannot be read counts as protected.
     /// </summary>
     internal static bool OnProtectedServer(SchemaScopeStore store, params string[] servers)
     {
         try
         {
-            return store.GetConnections().Any(c => c.ProtectedServer && servers.Any(s => ServerNames.Same(SavedServer(c), s)));
+            return store.GetConnections().Any(c => c.ProtectedServer && Covers(c, servers));
         }
         catch (Exception)
         {
@@ -1051,24 +1071,38 @@ public static class SchemaScopeApi
         }
     }
 
-    /// <summary>
-    /// The server a saved connection really connects to: a raw connection string's Data Source, since the form's Server box
-    /// is hidden then and may be empty or stale.
-    /// </summary>
-    private static string SavedServer(ConnectionSettings c)
+    private static bool Covers(ConnectionSettings c, string[] servers)
     {
-        if (c.UseRawConnectionString && !string.IsNullOrWhiteSpace(c.RawConnectionString))
+        if (c.Engine == DatabaseEngine.SqlServer)
+            return SavedServers(c) is not { } saved || saved.Any(p => servers.Any(s => ServerNames.Same(p, s)));
+
+        IReadOnlyList<string>? hosts = c.UseRawConnectionString
+            ? ConnectionEndpoints.Parse(c.Engine, c.RawConnectionString)?.Hosts
+            : string.IsNullOrWhiteSpace(c.Server) ? null : [c.Server];
+        return hosts is null || hosts.Any(h => servers.Any(s => HostNames.Same(h, ServerNames.Host(s))));
+    }
+
+    /// <summary>
+    /// The servers a saved SQL Server connection really connects to: a raw connection string's Data Source (and its
+    /// failover partner), since the form's Server box is hidden then and may be empty or stale. Null when the string
+    /// cannot be read - the caller then treats it as protecting everything, never falls back to the Server box.
+    /// </summary>
+    private static List<string>? SavedServers(ConnectionSettings c)
+    {
+        if (!c.UseRawConnectionString) return [c.Server.Trim()];
+        if (string.IsNullOrWhiteSpace(c.RawConnectionString)) return null;
+        try
         {
-            try
-            {
-                return new SqlConnectionStringBuilder(c.RawConnectionString).DataSource.Trim();
-            }
-            catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
-            {
-                // fall back to the Server box
-            }
+            var b = new SqlConnectionStringBuilder(c.RawConnectionString);
+            if (string.IsNullOrWhiteSpace(b.DataSource)) return null;
+            List<string> servers = [b.DataSource.Trim()];
+            if (!string.IsNullOrWhiteSpace(b.FailoverPartner)) servers.Add(b.FailoverPartner.Trim());
+            return servers;
         }
-        return c.Server.Trim();
+        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
+        {
+            return null;
+        }
     }
 
     /// <summary>The target is the very database the run read as its source.</summary>
@@ -1250,7 +1284,7 @@ public static class SchemaScopeApi
         {
             // keep the form's values; the generator reports a connection failure on its own
         }
-        return new(string.IsNullOrWhiteSpace(label) ? s.DisplayName : label, server, database, s.ConnectionString);
+        return new(string.IsNullOrWhiteSpace(label) ? s.DisplayName : label, server, database, s.ConnectionString, s.Engine);
     }
 
     /// <summary>Modules the compare marked Different for this target, with its line counts: 10_different_modules' candidates.</summary>
@@ -1348,48 +1382,9 @@ public static class SchemaScopeApi
 
     // -----------------------------------------------------------------
 
-    private const string Masked = "********";
-
-    /// <summary>
-    /// A saved connection comes back from the UI with "********" instead of the
-    /// real password. Swap the stored secret in before using it.
-    ///
-    /// The secret is only ever released for the exact destination it was saved
-    /// against. If the caller changed the server, the login or the auth mode,
-    /// the password has to be typed again - otherwise anything able to reach
-    /// this API could name a saved connection, point it at a host of its own
-    /// choosing, and harvest the password from the other end.
-    /// </summary>
-    internal static bool TryRehydrate(ConnectionSettings incoming, SchemaScopeStore store, out string? error)
-    {
-        error = null;
-
-        // Only a password login has a password to put back. Windows and the
-        // interactive Azure modes never stored one, so an edited server there
-        // releases nothing and needs nothing typed.
-        var needsPassword = incoming.UsesPassword &&
-                            (string.IsNullOrEmpty(incoming.Password) || incoming.Password == Masked);
-        var needsRaw = incoming.UseRawConnectionString &&
-                       (string.IsNullOrEmpty(incoming.RawConnectionString) ||
-                        incoming.RawConnectionString.Contains(Masked));
-
-        if (!needsPassword && !needsRaw) return true;
-        if (string.IsNullOrWhiteSpace(incoming.Id)) return true;
-
-        var saved = store.GetConnection(incoming.Id);
-        if (saved is null) return true;
-
-        if (!ConnectionSettings.SameDestination(incoming, saved))
-        {
-            error = "The server or login was changed, so the saved password no longer applies. " +
-                    "Type the password again.";
-            return false;
-        }
-
-        if (needsPassword) incoming.Password = saved.Password;
-        if (needsRaw) incoming.RawConnectionString = saved.RawConnectionString;
-        return true;
-    }
+    /// <summary>The one secret-release rule, <see cref="SecretRelease.TryRehydrate"/>; kept here for the routes and their tests.</summary>
+    internal static bool TryRehydrate(ConnectionSettings incoming, SchemaScopeStore store, out string? error) =>
+        SecretRelease.TryRehydrate(incoming, store, out error);
 
     private static string Sanitise(string name)
     {

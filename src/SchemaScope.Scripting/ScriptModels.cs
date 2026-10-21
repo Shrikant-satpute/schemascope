@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using SchemaScope.Core.Engines;
 
 namespace SchemaScope.Scripting;
 
@@ -39,7 +40,8 @@ public sealed class ScriptOptions
 }
 
 /// <summary>One side of the compare. <see cref="ConnectionString"/> never leaves the server process.</summary>
-public sealed record ScriptEndpoint(string Label, string Server, string Database, string ConnectionString);
+public sealed record ScriptEndpoint(string Label, string Server, string Database, string ConnectionString,
+    DatabaseEngine Engine = DatabaseEngine.SqlServer);
 
 /// <summary>What one generated folder holds, for the result panel and the README.</summary>
 public sealed class FolderResult

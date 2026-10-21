@@ -82,6 +82,7 @@ public sealed class CompareRunner(ISchemaReader reader)
 
     private static SchemaSnapshot Failed(SchemaSource src, string error, string? hint) => new()
     {
+        Engine = src.Engine,
         Label = src.DisplayName,
         Server = src.Server,
         Database = src.Database,

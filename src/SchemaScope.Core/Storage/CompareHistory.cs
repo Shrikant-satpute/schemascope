@@ -1,3 +1,4 @@
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 
 namespace SchemaScope.Core.Storage;
@@ -13,6 +14,7 @@ public sealed class CompareHistoryDatabase
 {
     /// <summary>The saved connection it came from. Null when an inline connection was used.</summary>
     public string? ConnectionId { get; set; }
+    public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Label { get; set; } = "";
     public string Server { get; set; } = "";
     public string Database { get; set; } = "";
@@ -61,7 +63,9 @@ public sealed class CompareHistoryEntry
         static string Key(CompareHistoryDatabase d)
         {
             var who = string.IsNullOrWhiteSpace(d.ConnectionId) ? d.Server : d.ConnectionId!;
-            return $"{who.ToLowerInvariant()}/{d.Database.ToLowerInvariant()}";
+            // SQL Server keeps the signature it always had, so existing history rows still match
+            var engine = d.Engine == DatabaseEngine.SqlServer ? "" : $"{(int)d.Engine}:";
+            return $"{engine}{who.ToLowerInvariant()}/{d.Database.ToLowerInvariant()}";
         }
 
         var ordered = targets.Select(Key).OrderBy(k => k, StringComparer.Ordinal);

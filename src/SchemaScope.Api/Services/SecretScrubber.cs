@@ -1,4 +1,5 @@
 using System.Data.Common;
+using SchemaScope.Core.Engines;
 
 namespace SchemaScope.Api.Services;
 
@@ -12,7 +13,7 @@ internal static class SecretScrubber
     public const string Mask = "********";
 
     /// <summary>
-    /// Each whole connection string, plus any password inside it. Longest first, so a
+    /// Each whole connection string, plus any password or other secret inside it. Longest first, so a
     /// password never splits the masking of the full string.
     /// </summary>
     public static List<string> Secrets(IEnumerable<string?> connectionStrings)
@@ -23,14 +24,25 @@ internal static class SecretScrubber
             if (string.IsNullOrEmpty(cs)) continue;
             secrets.Add(cs);
 
+            // a URI-form string is refused at input, but its password is still never echoed back
+            if (ConnectionEndpoints.IsUri(cs) && Uri.TryCreate(cs.Trim(), UriKind.Absolute, out var uri) &&
+                uri.UserInfo.IndexOf(':') is var colon and >= 0 && colon + 1 < uri.UserInfo.Length)
+            {
+                var password = uri.UserInfo[(colon + 1)..];
+                secrets.Add(password);
+                secrets.Add(Uri.UnescapeDataString(password));
+                continue;
+            }
+
             var parsed = new DbConnectionStringBuilder();
             try { parsed.ConnectionString = cs; }
             catch (ArgumentException) { continue; }
 
-            foreach (var key in new[] { "Password", "Pwd" })
+            // every driver's secret keys: Password, Pwd, SSL Password, CertificatePassword, Passphrase, ... (SecretKeys)
+            foreach (string key in parsed.Keys)
             {
-                if (parsed.TryGetValue(key, out var value) && value?.ToString() is { Length: > 0 } password)
-                    secrets.Add(password);
+                if (SecretKeys.IsSecret(key) && parsed.TryGetValue(key, out var value) && value?.ToString() is { Length: > 0 } secret)
+                    secrets.Add(secret);
             }
         }
         return [.. secrets.Distinct(StringComparer.Ordinal).OrderByDescending(s => s.Length)];

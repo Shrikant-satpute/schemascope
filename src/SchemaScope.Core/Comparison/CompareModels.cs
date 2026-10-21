@@ -1,3 +1,4 @@
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 
 namespace SchemaScope.Core.Comparison;
@@ -66,6 +67,7 @@ public sealed class TargetSummary
 {
     public string Id { get; set; } = "";
     public string Label { get; set; } = "";
+    public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
     public string Database { get; set; } = "";
     public string ProductVersion { get; set; } = "";
@@ -93,6 +95,7 @@ public sealed class TargetSummary
 public sealed class SnapshotInfo
 {
     public string Label { get; set; } = "";
+    public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
     public string Database { get; set; } = "";
     public string ProductVersion { get; set; } = "";

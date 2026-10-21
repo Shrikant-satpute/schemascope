@@ -51,6 +51,7 @@ public sealed class CompareService(
         static CompareHistoryDatabase Describe(SourceRef? reference, SchemaSource resolved) => new()
         {
             ConnectionId = reference?.ConnectionId,
+            Engine = resolved.Engine,
             Label = resolved.DisplayName,
             Server = resolved.Server,
             Database = resolved.Database
@@ -172,11 +173,16 @@ public sealed class CompareService(
         if (reference.Inline is not null)
         {
             settings = reference.Inline;
+            // an inline connection may be a saved one edited in the form: its stored password only
+            // comes back under the same rule as testing and saving it
+            if (ConnectionRules.Problem(settings) is { } problem) throw new SchemaReadException(problem);
+            if (!SecretRelease.TryRehydrate(settings, store, out var error)) throw new SchemaReadException(error!);
         }
         else if (!string.IsNullOrWhiteSpace(reference.ConnectionId))
         {
             settings = store.GetConnection(reference.ConnectionId)
                        ?? throw new SchemaReadException($"Connection '{reference.ConnectionId}' was not found.");
+            if (ConnectionRules.Problem(settings) is { } problem) throw new SchemaReadException(problem);
             store.TouchConnection(settings.Id);
         }
         else
@@ -193,6 +199,7 @@ public sealed class CompareService(
                     ?? (string.IsNullOrWhiteSpace(settings.Label)
                         ? $"{settings.Server}.{database}"
                         : database == settings.Database ? settings.Label : $"{settings.Label} / {database}"),
+            Engine = settings.Engine,
             Server = settings.Server,
             Database = database,
             ConnectionString = connections.BuildConnectionString(settings, database),

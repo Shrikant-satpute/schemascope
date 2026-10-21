@@ -1,4 +1,4 @@
-using System.Net;
+using SchemaScope.Core.Engines;
 
 namespace SchemaScope.Api.Services;
 
@@ -18,18 +18,20 @@ public static class ServerNames
         if (s.IndexOf(',') is var comma and >= 0) s = s[..comma];
 
         var slash = s.IndexOf('\\');
-        var host = (slash >= 0 ? s[..slash] : s).Trim();
+        var host = HostNames.Normalise(slash >= 0 ? s[..slash] : s);
         var instance = slash >= 0 ? s[(slash + 1)..].Trim() : "";
-
-        if (host is "." or "(local)" || host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
-            (IPAddress.TryParse(host.Trim('[', ']'), out var ip) && IPAddress.IsLoopback(ip)))
-            host = Environment.MachineName;
-        else if (!IPAddress.TryParse(host.Trim('[', ']'), out _) && host.IndexOf('.') is var dot and > 0)
-            host = host[..dot];
 
         if (instance.Equals("MSSQLSERVER", StringComparison.OrdinalIgnoreCase)) instance = "";
         return (instance.Length > 0 ? $"{host}\\{instance}" : host).ToUpperInvariant();
     }
 
     public static bool Same(string? a, string? b) => Normalise(a) == Normalise(b);
+
+    /// <summary>The machine alone, instance and port dropped: what the Protected rule matches across engines.</summary>
+    public static string Host(string? server)
+    {
+        var s = Normalise(server);
+        var slash = s.IndexOf('\\');
+        return slash >= 0 ? s[..slash] : s;
+    }
 }

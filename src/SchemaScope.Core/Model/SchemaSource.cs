@@ -1,3 +1,5 @@
+using SchemaScope.Core.Engines;
+
 namespace SchemaScope.Core.Model;
 
 /// <summary>One database to read, plus how to reach it.</summary>
@@ -7,6 +9,8 @@ public sealed class SchemaSource
     /// <summary>Friendly name shown everywhere in the UI, e.g. "Davi (prod)".</summary>
     public string Label { get; set; } = "";
     public string ConnectionString { get; set; } = "";
+    /// <summary>Set on the server from the stored settings only, never from a request body.</summary>
+    public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
     public string Database { get; set; } = "";
 

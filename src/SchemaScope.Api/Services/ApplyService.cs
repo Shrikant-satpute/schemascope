@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Data.Common;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -121,7 +122,7 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
             }
             return new TargetFacts(key, inMemory);
         }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException or IOException or TimeoutException or InvalidCastException)
+        catch (Exception ex) when (ex is DbException or InvalidOperationException or IOException or TimeoutException or InvalidCastException)
         {
             return null;
         }
@@ -185,6 +186,7 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
         {
             CompareRunId = job.CompareRunId,
             TargetLabel = job.Target.Label,
+            Engine = job.Target.Engine,
             Server = job.Target.Server,
             Database = job.Target.Database,
             Login = job.Target.Login,
@@ -342,7 +344,7 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
             catch
             {
                 // a severe error may already have ended the transaction; disposing it rolls back what is left
-                try { await tx.RollbackAsync(); } catch (Exception ex) when (ex is InvalidOperationException or SqlException) { }
+                try { await tx.RollbackAsync(); } catch (Exception ex) when (ex is InvalidOperationException or DbException) { }
                 throw;
             }
         }
@@ -354,7 +356,8 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
         {
             return Describe(ex, current);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException or TimeoutException)
+        // any other driver's error ends the file the same way, so the run - and its audit entry - always finishes
+        catch (Exception ex) when (ex is DbException or InvalidOperationException or IOException or TimeoutException)
         {
             return ex.Message;
         }

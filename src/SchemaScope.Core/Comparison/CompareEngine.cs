@@ -44,6 +44,7 @@ public sealed class CompareEngine(CompareOptions options)
         {
             Id = i.ToString(),
             Label = string.IsNullOrWhiteSpace(t.Label) ? $"{t.Server}.{t.Database}" : t.Label,
+            Engine = t.Engine,
             Server = t.Server,
             Database = t.Database,
             ProductVersion = t.ProductVersion,
@@ -167,6 +168,10 @@ public sealed class CompareEngine(CompareOptions options)
             result.Warnings.Add(
                 $"{source.Label}: {source.UnreadableCount} object(s) could not be read (encrypted, or the login lacks VIEW DEFINITION).");
 
+        // two objects with one key, which BuildIndex kept both of; a case-insensitive SQL Server database has none
+        foreach (var snapshot in targets.Prepend(source))
+            lock (snapshot.Warnings) result.Warnings.AddRange(snapshot.Warnings);
+
         result.Timings["summarise"] = stage.ElapsedMilliseconds;
         result.TotalMs = sw.ElapsedMilliseconds;
         return result;
@@ -255,6 +260,7 @@ public sealed class CompareEngine(CompareOptions options)
     private static SnapshotInfo Describe(SchemaSnapshot s) => new()
     {
         Label = string.IsNullOrWhiteSpace(s.Label) ? $"{s.Server}.{s.Database}" : s.Label,
+        Engine = s.Engine,
         Server = s.Server,
         Database = s.Database,
         ProductVersion = s.ProductVersion,

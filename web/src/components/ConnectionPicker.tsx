@@ -3,9 +3,9 @@ import { AlertTriangle, Check, Database, Plus, Search, Server, History, Trash2 }
 import { api } from '../api'
 import type { ConnectionSettings, DatabaseListItem } from '../types'
 import { connectionColour } from '../dbColour'
-import { Button, Input, Modal, Spinner } from './ui'
+import { Button, EngineChip, Input, Modal, Spinner } from './ui'
 import { ConnectionForm } from './ConnectionForm'
-import { authText, blankConnection, useEngines } from '../engines'
+import { authText, blankConnection, engineChip, engineName, useEngines } from '../engines'
 
 export interface PickedConnection {
   connectionId: string
@@ -49,6 +49,8 @@ export function ConnectionPicker({
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const engines = useEngines()
+  // engine chips once more than SQL Server is in play
+  const showChips = connections.some((c) => (c.engine ?? 'sqlServer') !== 'sqlServer')
 
   const excluded = new Set(exclude ?? [])
 
@@ -59,7 +61,7 @@ export function ConnectionPicker({
       .filter((c) => !excluded.has(c.id))
       .filter((c) =>
         needle
-          ? `${c.label} ${c.server} ${c.database}`.toLowerCase().includes(needle)
+          ? `${c.label} ${c.server} ${c.database} ${engineChip(c.engine)} ${engineName(c.engine)}`.toLowerCase().includes(needle)
           : true,
       )
       .sort((a, b) => {
@@ -247,14 +249,17 @@ export function ConnectionPicker({
                     >
                       <Server size={15} className="shrink-0" style={{ color: colour.ink }} />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-medium">{name}</span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="block truncate text-[13px] font-medium">{name}</span>
+                          {showChips && <EngineChip label={engineChip(c.engine)} title={engineName(c.engine)} />}
+                        </span>
                         <span
                           className="block truncate font-mono text-[11px]"
                           style={{ color: 'var(--text-3)' }}
                         >
                           {c.useRawConnectionString
                             ? c.rawConnectionString
-                            : `${c.server}${c.database ? ` / ${c.database}` : ''}`}
+                            : `${c.server}${c.port ? `:${c.port}` : ''}${c.database ? ` / ${c.database}` : ''}`}
                         </span>
                       </span>
                       <span className="shrink-0 text-[11px]" style={{ color: 'var(--text-3)' }}>

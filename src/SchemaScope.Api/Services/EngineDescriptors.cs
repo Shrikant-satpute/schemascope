@@ -60,6 +60,19 @@ public static class EngineDescriptors
                     DatabasePlaceholder: "Platform_Core",
                     Port: false, SslMode: false, Encrypt: true, TrustServerCertificate: true, ReadOnlyIntent: true),
                 new EngineDefaults(AuthMode.Windows, Encrypt: false, TrustServerCertificate: true, ConnectTimeoutSeconds: 15)),
+            DatabaseEngine.PostgreSql => ("PG",
+                [
+                    new(AuthMode.Password, "User name and password", "Password", true),
+                ],
+                new EngineFormText(
+                    ServerLabel: "Host", ServerHint: "host name or address; several: host1,host2",
+                    ServerPlaceholder: "localhost  or  db.internal",
+                    ConnectionStringHint: "Anything Npgsql accepts, as key=value pairs (postgres:// URIs are not accepted).",
+                    ConnectionStringPlaceholder: "Host=db.internal;Port=5432;Database=app;Username=app;Password=***;SSL Mode=VerifyFull",
+                    DatabasePlaceholder: "app",
+                    Port: true, SslMode: true, Encrypt: false, TrustServerCertificate: true, ReadOnlyIntent: false),
+                // TLS is checked unless the user opts out: Verify full, no trust
+                new EngineDefaults(AuthMode.Password, Encrypt: false, TrustServerCertificate: false, ConnectTimeoutSeconds: 15)),
             _ => throw new EngineNotAvailableException(engine)
         };
 }

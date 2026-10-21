@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Database, ShieldCheck } from 'lucide-react'
 import { api } from '../api'
-import type { AuthMode, ConnectionSettings, ConnectionTestResult, DatabaseEngine, DatabaseListItem } from '../types'
+import type { AuthMode, ConnectionSettings, ConnectionTestResult, DatabaseEngine, DatabaseListItem, SslMode } from '../types'
 import { blankConnection, engineOf, needsUser as takesUser, selectableEngines, useEngines } from '../engines'
 import { Button, Field, Input, Select, Spinner, Toggle } from './ui'
 
@@ -50,6 +50,7 @@ export function ConnectionForm({
       auth: blank.auth,
       password: '',
       port: null,
+      ssl: blank.ssl ?? null,
       encrypt: blank.encrypt,
       trustServerCertificate: blank.trustServerCertificate,
       applicationIntentReadOnly: false,
@@ -166,18 +167,23 @@ export function ConnectionForm({
             </Field>
           </div>
 
-          {text.port && (
-            <Field label="Port" hint={engine.defaultPort ? `Empty = ${engine.defaultPort}` : undefined}>
-              <Input
-                type="number"
-                min={1}
-                max={65535}
-                value={form.port ?? ''}
-                placeholder={engine.defaultPort ? String(engine.defaultPort) : ''}
-                onChange={(e) => set('port', e.target.value === '' ? null : Number(e.target.value))}
-                className="w-28"
-              />
-            </Field>
+          {(text.port || text.sslMode) && (
+            <div className="grid grid-cols-2 gap-3">
+              {text.port && (
+                <Field label="Port" hint={engine.defaultPort ? `Empty = ${engine.defaultPort}` : undefined}>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={form.port ?? ''}
+                    placeholder={engine.defaultPort ? String(engine.defaultPort) : ''}
+                    onChange={(e) => set('port', e.target.value === '' ? null : Number(e.target.value))}
+                    className="w-28"
+                  />
+                </Field>
+              )}
+              {text.sslMode && <SslModeField form={form} set={set} />}
+            </div>
           )}
 
           {needsUser && (
@@ -239,7 +245,11 @@ export function ConnectionForm({
                 checked={!!form.trustServerCertificate}
                 onChange={(v) => set('trustServerCertificate', v)}
                 label="Trust server certificate"
-                hint="Needed for most internal servers that use a self-signed certificate."
+                hint={
+                  text.sslMode
+                    ? 'Encrypts without checking the certificate (SSL mode Require). Only for a server you trust on a network you trust.'
+                    : 'Needed for most internal servers that use a self-signed certificate.'
+                }
               />
             )}
             {text.encrypt && (
@@ -296,6 +306,49 @@ export function ConnectionForm({
 
       {test && <TestReport result={test} />}
     </div>
+  )
+}
+
+/**
+ * TLS for engines that take an SSL mode. Verify full is the default; connecting without checking the certificate
+ * is the separate, explicit "Trust server certificate" switch (Require and Prefer never check it, so the server
+ * refuses them without that switch).
+ */
+function SslModeField({
+  form,
+  set,
+}: {
+  form: Partial<ConnectionSettings>
+  set: <K extends keyof ConnectionSettings>(key: K, value: ConnectionSettings[K]) => void
+}) {
+  const mode: SslMode = form.ssl ?? 'verifyFull'
+  const trusted = !!form.trustServerCertificate && mode !== 'disable'
+  const options: { v: SslMode; label: string }[] = [
+    { v: 'verifyFull', label: 'Verify full (certificate and host name)' },
+    { v: 'verifyCa', label: 'Verify CA (certificate only)' },
+    { v: 'disable', label: 'Disable (no TLS)' },
+  ]
+  // a mode set some other way (e.g. by an older form) still shows as itself
+  if (!options.some((o) => o.v === mode)) options.push({ v: mode, label: mode === 'require' ? 'Require (no certificate check)' : 'Prefer (no certificate check)' })
+  return (
+    <Field
+      label="SSL mode"
+      hint={
+        mode === 'disable'
+          ? 'Unencrypted: the password and every query cross the network in clear text.'
+          : trusted
+            ? 'Trust server certificate is on: encrypted, but the certificate is not checked.'
+            : undefined
+      }
+    >
+      <Select value={mode} onChange={(e) => set('ssl', e.target.value as SslMode)}>
+        {options.map((o) => (
+          <option key={o.v} value={o.v}>
+            {o.label}
+          </option>
+        ))}
+      </Select>
+    </Field>
   )
 }
 

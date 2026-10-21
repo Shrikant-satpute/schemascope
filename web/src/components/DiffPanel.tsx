@@ -531,7 +531,7 @@ export function DiffPanel({
         ) : (
           <DiffEditor
             height="100%"
-            language="sql"
+            language={detail.language || 'sql'}
             original={detail.sourceText}
             modified={target?.text ?? ''}
             theme={theme === 'dark' ? THEME_DARK : THEME_LIGHT}

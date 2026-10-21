@@ -60,7 +60,7 @@ export function filterRows(result: CompareResult, f: MatrixFilters): CompareRow[
       if (!cells.some((c) => c && f.statuses.has(c.status))) return false
     }
 
-    if (matches && !matches(`${row.schema}.${row.name} ${row.typeLabel}`.toLowerCase())) return false
+    if (matches && !matches(`${row.schema}.${row.name}${row.signature ? `(${row.signature})` : ''} ${row.typeLabel}`.toLowerCase())) return false
 
     return true
   })
@@ -195,6 +195,12 @@ export function MatrixGrid({
                 <div className="min-w-0 max-w-[640px] flex-1 truncate px-2 font-mono text-[12px]">
                   <span style={{ color: 'var(--text-3)' }}>{row.schema}.</span>
                   <span>{row.name}</span>
+                  {/* PostgreSQL overloads (and per-table triggers) share a name: the signature tells them apart */}
+                  {row.signature !== undefined && row.signature !== null && (
+                    <span style={{ color: 'var(--text-3)' }}>
+                      {row.signature.startsWith('ON ') ? ` ${row.signature}` : `(${row.signature})`}
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex-1" />

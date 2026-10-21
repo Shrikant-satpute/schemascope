@@ -18,7 +18,18 @@ public enum DbObjectType
     UserDefinedType = 8,
     TableType = 9,
     Sequence = 10,
-    Synonym = 11
+    Synonym = 11,
+
+    // Appended for other engines; never renumbered. SQL Server has none of these.
+    /// <summary>PostgreSQL: a view whose rows are stored (CREATE MATERIALIZED VIEW).</summary>
+    MaterializedView = 12,
+    /// <summary>PostgreSQL: a base type with a default, NOT NULL and checks (CREATE DOMAIN).</summary>
+    Domain = 13,
+    EnumType = 14,
+    /// <summary>PostgreSQL: a standalone row type (CREATE TYPE ... AS (...)).</summary>
+    CompositeType = 15,
+    /// <summary>PostgreSQL: an installed extension. The objects it creates are not compared one by one.</summary>
+    Extension = 16
 }
 
 public static class DbObjectTypeExtensions
@@ -38,12 +49,18 @@ public static class DbObjectTypeExtensions
         DbObjectType.TableType => "Table type",
         DbObjectType.Sequence => "Sequence",
         DbObjectType.Synonym => "Synonym",
+        DbObjectType.MaterializedView => "Materialized view",
+        DbObjectType.Domain => "Domain",
+        DbObjectType.EnumType => "Enum type",
+        DbObjectType.CompositeType => "Composite type",
+        DbObjectType.Extension => "Extension",
         _ => t.ToString()
     };
 
-    /// <summary>True when the object's identity is a block of T-SQL text.</summary>
+    /// <summary>True when the object's identity is a block of SQL text (T-SQL, or the engine's own definition).</summary>
     public static bool IsModule(this DbObjectType t) => t is
         DbObjectType.View or
+        DbObjectType.MaterializedView or
         DbObjectType.StoredProcedure or
         DbObjectType.ScalarFunction or
         DbObjectType.TableValuedFunction or

@@ -54,3 +54,21 @@ jobs:
       - name: Build web
         working-directory: web
         run: npm run build
+
+  # Docker-backed engine tests (MULTI-DATABASE-PLAN section 9). Linux, because Windows runners cannot run Linux
+  # containers. Only the engine test project runs here; the Windows job above is unchanged and skips these tests.
+  engines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Test engines
+        env:
+          SCHEMASCOPE_ENGINE_TESTS: '1'
+        run: dotnet test tests/SchemaScope.Engines.Tests -c Release --verbosity normal

@@ -8,6 +8,7 @@ using SchemaScope.Core.Comparison;
 using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 using SchemaScope.Core.Storage;
+using SchemaScope.PostgreSql;
 using SchemaScope.Scripting;
 using SchemaScope.SqlServer;
 
@@ -59,15 +60,22 @@ public static class SchemaScopeApi
         builder.Services.AddSingleton<SqlServerConnectionService>();
         // The engines this build can talk to. Owner app only: ViewerHost.Build registers none of these.
         builder.Services.AddSingleton<IEngineProvider>(sp => new SqlServerEngineProvider(sp.GetRequiredService<SqlServerConnectionService>()));
-        builder.Services.AddSingleton<EngineRegistry>();
+        builder.Services.AddSingleton<IEngineProvider>(_ => new PgEngineProvider());
+        builder.Services.AddSingleton<EngineCatalog>();
+        // the engines turned on right now (a preview engine only with "Show preview engines"), asked afresh each time
+        builder.Services.AddTransient(sp => sp.GetRequiredService<EngineCatalog>().Enabled);
         builder.Services.AddSingleton<IApplyExecutor>(SqlServerApplyExecutor.Instance);
         builder.Services.AddSingleton<IScriptGeneratorFactory, ScriptGeneratorFactory>();
         builder.Services.AddSingleton<CompareSessionStore>();
         builder.Services.AddSingleton<ScriptProgressStore>();
         builder.Services.AddSingleton<ExportService>();
-        builder.Services.AddSingleton(sp => new CompareService(sp.GetRequiredService<CompareSessionStore>(),
-            sp.GetRequiredService<SchemaScopeStore>(), sp.GetRequiredService<EngineRegistry>(),
-            sp.GetRequiredService<ILogger<CompareService>>()));
+        builder.Services.AddSingleton(sp =>
+        {
+            var catalog = sp.GetRequiredService<EngineCatalog>();
+            return new CompareService(sp.GetRequiredService<CompareSessionStore>(),
+                sp.GetRequiredService<SchemaScopeStore>(), () => catalog.Enabled,
+                sp.GetRequiredService<ILogger<CompareService>>());
+        });
         builder.Services.AddSingleton<ShareStore>();
         builder.Services.AddSingleton<ViewerHost>();
         builder.Services.AddSingleton<WriteMode>();
@@ -87,6 +95,8 @@ public static class SchemaScopeApi
 #endif
 
         var app = builder.Build();
+        // the static helpers below read connection strings with the engines DI has turned on
+        _catalog = app.Services.GetRequiredService<EngineCatalog>();
 
         var json = new JsonSerializerOptions
         {
@@ -114,7 +124,7 @@ public static class SchemaScopeApi
         app.UseStaticFiles();
 
         MapHealth(app);
-        MapEngines(app);
+        MapEngines(app, json);
         MapConnections(app);
         MapHistory(app);
         MapShares(app, embedded);
@@ -252,9 +262,55 @@ public static class SchemaScopeApi
     /// What each engine of this build offers, for the UI's forms and labels. Capabilities and wording only, never a
     /// connection or a secret; behind the launch token like every /api route, and not on the share viewer.
     /// </summary>
-    private static void MapEngines(WebApplication app)
+    private static void MapEngines(WebApplication app, JsonSerializerOptions json)
     {
         app.MapGet("/api/engines", (EngineRegistry engines) => Results.Ok(engines.All.Select(EngineDescriptors.Describe)));
+
+        // Settings > "Show preview engines": the server's own switch, so a preview engine is refused while it is off
+        app.MapGet("/api/engines/preview", (EngineCatalog catalog) => Results.Ok(PreviewState(catalog)));
+
+        app.MapPost("/api/engines/preview", async (HttpRequest http, EngineCatalog catalog) =>
+        {
+            if (!http.HasJsonContentType())
+                return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+            PreviewRequest? request;
+            try
+            {
+                request = await http.ReadFromJsonAsync<PreviewRequest>(json);
+            }
+            catch (JsonException)
+            {
+                request = null;
+            }
+            if (request is null) return Results.BadRequest(new { message = "Send { \"enabled\": true } or { \"enabled\": false }." });
+            try
+            {
+                catalog.SetPreview(request.Enabled);
+            }
+            catch (Exception)
+            {
+                return Results.BadRequest(new { message = "The setting could not be saved." });
+            }
+            return Results.Ok(PreviewState(catalog));
+        });
+    }
+
+    private sealed record PreviewRequest(bool Enabled);
+
+    private static object PreviewState(EngineCatalog catalog) => new
+    {
+        enabled = catalog.PreviewEnabled,
+        engines = catalog.PreviewEngines.Select(p => p.DisplayName)
+    };
+
+    /// <summary>
+    /// The provider for a connection from the UI, once <see cref="ConnectionRules"/> passed it; null with the reason
+    /// when its engine is not turned on (a preview engine with the switch off).
+    /// </summary>
+    private static IEngineProvider? ProviderFor(ConnectionSettings settings, EngineRegistry engines, out string? problem)
+    {
+        problem = engines.TryGet(settings.Engine, out var provider) ? null : ConnectionRules.NotEnabled(settings.Engine);
+        return provider;
     }
 
     private static void MapConnections(WebApplication app)
@@ -267,10 +323,12 @@ public static class SchemaScopeApi
         // Saving is held to the same rule as testing: a masked password stays with
         // the destination it was saved for, so re-pointing a saved connection at
         // another server or login means typing the password again.
-        conns.MapPost("", (ConnectionSettings settings, SchemaScopeStore store) =>
+        conns.MapPost("", (ConnectionSettings settings, SchemaScopeStore store, EngineRegistry engines) =>
         {
             if (ConnectionRules.Problem(settings) is { } problem)
                 return Results.BadRequest(new { message = problem });
+            if (ProviderFor(settings, engines, out var off) is null)
+                return Results.BadRequest(new { message = off });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
 
@@ -297,10 +355,12 @@ public static class SchemaScopeApi
         {
             if (ConnectionRules.Problem(settings) is { } problem)
                 return Results.BadRequest(new { message = problem });
+            if (ProviderFor(settings, engines, out var off) is not { } provider)
+                return Results.BadRequest(new { message = off });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
 
-            var svc = engines.Get(settings.Engine).Connections;
+            var svc = provider.Connections;
             var cs = svc.BuildConnectionString(settings);
             return Results.Ok(await svc.TestAsync(cs, ct));
         });
@@ -313,10 +373,12 @@ public static class SchemaScopeApi
         {
             if (ConnectionRules.Problem(settings) is { } problem)
                 return Results.BadRequest(new { message = problem });
+            if (ProviderFor(settings, engines, out var off) is not { } provider)
+                return Results.BadRequest(new { message = off });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
 
-            var svc = engines.Get(settings.Engine).Connections;
+            var svc = provider.Connections;
             try
             {
                 var cs = svc.BuildConnectionString(settings, svc.BrowseDatabase);
@@ -324,7 +386,10 @@ public static class SchemaScopeApi
             }
             catch (Exception ex)
             {
-                return Results.BadRequest(new { message = ex.Message });
+                if (settings.Engine == DatabaseEngine.SqlServer) return Results.BadRequest(new { message = ex.Message });
+                // PostgreSQL: the message alone (no server DETAIL), scrubbed in case it echoes the string it was given
+                var secrets = SecretScrubber.Secrets([settings.Password, settings.RawConnectionString]);
+                return Results.BadRequest(new { message = SecretScrubber.Scrub(PgConnectionService.MessageOf(ex), secrets) });
             }
         });
     }
@@ -727,7 +792,12 @@ public static class SchemaScopeApi
             var target = Endpoint(session.TargetConnections[index], result.Targets[index].Label);
             var options = Normalise(request.Options);
             if (generators.For(source.Engine, target.Engine) is not { } generator)
-                return Results.BadRequest(new { message = $"Scripts are not available for {source.Engine} to {target.Engine} in this version." });
+                return Results.BadRequest(new
+                {
+                    message = source.Engine == target.Engine
+                        ? $"Scripts are not available for {ConnectionRules.NameOf(source.Engine)} in this version."
+                        : $"Scripts are not available for {source.Engine} to {target.Engine} in this version."
+                });
 
             ScriptOutcome outcome;
             using var progress = request.ProgressId is { } progressId ? progressStore.Track(progressId) : null;
@@ -784,12 +854,13 @@ public static class SchemaScopeApi
 
         // Read-only and quick: works from the compare's snapshots in memory, no database is touched.
         app.MapGet("/api/compare/{runId}/object-script/dependencies", (
-            string runId, string? key, string? targetIndex, CompareSessionStore sessions) =>
+            string runId, string? key, string? targetIndex, CompareSessionStore sessions, EngineRegistry engines) =>
         {
             var session = sessions.Get(runId);
             if (session is null) return Gone();
             int? index = int.TryParse(targetIndex, out var i) ? i : null;
             if (ObjectScripts.Check(session, key, index, out var row) is { } problem) return Bad(problem);
+            if (ObjectScriptEngineProblem(session, index!.Value, engines) is { } notHere) return Bad(notHere);
             return Results.Ok(ObjectScripts.Dependencies(session, row!, index!.Value));
         });
 
@@ -823,6 +894,8 @@ public static class SchemaScopeApi
             if (request.ProgressId is { } progressId && !ScriptProgressStore.IsValidId(progressId))
                 return Bad("The progress id must be 8 to 64 letters, digits or dashes.");
             if (ObjectScripts.Check(session, request.Key, request.TargetIndex, out var row) is { } problem) return Bad(problem);
+            // the single-object generator is the SQL Server one (ObjectScripts), T-SQL drop preview and all; other engines have none yet
+            if (ObjectScriptEngineProblem(session, request.TargetIndex!.Value, engines) is { } notHere) return Bad(notHere);
 
             var result = session.Result!;
             var index = request.TargetIndex!.Value;
@@ -836,9 +909,6 @@ public static class SchemaScopeApi
 
             var source = Endpoint(session.SourceConnection, result.Source.Label);
             var target = Endpoint(session.TargetConnections[index], result.Targets[index].Label);
-            // the single-object generator is the SQL Server one (ObjectScripts); other engines have none yet
-            if (source.Engine != target.Engine || !engines.Supports(source.Engine, EngineFeature.ObjectScripts))
-                return Bad($"Single-object scripts are not available for {source.Engine} to {target.Engine} in this version.");
 
             ObjectScriptOutcome outcome;
             using var progress = request.ProgressId is { } id ? progressStore.Track(id) : null;
@@ -869,6 +939,20 @@ public static class SchemaScopeApi
             outcome.PlanSections = offer.PlanSections;
             return Results.Ok(outcome);
         });
+    }
+
+    /// <summary>
+    /// Null when this run's source and target are one engine that has single-object scripts (SQL Server), else the
+    /// 400 to answer. The engines are the session's, never the request's. Call after <c>ObjectScripts.Check</c>.
+    /// </summary>
+    private static string? ObjectScriptEngineProblem(CompareSession session, int index, EngineRegistry engines)
+    {
+        var source = session.SourceConnection?.Engine ?? session.Result!.Source.Engine;
+        var target = index < session.TargetConnections.Count ? session.TargetConnections[index].Engine : session.Result!.Targets[index].Engine;
+        if (source == target && engines.Supports(source, EngineFeature.ObjectScripts)) return null;
+        return source == target
+            ? $"Single-object scripts are not available for {ConnectionRules.NameOf(source)} in this version."
+            : $"Single-object scripts are not available for {source} to {target} in this version.";
     }
 
     /// <summary>
@@ -1176,10 +1260,14 @@ public static class SchemaScopeApi
         ParseEndpoint(s) is { LoginDescription.Length: > 0 } ep ? ep.LoginDescription : "Unknown";
 
     /// <summary>
-    /// The providers the static helpers here read connection strings with: stateless, and the same SQL Server provider
-    /// DI registers in <see cref="Build"/>. Tests call these helpers without a running app.
+    /// The providers the static helpers here read connection strings with: the engines the app built last has turned
+    /// on (<see cref="EngineCatalog.Enabled"/>), the same list DI hands out, and SQL Server alone before any app is
+    /// built. Tests call these helpers without a running app.
     /// </summary>
-    internal static EngineRegistry Engines { get; } = EngineRegistries.SqlServerOnly();
+    internal static EngineRegistry Engines => _catalog?.Enabled ?? SqlServerOnly;
+
+    private static readonly EngineRegistry SqlServerOnly = EngineRegistries.SqlServerOnly();
+    private static EngineCatalog? _catalog;
 
     /// <summary>Where <paramref name="s"/> really goes, read by its engine's driver; null when unreadable or the engine has no provider.</summary>
     private static EndpointInfo? ParseEndpoint(SchemaSource s) =>

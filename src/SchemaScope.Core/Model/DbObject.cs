@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using SchemaScope.Core.Engines;
+
 namespace SchemaScope.Core.Model;
 
 /// <summary>
@@ -12,11 +15,32 @@ public sealed class DbObject
 
     public string FullName => $"{Schema}.{Name}";
 
+    /// <summary>How the engine that read this spells names, and so how <see cref="Key"/> folds. SQL Server: Upper.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public IdentifierFold Fold { get; set; } = IdentifierFold.Upper;
+
     /// <summary>
-    /// Case-insensitive identity used to line objects up between databases.
-    /// Two objects match when their keys match.
+    /// What tells two objects of one name apart where the engine allows that: a PostgreSQL routine's argument types
+    /// ("integer, text"), or a PostgreSQL trigger's table (trigger names are per table). Null for SQL Server.
     /// </summary>
-    public string Key => $"{(int)Type}|{Schema.ToUpperInvariant()}.{Name.ToUpperInvariant()}";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Signature { get; set; }
+
+    /// <summary>
+    /// Identity used to line objects up between databases. Two objects match when their keys match. Upper (SQL
+    /// Server): case-insensitive, exactly the string it always was. Exact (PostgreSQL, whose catalog already holds the
+    /// folded name): as spelled, plus the <see cref="Signature"/>. Lower: lower-cased.
+    /// </summary>
+    public string Key => Fold switch
+    {
+        IdentifierFold.Exact => Signature is null
+            ? $"{(int)Type}|{Schema}.{Name}"
+            : $"{(int)Type}|{Schema}.{Name}({Signature})",
+        IdentifierFold.Lower => Signature is null
+            ? $"{(int)Type}|{Schema.ToLowerInvariant()}.{Name.ToLowerInvariant()}"
+            : $"{(int)Type}|{Schema.ToLowerInvariant()}.{Name.ToLowerInvariant()}({Signature.ToLowerInvariant()})",
+        _ => $"{(int)Type}|{Schema.ToUpperInvariant()}.{Name.ToUpperInvariant()}"
+    };
 
     /// <summary>Raw T-SQL from sys.sql_modules. Null for tables and non-module types.</summary>
     public string? Definition { get; set; }

@@ -20,11 +20,13 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="SchemaScope.Tests" />
+    <InternalsVisibleTo Include="SchemaScope.Engines.Tests" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\SchemaScope.Core\SchemaScope.Core.csproj" />
     <ProjectReference Include="..\SchemaScope.SqlServer\SchemaScope.SqlServer.csproj" />
+    <ProjectReference Include="..\SchemaScope.PostgreSql\SchemaScope.PostgreSql.csproj" />
     <ProjectReference Include="..\SchemaScope.Scripting\SchemaScope.Scripting.csproj" />
   </ItemGroup>
 

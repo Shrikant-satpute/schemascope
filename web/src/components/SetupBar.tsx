@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeftRight, ArrowRight, ChevronDown, Play, Plus, Settings2, Square, X } from 'lucide-react'
-import type { ConnectionSettings } from '../types'
+import { AlertTriangle, ArrowLeftRight, ArrowRight, ChevronDown, Play, Plus, Settings2, Square, X } from 'lucide-react'
+import type { ConnectionSettings, DatabaseEngine } from '../types'
 import { connectionColour, type DbColour } from '../dbColour'
-import { Button, Modal, Spinner } from './ui'
+import { engineChip, engineName } from '../engines'
+import { Button, EngineChip, Modal, Spinner } from './ui'
 import { ConnectionPicker, type PickedConnection } from './ConnectionPicker'
 
 export interface TargetSlot {
@@ -80,14 +81,21 @@ export function SetupBar({
 
   const byId = new Map(connections.map((c) => [c.id, c]))
 
+  const engineOf = (slot: TargetSlot): DatabaseEngine => byId.get(slot.connectionId)?.engine ?? 'sqlServer'
+  // engine chips once more than SQL Server is in play; a SQL Server-only bar looks as it always has
+  const showChips = [...(source ? [source] : []), ...targets].some((s) => engineOf(s) !== 'sqlServer')
+  // one engine per run in this version: the server refuses a cross-engine compare too
+  const crossEngine = !!source && targets.some((t) => engineOf(t) !== engineOf(source))
+
   const describe = (slot: TargetSlot) => {
     const c = byId.get(slot.connectionId)
-    if (!c) return { name: 'unknown', detail: '', colour: null }
+    if (!c) return { name: 'unknown', detail: '', colour: null, chip: null }
     const db = slot.database || c.database
     return {
       name: c.label || c.server,
-      detail: `${c.server}${db ? ` / ${db}` : ''}`,
+      detail: `${showChips ? `${engineName(c.engine)}: ` : ''}${c.server}${c.port ? `:${c.port}` : ''}${db ? ` / ${db}` : ''}`,
       colour: connectionColour(c, slot.database),
+      chip: showChips ? engineChip(c.engine) : null,
     }
   }
 
@@ -147,7 +155,7 @@ export function SetupBar({
 
         <div className="flex flex-wrap items-center gap-1.5">
           {targets.map((t, i) => {
-            const { name, detail, colour } = describe(t)
+            const { name, detail, colour, chip } = describe(t)
             return (
               <span
                 key={`${t.connectionId}-${t.database ?? ''}-${i}`}
@@ -158,6 +166,7 @@ export function SetupBar({
                 }}
                 title={detail}
               >
+                {chip && <EngineChip label={chip} />}
                 {name}
                 {t.database && (
                   <span className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>
@@ -180,6 +189,16 @@ export function SetupBar({
             <Plus size={14} /> Add target
           </Button>
         </div>
+
+        {crossEngine && (
+          <span
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11.5px] font-medium"
+            style={{ background: 'color-mix(in srgb, var(--st-miss) 12%, transparent)', color: 'var(--st-miss)' }}
+            title="Comparing databases of different engines is not available in this version. Pick targets of the source's engine."
+          >
+            <AlertTriangle size={12} /> Cross-engine: not available yet
+          </span>
+        )}
 
         <div className="flex-1" />
 
@@ -206,7 +225,12 @@ export function SetupBar({
             <Square size={13} /> Stop
           </Button>
         ) : (
-          <Button variant="primary" onClick={onRun} disabled={!source || targets.length === 0}>
+          <Button
+            variant="primary"
+            onClick={onRun}
+            disabled={!source || targets.length === 0 || crossEngine}
+            title={crossEngine ? 'Comparing across engines is not available in this version.' : undefined}
+          >
             <Play size={14} /> Compare
           </Button>
         )}
@@ -280,7 +304,7 @@ function SlotButton({
   onClear,
 }: {
   slot: TargetSlot | null
-  describe: (s: TargetSlot) => { name: string; detail: string; colour: DbColour | null }
+  describe: (s: TargetSlot) => { name: string; detail: string; colour: DbColour | null; chip: string | null }
   placeholder: string
   disabled?: boolean
   onClick: () => void
@@ -303,7 +327,10 @@ function SlotButton({
       >
         {info ? (
           <span className="min-w-0 flex-1">
-            <span className="block truncate">{info.name}</span>
+            <span className="flex items-center gap-1.5">
+              {info.chip && <EngineChip label={info.chip} />}
+              <span className="block truncate">{info.name}</span>
+            </span>
             <span className="block truncate font-mono text-[10.5px]" style={{ color: 'var(--text-3)' }}>
               {info.detail}
             </span>

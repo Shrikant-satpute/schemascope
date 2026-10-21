@@ -55,6 +55,11 @@ public sealed class CompareRow
     public string Name { get; set; } = "";
     public string FullName => $"{Schema}.{Name}";
     public string? ParentName { get; set; }
+
+    /// <summary>What tells this object from others of its name (<see cref="DbObject.Signature"/>): a PostgreSQL overload's argument types. Null for SQL Server.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Signature { get; set; }
+
     /// <summary>One cell per target, in the same order as CompareResult.Targets.</summary>
     public List<TargetCell> Cells { get; set; } = [];
     public ObjectStatus Worst { get; set; }

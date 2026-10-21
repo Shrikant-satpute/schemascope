@@ -4,6 +4,8 @@ import clsx from 'clsx'
 import type { CompareResult, ObjectStatus } from '../types'
 import type { DbColour } from '../dbColour'
 import { STATUS, TYPE_COUNT_ORDER, TYPE_COUNT_WORD, typeCounts } from '../status'
+import { engineChip } from '../engines'
+import { EngineChip } from './ui'
 
 /** Names for the stage keys the engine reports, in the order the work happens. */
 const STAGES: [key: string, label: string][] = [
@@ -64,6 +66,8 @@ export function Dashboard({
    */
   onCreateScripts?: (index: number) => void
 }) {
+  // engine chips (with the version) once a run is not SQL Server; a SQL Server run looks as it always has
+  const showEngine = [result.source.engine, ...result.targets.map((t) => t.engine)].some((e) => e && e !== 'sqlServer')
   const worstFirst = [...result.targets]
     .map((t, i) => ({ t, i }))
     .sort((a, b) => a.t.matchPercent - b.t.matchPercent)
@@ -133,6 +137,7 @@ export function Dashboard({
               onFocus={() => onFocusTarget(i)}
               onFilterStatus={(s) => onFilterStatus(i, s)}
               onCreateScripts={onCreateScripts}
+              showEngine={showEngine}
             />
           ))}
 
@@ -171,6 +176,7 @@ function TargetTile({
   onFocus,
   onFilterStatus,
   onCreateScripts,
+  showEngine,
 }: {
   index: number
   target: CompareResult['targets'][number]
@@ -178,6 +184,7 @@ function TargetTile({
   onFocus: () => void
   onFilterStatus: (s: ObjectStatus) => void
   onCreateScripts?: (index: number) => void
+  showEngine?: boolean
 }) {
   if (target.failed) {
     return (
@@ -230,8 +237,14 @@ function TargetTile({
 
       <button onClick={onFocus} className="block w-full text-left" title="Show only this target's differences">
         <div className={clsx('truncate text-[12.5px] font-semibold', onCreateScripts && 'pr-6')}>{target.label}</div>
-        <div className={clsx('truncate text-[10.5px]', onCreateScripts && 'pr-6')} style={{ color: 'var(--text-3)' }}>
-          {target.server} / {target.database}
+        <div
+          className={clsx('flex items-center gap-1.5 truncate text-[10.5px]', onCreateScripts && 'pr-6')}
+          style={{ color: 'var(--text-3)' }}
+        >
+          {showEngine && <EngineChip label={engineChip(target.engine, target.productVersion)} />}
+          <span className="truncate">
+            {target.server} / {target.database}
+          </span>
         </div>
 
         <div className="mt-1.5 flex items-baseline gap-1.5">

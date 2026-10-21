@@ -293,3 +293,17 @@ export function EmptyState({
     </div>
   )
 }
+
+/** A small engine badge: "PG 16", "SQL 2022", or "PG" without a version (engines.ts engineChip). */
+export function EngineChip({ label, preview, title }: { label: string; preview?: boolean; title?: string }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center rounded px-1.5 py-px font-mono text-[10px] font-medium"
+      style={{ background: 'var(--page)', color: 'var(--text-2)', border: '1px solid var(--line)' }}
+      title={title}
+    >
+      {label}
+      {preview && <span style={{ color: 'var(--text-3)' }}>&nbsp;preview</span>}
+    </span>
+  )
+}

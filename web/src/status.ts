@@ -132,4 +132,9 @@ export const TYPE_ORDER = [
   'userDefinedType',
   'sequence',
   'synonym',
+  'materializedView',
+  'domain',
+  'enumType',
+  'compositeType',
+  'extension',
 ] as const

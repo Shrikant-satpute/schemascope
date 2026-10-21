@@ -17,6 +17,12 @@ const TYPE_LABELS: Record<DbObjectType, string> = {
   userDefinedType: 'User types',
   sequence: 'Sequences',
   synonym: 'Synonyms',
+  // PostgreSQL
+  materializedView: 'Materialized views',
+  domain: 'Domains',
+  enumType: 'Enum types',
+  compositeType: 'Composite types',
+  extension: 'Extensions',
 }
 
 const ALL_TYPES = Object.keys(TYPE_LABELS) as DbObjectType[]

@@ -14,6 +14,7 @@ import type {
   ObjectScriptDependencies,
   ObjectScriptOutcome,
   ObjectScriptRequest,
+  PreviewEngines,
   ProgressEvent,
   ReferenceResult,
   RunSummary,
@@ -108,6 +109,13 @@ export const api = {
 
   /** What each engine of this build offers (cached by engines.ts). */
   engines: () => req<EngineDescriptor[]>('/api/engines'),
+
+  /** Settings > "Show preview engines". The server's own switch: off, a preview engine is refused. */
+  previewEngines: {
+    get: () => req<PreviewEngines>('/api/engines/preview'),
+    set: (enabled: boolean) =>
+      req<PreviewEngines>('/api/engines/preview', { method: 'POST', body: JSON.stringify({ enabled }) }),
+  },
 
   connections: {
     list: () => req<ConnectionSettings[]>('/api/connections'),

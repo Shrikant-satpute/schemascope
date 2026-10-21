@@ -20,6 +20,7 @@ import { ScriptDialog } from './components/ScriptDialog'
 import { ObjectScriptDialog } from './components/ObjectScriptDialog'
 import { ApplyDialog } from './components/ApplyDialog'
 import { Button, EmptyState, LogoMark, Modal, Spinner } from './components/ui'
+import { supports, useEngines } from './engines'
 
 type View = 'compare' | 'connections' | 'history' | 'share'
 
@@ -42,6 +43,7 @@ function initialTheme(): 'dark' | 'light' {
 }
 
 export default function App() {
+  const engines = useEngines()
   const [view, setView] = useState<View>('compare')
   const [theme, setTheme] = useState<'dark' | 'light'>(initialTheme)
   const [connections, setConnections] = useState<ConnectionSettings[]>([])
@@ -544,8 +546,11 @@ export default function App() {
               exporting={exporting}
               onShare={doShare}
               sharing={publishing}
-              onCreateScripts={setScriptTarget}
-              onGenerateObjectScript={openObjectScript}
+              // offered only where the server has them: not for a preview engine such as PostgreSQL in this version
+              onCreateScripts={supports(engines, result.source.engine, 'scripts') ? setScriptTarget : undefined}
+              onGenerateObjectScript={
+                supports(engines, result.source.engine, 'objectScripts') ? openObjectScript : undefined
+              }
               onFocusedTargetChange={setFocusedTarget}
             />
           )}

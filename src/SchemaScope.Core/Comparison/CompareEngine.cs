@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 using SchemaScope.Core.Normalization;
 
@@ -51,11 +52,13 @@ public sealed class CompareEngine(CompareOptions options)
             ProductVersion = t.ProductVersion,
             Collation = t.Collation,
             ReadMs = t.TimingsMs.GetValueOrDefault("total"),
-            LastObjectChangeUtc = t.Objects.Count == 0 ? null : t.Objects.Max(o => o.ModifyDate),
+            LastObjectChangeUtc = LastChange(t),
             Error = t.Error
         }).ToList();
 
         var targetFailed = targets.Select(t => t.Failed).ToArray();
+        // the ScriptDom re-print parses T-SQL only (ISqlDialect.CanDeepParse): no other engine's text is ever put through it
+        var deepParse = targets.Select(t => source.Engine == DatabaseEngine.SqlServer && t.Engine == DatabaseEngine.SqlServer).ToArray();
 
         // one counter set per target, kept per thread then merged
         var counters = new int[targets.Count, 6];
@@ -82,7 +85,8 @@ public sealed class CompareEngine(CompareOptions options)
                     Type = sample.Type,
                     Schema = sample.Schema,
                     Name = sample.Name,
-                    ParentName = sample.ParentName
+                    ParentName = sample.ParentName,
+                    Signature = sample.Signature
                 };
 
                 var worst = ObjectStatus.Same;
@@ -98,7 +102,7 @@ public sealed class CompareEngine(CompareOptions options)
                     else
                     {
                         targetIndexes[i].TryGetValue(key, out var tgt);
-                        cell = Classify(src, tgt);
+                        cell = Classify(src, tgt, deepParse[i]);
                     }
                     row.Cells.Add(cell);
 
@@ -178,7 +182,7 @@ public sealed class CompareEngine(CompareOptions options)
         return result;
     }
 
-    private TargetCell Classify(DbObject? src, DbObject? tgt)
+    private TargetCell Classify(DbObject? src, DbObject? tgt, bool deepParse)
     {
         if (src is null && tgt is null)
             return new TargetCell { Status = ObjectStatus.Same };
@@ -213,7 +217,7 @@ public sealed class CompareEngine(CompareOptions options)
         //    Gated on size and similarity: two bodies whose stripped lengths are
         //    far apart cannot be the same code, and parsing them anyway is what
         //    would make a big compare slow.
-        if (_options.UseSmartParseCompare && src.Type.IsModule() &&
+        if (deepParse && _options.UseSmartParseCompare && src.Type.IsModule() &&
             WorthDeepCheck(src, tgt) &&
             SchemaNormalizer.ParsesIdentically(src.CompareText, tgt.CompareText))
             return Formatting(src, tgt, "Same code, written differently (optional keywords or layout)");
@@ -256,6 +260,14 @@ public sealed class CompareEngine(CompareOptions options)
             RemovedLines = counts.Removed,
             Note = note
         };
+    }
+
+    /// <summary>The newest modify date; none when there are no objects, or the engine keeps no dates (PostgreSQL).</summary>
+    private static DateTime? LastChange(SchemaSnapshot t)
+    {
+        if (t.Objects.Count == 0) return null;
+        var last = t.Objects.Max(o => o.ModifyDate);
+        return last == default ? null : last;
     }
 
     private static SnapshotInfo Describe(SchemaSnapshot s) => new()

@@ -13,6 +13,16 @@ export type AuthMode =
 /** Append-only on the server; every connection saved before engines existed is sqlServer. */
 export type DatabaseEngine = 'sqlServer' | 'postgreSql' | 'mySql' | 'mariaDb' | 'oracle' | 'sqlite'
 
+/** TLS for PostgreSQL (and later MySQL). SQL Server keeps its Encrypt / Trust server certificate switches. */
+export type SslMode = 'disable' | 'prefer' | 'require' | 'verifyCa' | 'verifyFull'
+
+/** GET /api/engines/preview: Settings > "Show preview engines", which the server enforces. */
+export interface PreviewEngines {
+  enabled: boolean
+  /** Display names of this build's preview engines, on or off. */
+  engines: string[]
+}
+
 export type EngineFeature =
   | 'compare'
   | 'scripts'
@@ -104,6 +114,11 @@ export type DbObjectType =
   | 'tableType'
   | 'sequence'
   | 'synonym'
+  | 'materializedView'
+  | 'domain'
+  | 'enumType'
+  | 'compositeType'
+  | 'extension'
 
 export interface ConnectionSettings {
   id: string
@@ -113,6 +128,8 @@ export interface ConnectionSettings {
   server: string
   /** Null = the engine's default port. SQL Server keeps its port in the server name. */
   port?: number | null
+  /** PostgreSQL: null = Verify full. */
+  ssl?: SslMode | null
   database: string
   auth: AuthMode
   userName?: string | null
@@ -212,6 +229,8 @@ export interface CompareRow {
   name: string
   fullName: string
   parentName?: string
+  /** What tells this object from others of its name: a PostgreSQL overload's argument types. */
+  signature?: string
   cells: TargetCell[]
   worst: ObjectStatus
   hasDifference: boolean
@@ -221,6 +240,8 @@ export interface CompareRow {
 export interface TargetSummary {
   id: string
   label: string
+  /** Missing on runs saved before engines existed: SQL Server. */
+  engine?: DatabaseEngine
   server: string
   database: string
   productVersion: string
@@ -242,6 +263,7 @@ export interface TargetSummary {
 
 export interface SnapshotInfo {
   label: string
+  engine?: DatabaseEngine
   server: string
   database: string
   productVersion: string

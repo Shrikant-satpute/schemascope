@@ -1098,8 +1098,9 @@ public static class SchemaScopeApi
     private static List<string>? TargetServers(SchemaSource target, EndpointInfo ep)
     {
         if (target.Engine != DatabaseEngine.SqlServer) return [.. ep.Hosts];
-        // the driver's own reading: the Data Source, then the failover partner
-        return ParseEndpoint(target) is { Servers: { } servers } ? [.. servers.Skip(1).Select(s => s.Trim())] : null;
+        // the driver's own reading of the partner, whether or not a Data Source is named (fail closed: it is reached too)
+        if (ParseEndpoint(target) is not { } sql) return null;
+        return sql.FailoverPartner is { } partner ? [partner.Trim()] : [];
     }
 
     /// <summary>

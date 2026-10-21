@@ -524,6 +524,19 @@ public sealed class ProtectedHostTests : IDisposable
     }
 
     [Fact]
+    public void A_failover_partner_with_no_data_source_is_still_checked()
+    {
+        // no Data Source: the destination cannot be read, so the target is refused whatever the partner names
+        Protect(new ConnectionSettings { Server = "PROD" });
+        Assert.True(TargetProtected("Failover Partner=PROD;Initial Catalog=Sales;Integrated Security=true"));
+        Assert.True(TargetProtected("Failover Partner=staging;Database=x"));
+        // SqlClient takes the last of two Data Source synonyms, so it reads no Data Source here while a key=value reading
+        // sees "dev": the partner SqlClient would still use must be checked all the same
+        Assert.True(TargetProtected("Data Source=dev;Failover Partner=PROD;Server= ;Integrated Security=true"));
+        Assert.False(TargetProtected("Data Source=dev;Failover Partner=staging;Server= ;Integrated Security=true"));
+    }
+
+    [Fact]
     public void A_failover_partner_keeps_its_instance_for_sql_server()
     {
         Protect(new ConnectionSettings { Server = "PRODSQL\\A" });

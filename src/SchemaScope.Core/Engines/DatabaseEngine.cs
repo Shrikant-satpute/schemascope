@@ -34,8 +34,13 @@ public enum SslMode
 /// Each destination as the string spells it, for labels, RUN.ps1 and the SQL Server Protected rule (SQL Server: the
 /// Data Source, then the failover partner). Null when the provider keeps only <paramref name="Hosts"/>.
 /// </param>
+/// <param name="FailoverPartner">
+/// SQL Server: the failover partner as written, even when no Data Source is named (<paramref name="Servers"/> then
+/// leaves it out), so the Protected rule still sees it. Null when none is set or the engine has none.
+/// </param>
 public sealed record EndpointInfo(DatabaseEngine Engine, IReadOnlyList<string> Hosts, int? Port,
-    string? Instance, string Database, string LoginDescription, IReadOnlyList<string>? Servers = null);
+    string? Instance, string Database, string LoginDescription, IReadOnlyList<string>? Servers = null,
+    string? FailoverPartner = null);
 
 public static class DatabaseEngines
 {

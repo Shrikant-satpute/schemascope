@@ -188,7 +188,8 @@ public sealed class SqlServerConnectionService : IConnectionService
         var main = servers.Count > 0 ? ConnectionEndpoints.SqlServerHost(servers[0]) : null;
         return new EndpointInfo(DatabaseEngine.SqlServer,
             [.. servers.Select(s => ConnectionEndpoints.SqlServerHost(s)?.Host ?? s.Trim())],
-            main?.Port, main?.Instance, b.InitialCatalog ?? "", LoginOf(b), servers);
+            main?.Port, main?.Instance, b.InitialCatalog ?? "", LoginOf(b), servers,
+            string.IsNullOrWhiteSpace(b.FailoverPartner) ? null : b.FailoverPartner);
     }
 
     /// <summary>Who an apply signs in as: "Windows: DOMAIN\user" or "SQL login: name". Never the password.</summary>

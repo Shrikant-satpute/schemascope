@@ -103,6 +103,9 @@ public class EngineSeamTests
         "Server=' spaced ';Database=' D '",
         "Database=OnlyADatabase;Integrated Security=true",
         "Server=prod;Failover Partner= ;Database=x",
+        "Failover Partner=PROD;Database=x",
+        "Failover Partner=PROD;Initial Catalog=Sales;Integrated Security=true",
+        "Data Source=dev;Failover Partner=PROD;Server= ;Integrated Security=true",
         "Server=prod;Bogus=1",
         "Server=prod;Password='a;b",
         "not a connection string",
@@ -152,6 +155,8 @@ public class EngineSeamTests
         Assert.Equal(before.Server, ep.Servers!.FirstOrDefault() ?? "form-server");
         Assert.Equal(before.Database, string.IsNullOrWhiteSpace(ep.Database) ? "form-db" : ep.Database);
         Assert.Equal(before.Saved, ep.Servers!.Count > 0 ? [.. ep.Servers.Select(s => s.Trim())] : null);
+        // the partner the Protected rule reads, whether or not a Data Source is named
+        Assert.Equal(before.Partner, ep.FailoverPartner is { } partner ? [partner.Trim()] : []);
         if (ep.Servers.Count > 0) Assert.Equal(before.Partner, [.. ep.Servers.Skip(1).Select(s => s.Trim())]);
     }
 
@@ -347,6 +352,18 @@ public class ViewerEngineIsolationTests
         Assert.Same(SqlServerApplyExecutor.Instance, app.Services.GetRequiredService<IApplyExecutor>());
         Assert.NotNull(app.Services.GetRequiredService<CompareService>());
         Assert.NotNull(app.Services.GetRequiredService<ApplyService>().ExecutorFor(DatabaseEngine.SqlServer));
+    }
+
+    [Fact]
+    public async Task The_static_helpers_read_strings_with_the_engines_di_registers()
+    {
+        // SchemaScopeApi's static helpers (Protected, LoginOf, Endpoint) keep their own registry: an engine added to
+        // DI alone would leave them reading its strings as unknown, so the two lists must stay the same
+        using var temp = new TempStore();
+        await using var app = SchemaScopeApi.Build([], desktop: false, LocalAuth.Mint(), storePath: temp.DbPath);
+
+        var di = app.Services.GetRequiredService<EngineRegistry>();
+        Assert.Equal(di.All.Select(p => p.Engine), SchemaScopeApi.Engines.All.Select(p => p.Engine));
     }
 }
 

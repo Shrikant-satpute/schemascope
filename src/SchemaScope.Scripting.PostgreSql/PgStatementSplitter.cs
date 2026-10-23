@@ -15,7 +15,7 @@ namespace SchemaScope.Scripting.PostgreSql;
 ///                       psql counts BEGIN, CASE (inside a BEGIN) and END outside parentheses in such a statement
 ///
 /// Each statement keeps the line it starts on (its first token, after any comments) and runs through its <c>;</c>.
-/// The validator and (from R3) the apply use this one instance, so what was checked is what runs.
+/// The validator and the apply (PgApplyExecutor) use this one instance, so what was checked is what runs.
 /// </summary>
 public sealed class PgStatementSplitter : IStatementSplitter
 {

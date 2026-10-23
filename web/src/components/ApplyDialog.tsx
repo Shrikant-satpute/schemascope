@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { CircleCheck, CircleX, Play, ShieldAlert } from 'lucide-react'
 import { api } from '../api'
+import { engineOf, useEngines } from '../engines'
 import type { ApplyPlan, ApplyResult, CompareResult, ScriptProgress } from '../types'
 import { Button, Input, Modal, Spinner } from './ui'
 import { Banner } from './ScriptDialog'
@@ -41,6 +42,8 @@ export function ApplyDialog({
   onClose: () => void
 }) {
   const t = plan.applyTarget
+  // the engine's own promise and typed-name rule; SQL Server keeps the wording built in below
+  const applyText = engineOf(useEngines(), t.engine).apply
   const [sections, setSections] = useState<Set<string>>(
     () => new Set(plan.planSections.filter((s) => s.defaultSelected && s.files > 0).map((s) => s.folder)),
   )
@@ -149,7 +152,7 @@ export function ApplyDialog({
     return (
       <Modal
         title={title}
-        subtitle={`${t.server} / ${t.database}`}
+        subtitle={`${serverText(t)} / ${t.database}`}
         onClose={close}
         width={760}
         footer={
@@ -353,13 +356,20 @@ export function ApplyDialog({
             </section>
 
             <Banner tone="warning">
-              Each file runs in its own transaction. If one fails, that file is rolled back and the run stops there -
-              the files before it stay applied. The compare runs again afterwards.
+              {applyText ? (
+                applyText.transactions
+              ) : (
+                <>
+                  Each file runs in its own transaction. If one fails, that file is rolled back and the run stops there -
+                  the files before it stay applied. The compare runs again afterwards.
+                </>
+              )}
             </Banner>
 
             <label className="flex flex-col gap-1">
               <span className="text-[12px]" style={{ color: 'var(--text-2)' }}>
                 Type the database name <span className="font-mono font-semibold">{t.database}</span> to confirm
+                {applyText?.typedNameExact && ' (letter case counts)'}
               </span>
               <Input
                 value={typed}
@@ -405,7 +415,7 @@ function TargetCard({ plan }: { plan: ApplyPlan }) {
         {t.label}
       </span>
       <span style={{ color: 'var(--text-3)' }}>Server</span>
-      <span className="font-mono">{t.server}</span>
+      <span className="font-mono">{serverText(t)}</span>
       <span style={{ color: 'var(--text-3)' }}>Database</span>
       <span className="font-mono text-[14px] font-semibold">{t.database}</span>
       <span style={{ color: 'var(--text-3)' }}>Runs as</span>
@@ -497,6 +507,11 @@ function FileLog({ files }: { files: ApplyResult['applied'] }) {
       </ol>
     </section>
   )
+}
+
+/** The server as the user wrote it, with the port for engines that keep it apart (PostgreSQL). */
+function serverText(t: ApplyPlan['applyTarget']): string {
+  return t.port ? `${t.server}:${t.port}` : t.server
 }
 
 /** The target in a fresh result that is the database just applied to. */

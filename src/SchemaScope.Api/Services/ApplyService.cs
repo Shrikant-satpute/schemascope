@@ -22,7 +22,14 @@ public sealed record VerifiedFile(PlanFile File, IReadOnlyList<SqlBatch> Batches
 /// <summary>What the target reports about itself before an apply.</summary>
 /// <param name="Key">The server's own name and the opened database ("SERVER\INSTANCE|Db"), whatever spelling the connection used.</param>
 /// <param name="InMemory">Its memory-optimized tables and table types and natively compiled modules, "schema.name".</param>
-public sealed record TargetFacts(string Key, IReadOnlySet<string> InMemory);
+public sealed record TargetFacts(string Key, IReadOnlySet<string> InMemory)
+{
+    /// <summary>
+    /// Another engine's own word for where it runs (PostgreSQL: <c>inet_server_addr()</c>), for the Protected re-check;
+    /// null for SQL Server, whose server name is the first part of <see cref="Key"/>.
+    /// </summary>
+    public IReadOnlyList<string>? Hosts { get; init; }
+}
 
 /// <summary>
 /// The only code in SchemaScope that changes a database. It runs the files of a checked plan (<see cref="ApplyJob"/>)
@@ -139,7 +146,8 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
             CompareRunId = job.CompareRunId,
             TargetLabel = job.Target.Label,
             Engine = job.Target.Engine,
-            Server = job.Target.Server,
+            // another engine's port is kept apart from its host (ApplyTarget.Port); SQL Server's is in the name
+            Server = job.Target.Port is { } port ? $"{job.Target.Server}:{port}" : job.Target.Server,
             Database = job.Target.Database,
             Login = job.Target.Login,
             Sections = [.. job.Sections],

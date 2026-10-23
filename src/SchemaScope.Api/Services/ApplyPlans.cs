@@ -25,8 +25,10 @@ public sealed class ApplyTarget
     public string Label { get; set; } = "";
     public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
+    /// <summary>The port, for engines other than SQL Server (whose port is part of <see cref="Server"/>); null for SQL Server.</summary>
+    public int? Port { get; set; }
     public string Database { get; set; } = "";
-    /// <summary>"Windows: DOMAIN\user" or "SQL login: name".</summary>
+    /// <summary>"Windows: DOMAIN\user", "SQL login: name" or "PostgreSQL user: name".</summary>
     public string Login { get; set; } = "";
     public bool Protected { get; set; }
 }

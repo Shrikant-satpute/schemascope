@@ -16,6 +16,13 @@ public static class ConnectionRules
         [AuthMode.Windows, AuthMode.SqlLogin, AuthMode.AzureAdPassword, AuthMode.AzureAdInteractive, AuthMode.AzureAdDefault];
 
     /// <summary>The product's own name for messages: "PostgreSQL", not the enum's "PostgreSql".</summary>
+    /// <summary>
+    /// How a typed database name is checked against the target's before an apply: SQL Server as today (case does not
+    /// matter), every other engine exactly - PostgreSQL's "App" and "app" are two databases.
+    /// </summary>
+    public static StringComparison TypedNameComparison(DatabaseEngine engine) =>
+        engine == DatabaseEngine.SqlServer ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
     public static string NameOf(DatabaseEngine engine) => engine switch
     {
         DatabaseEngine.SqlServer => "SQL Server",

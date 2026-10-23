@@ -72,6 +72,8 @@ public static class SchemaScopeApi
         builder.Services.AddSingleton<EngineCatalog>();
         // the engines turned on right now (a preview engine only with "Show preview engines"), asked afresh each time
         builder.Services.AddTransient(sp => sp.GetRequiredService<EngineCatalog>().Enabled);
+        // ApplyService takes every executor; SQL Server is registered last, so a lone IApplyExecutor is still its, as before
+        builder.Services.AddSingleton<IApplyExecutor>(PgApplyExecutor.Instance);
         builder.Services.AddSingleton<IApplyExecutor>(SqlServerApplyExecutor.Instance);
         builder.Services.AddSingleton<IScriptGeneratorFactory, EngineScriptGeneratorFactory>();
         builder.Services.AddSingleton<CompareSessionStore>();
@@ -1067,6 +1069,9 @@ public static class SchemaScopeApi
             var engine = session.TargetConnections[index].Engine;
             if (!engines.Supports(engine, EngineFeature.Apply) || applier.ExecutorFor(engine) is not { } executor)
                 return Refuse(StatusCodes.Status400BadRequest, $"Applying scripts to {engine} is not available in this version.");
+            // scripts across engines are written to a folder only, never applied from here
+            if (session.SourceConnection!.Engine != engine)
+                return Refuse(StatusCodes.Status400BadRequest, "Scripts made across engines are never applied from SchemaScope.");
 
             var plan = plans.Get(request.PlanId);
             if (plan is null)
@@ -1075,8 +1080,10 @@ public static class SchemaScopeApi
                 return Refuse(StatusCodes.Status400BadRequest, "That apply plan was made for another comparison or target - generate the scripts again.");
 
             var target = ApplyTargetOf(session, index, store);
-            if (!string.Equals(request.ConfirmDatabase, target.Database, StringComparison.OrdinalIgnoreCase))
-                return Refuse(StatusCodes.Status400BadRequest, $"Type the target database name, {target.Database}, to confirm.");
+            if (!string.Equals(request.ConfirmDatabase, target.Database, ConnectionRules.TypedNameComparison(engine)))
+                return Refuse(StatusCodes.Status400BadRequest, engine == DatabaseEngine.SqlServer
+                    ? $"Type the target database name, {target.Database}, to confirm."
+                    : $"Type the target database name, {target.Database}, exactly as written (letter case counts), to confirm.");
             if (target.Protected)
                 return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is marked \"Protected - never apply scripts here\". Nothing was applied.");
             if (IsSource(session, index))
@@ -1095,8 +1102,13 @@ public static class SchemaScopeApi
             if (facts is null && engine != DatabaseEngine.SqlServer)
                 return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} could not be asked who it is, so nothing was applied.");
             // the name the server reports for itself, against the protected connections: an alias or address is no way round
-            if (facts is not null && OnProtectedServer(store, engine, facts.Key[..facts.Key.IndexOf('|')]))
+            if (facts is not null && OnProtectedServer(store, engine, [.. ReportedServers(engine, facts)]))
                 return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is on a server marked \"Protected - never apply scripts here\". Nothing was applied.");
+            // another engine's source is known by what its server reports too: a second spelling of one host is no way round
+            if (facts is not null && engine != DatabaseEngine.SqlServer &&
+                await executor.InspectAsync(session.SourceConnection!.ConnectionString) is { } sourceFacts &&
+                string.Equals(sourceFacts.Key, facts.Key, StringComparison.Ordinal))
+                return Refuse(StatusCodes.Status403Forbidden, "That is the source database of this comparison. SchemaScope never applies scripts to the source.");
             var key = executor.TargetKey(facts, target.Server, target.Database);
             if (!applier.TryLock(key))
                 return Refuse(StatusCodes.Status409Conflict, $"An apply to {target.Label} is already running - wait for it to finish.");
@@ -1150,8 +1162,10 @@ public static class SchemaScopeApi
         WriteMode writeMode, ApplyPlanStore plans, SchemaScopeStore store)
     {
         if (generated is null || !complete) return PlanOffer.None;
-        // nothing to offer on an engine this version cannot apply to (PostgreSQL until R3): no Apply button, not even a protected one
+        // nothing to offer on an engine this version cannot apply to, or across engines: no Apply button, not even a protected one
         if (index < session.TargetConnections.Count && !Engines.Supports(session.TargetConnections[index].Engine, EngineFeature.Apply))
+            return PlanOffer.None;
+        if (index < session.TargetConnections.Count && session.SourceConnection is { } from && from.Engine != session.TargetConnections[index].Engine)
             return PlanOffer.None;
         List<PlanFile> files;
         List<PlanSection> sections;
@@ -1183,11 +1197,21 @@ public static class SchemaScopeApi
             Label = ep.Label,
             Engine = ep.Engine,
             Server = ep.Server,
+            // shown next to the host for other engines; SQL Server keeps its port in the server name
+            Port = ep.Engine == DatabaseEngine.SqlServer ? null
+                : ParseEndpoint(source)?.Port ?? DatabaseEngines.DefaultPort(ep.Engine),
             Database = ep.Database,
             Login = LoginOf(source),
             Protected = IsProtected(source, ep.Server, store),
         };
     }
+
+    /// <summary>
+    /// Where the target says it runs, for the Protected re-check: SQL Server's own server name (the first part of its
+    /// key), another engine's reported address.
+    /// </summary>
+    private static IReadOnlyList<string> ReportedServers(DatabaseEngine engine, TargetFacts facts) =>
+        engine == DatabaseEngine.SqlServer ? [facts.Key[..facts.Key.IndexOf('|')]] : facts.Hosts ?? [];
 
     /// <summary>
     /// Protected when the connection was protected at compare time, when its saved connection is protected now, or
@@ -1285,10 +1309,31 @@ public static class SchemaScopeApi
     private static bool IsSource(CompareSession session, int index)
     {
         if (session.SourceConnection is null) return true;
-        var s = Endpoint(session.SourceConnection, null);
-        var t = Endpoint(session.TargetConnections[index], null);
+        var source = session.SourceConnection;
+        var target = session.TargetConnections[index];
+        var s = Endpoint(source, null);
+        var t = Endpoint(target, null);
+        if (source.Engine != DatabaseEngine.SqlServer || target.Engine != DatabaseEngine.SqlServer)
+            return SameDatabase(source, target, s.Database, t.Database);
         return string.Equals(s.Server.Trim(), t.Server.Trim(), StringComparison.OrdinalIgnoreCase) &&
                string.Equals(s.Database.Trim(), t.Database.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// For an engine other than SQL Server: one engine, one port, a host in common (as <see cref="HostNames"/> spells
+    /// them) and the same database, its name compared as that engine compares it. A string that cannot be read counts as
+    /// the source (fail closed).
+    /// </summary>
+    internal static bool SameDatabase(SchemaSource source, SchemaSource target, string sourceDatabase, string targetDatabase)
+    {
+        if (source.Engine != target.Engine) return false;
+        // the driverless reading the Protected rule uses, so the answer does not depend on which engines are turned on
+        if (ConnectionEndpoints.Parse(source.Engine, source.ConnectionString) is not { } s ||
+            ConnectionEndpoints.Parse(target.Engine, target.ConnectionString) is not { } t) return true;
+        var defaultPort = DatabaseEngines.DefaultPort(target.Engine);
+        return (s.Port ?? defaultPort) == (t.Port ?? defaultPort) &&
+               s.Hosts.Any(a => t.Hosts.Any(b => HostNames.Same(a, b))) &&
+               string.Equals(sourceDatabase.Trim(), targetDatabase.Trim(), ConnectionRules.TypedNameComparison(target.Engine));
     }
 
     /// <summary>Who an apply signs in as, as the provider reads it: "Windows: DOMAIN\user" or "SQL login: name". Never the password.</summary>

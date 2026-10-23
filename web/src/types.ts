@@ -93,6 +93,15 @@ export interface EngineDescriptor {
   defaults: { auth: AuthMode; encrypt: boolean; trustServerCertificate: boolean; connectTimeoutSeconds: number }
   /** "Create scripts" wording for this engine; absent for SQL Server, whose wording is built in (scriptSections.ts). */
   scripts?: EngineScriptText | null
+  /** "Apply to target" wording for this engine; absent for SQL Server, whose wording is built in (ApplyDialog). */
+  apply?: EngineApplyText | null
+}
+
+export interface EngineApplyText {
+  /** What a file's transaction promises, worded from the engine's transaction semantics. */
+  transactions: string
+  /** The typed database name must match letter for letter; the server checks the same rule. */
+  typedNameExact: boolean
 }
 
 /** One "Create scripts" section as the dialog shows it for an engine. */
@@ -713,9 +722,13 @@ export interface WriteModeState {
 
 export interface ApplyTarget {
   label: string
+  /** Missing = SQL Server. */
+  engine?: DatabaseEngine
   server: string
+  /** Engines other than SQL Server (whose port is part of the server name). */
+  port?: number | null
   database: string
-  /** "Windows: DOMAIN\user" or "SQL login: name". */
+  /** "Windows: DOMAIN\user", "SQL login: name" or "PostgreSQL user: name". */
   login: string
   protected: boolean
 }

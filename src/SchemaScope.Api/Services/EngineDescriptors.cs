@@ -26,6 +26,11 @@ public sealed record EngineScriptSection(ScriptSection Section, string Folder, s
 /// <param name="Parsed">True when that check uses the engine's own parser; false for a lexical check only.</param>
 public sealed record EngineScriptText(string Runner, string Validation, bool Parsed, IReadOnlyList<EngineScriptSection> Sections);
 
+/// <summary>The "Apply to target" dialog's wording for an engine. Null for SQL Server, whose wording is built into the UI.</summary>
+/// <param name="Transactions">What a file's transaction promises, worded from the engine's <see cref="TransactionSemantics"/>.</param>
+/// <param name="TypedNameExact">The typed database name must match letter for letter (the server checks the same rule).</param>
+public sealed record EngineApplyText(string Transactions, bool TypedNameExact);
+
 /// <summary>What a new connection of this engine starts with.</summary>
 public sealed record EngineDefaults(AuthMode Auth, bool Encrypt, bool TrustServerCertificate, int ConnectTimeoutSeconds);
 
@@ -39,7 +44,7 @@ public sealed record EngineDescriptor(
     int? DefaultPort, string? BrowseDatabase, string DefaultSchema, IReadOnlyList<string> DefaultExcludedSchemas,
     string MonacoLanguage, string WordSeparators, TransactionSemantics Transactions,
     EngineCapabilities Capabilities, IReadOnlyList<EngineAuthOption> Auth, EngineFormText Form, EngineDefaults Defaults,
-    EngineScriptText? Scripts = null);
+    EngineScriptText? Scripts = null, EngineApplyText? Apply = null);
 
 /// <summary>Builds <see cref="EngineDescriptor"/>s: the provider's facts plus the form's wording for that engine.</summary>
 public static class EngineDescriptors
@@ -50,7 +55,23 @@ public static class EngineDescriptors
         return new EngineDescriptor(p.Engine, p.DisplayName, shortName, p.Capabilities.Preview,
             DatabaseEngines.DefaultPort(p.Engine), p.Connections.BrowseDatabase, p.Dialect.DefaultSchema,
             p.Dialect.DefaultExcludedSchemas, p.Dialect.MonacoLanguage, p.Dialect.WordSeparators, p.Capabilities.Ddl,
-            p.Capabilities, auth, form, defaults, ScriptText(p));
+            p.Capabilities, auth, form, defaults, ScriptText(p), ApplyText(p));
+    }
+
+    /// <summary>The Apply dialog's promise for an engine that has Apply, from its transaction semantics; SQL Server keeps the UI's.</summary>
+    private static EngineApplyText? ApplyText(IEngineProvider p)
+    {
+        if (p.Engine == DatabaseEngine.SqlServer || !p.Capabilities.Features.Contains(EngineFeature.Apply)) return null;
+        var transactions = p.Capabilities.Ddl switch
+        {
+            TransactionSemantics.PerFileTransactional =>
+                "Each file runs in its own transaction, and a statement waits at most 5 seconds for a lock. If one fails, that file " +
+                "is rolled back and the run stops there - the files before it stay applied. The compare runs again afterwards.",
+            _ =>
+                $"{p.DisplayName} cannot roll back schema changes. Each file is one statement; if one fails, the files before it stay " +
+                "applied. The compare runs again afterwards.",
+        };
+        return new EngineApplyText(transactions, TypedNameExact: ConnectionRules.TypedNameComparison(p.Engine) == StringComparison.Ordinal);
     }
 
     /// <summary>PostgreSQL's sections, hints and runner; SQL Server keeps the UI's built-in wording.</summary>

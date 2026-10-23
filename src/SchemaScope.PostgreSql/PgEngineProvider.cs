@@ -4,9 +4,9 @@ using SchemaScope.Core.Model;
 namespace SchemaScope.PostgreSql;
 
 /// <summary>
-/// PostgreSQL behind the engine seam, as a preview: read, compare, and scripts written to a folder (whole database and
-/// single object). Apply and changes that can lose data are not offered yet (the server refuses them from these
-/// capabilities, whatever the UI shows).
+/// PostgreSQL behind the engine seam, as a preview: read, compare, scripts written to a folder (whole database and
+/// single object), and Apply in write mode, each file in its own transaction. Changes that can lose data are not
+/// offered yet (the server refuses them from these capabilities, whatever the UI shows).
 /// </summary>
 public sealed class PgEngineProvider(PgConnectionService connections) : IEngineProvider
 {
@@ -28,7 +28,7 @@ public sealed class PgEngineProvider(PgConnectionService connections) : IEngineP
             DbObjectType.AggregateFunction, DbObjectType.Trigger, DbObjectType.Sequence, DbObjectType.Domain,
             DbObjectType.EnumType, DbObjectType.CompositeType, DbObjectType.Extension
         },
-        Features: new HashSet<EngineFeature> { EngineFeature.Compare, EngineFeature.Scripts, EngineFeature.ObjectScripts },
+        Features: new HashSet<EngineFeature> { EngineFeature.Compare, EngineFeature.Scripts, EngineFeature.ObjectScripts, EngineFeature.Apply },
         Preview: true);
 
     public ISqlDialect Dialect { get; } = new PgDialect();

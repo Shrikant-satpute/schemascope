@@ -112,8 +112,8 @@ public sealed partial class PgScriptValidator
         return sb.ToString();
     }
 
-    /// <summary>What must never run from these scripts (and what cannot run inside a transaction).</summary>
-    internal static IEnumerable<string> Refused(string statement)
+    /// <summary>What must never run from these scripts (and what cannot run inside a transaction). The apply's preflight uses it too.</summary>
+    public static IEnumerable<string> Refused(string statement)
     {
         var code = PgStatementSplitter.CodeOnly(statement);
         if (ConcurrentlyRx().IsMatch(code)) yield return "CONCURRENTLY cannot run inside a transaction and is never written here";

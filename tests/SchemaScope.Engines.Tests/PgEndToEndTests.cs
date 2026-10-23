@@ -92,7 +92,7 @@ public sealed class PgEndToEndTests(PgServer pg)
             var columns = detail.GetProperty("targets")[0].GetProperty("structure")[0].GetProperty("rows").EnumerateArray().ToList();
             Assert.Equal("onlyInTarget", columns.Single(c => c.GetProperty("name").GetString() == "note").GetProperty("status").GetString());
 
-            // scripts go to a folder; with write mode on there is still no plan, since PostgreSQL has no apply yet
+            // scripts go to a folder; with write mode on they come with an apply plan for this target
             Assert.Equal(HttpStatusCode.OK, (await o.PostJson("/api/write-mode", """{ "enabled": true, "confirm": "ENABLE" }""")).StatusCode);
             var folder = JsonSerializer.Serialize(Path.Combine(o.Temp.Folder, "scripts"));
             var scripts = await o.PostJson($"/api/compare/{runId}/scripts",
@@ -102,7 +102,10 @@ public sealed class PgEndToEndTests(PgServer pg)
             Assert.True(outcome.GetProperty("success").GetBoolean(), outcome.GetRawText());
             Assert.True(outcome.GetProperty("validation").GetProperty("passed").GetBoolean(), outcome.GetRawText());
             Assert.True(outcome.GetProperty("validation").GetProperty("level").GetProperty("parsed").GetBoolean());
-            Assert.True(!outcome.TryGetProperty("planId", out var planId) || planId.ValueKind == JsonValueKind.Null);
+            Assert.False(string.IsNullOrEmpty(outcome.GetProperty("planId").GetString()), outcome.GetRawText());
+            Assert.Equal("postgreSql", outcome.GetProperty("applyTarget").GetProperty("engine").GetString());
+            Assert.Equal(pg.Port, outcome.GetProperty("applyTarget").GetProperty("port").GetInt32());
+            Assert.Equal("PostgreSQL user: postgres", outcome.GetProperty("applyTarget").GetProperty("login").GetString());
             var path = outcome.GetProperty("path").GetString()!;
             Assert.True(File.Exists(Path.Combine(path, "RUN.ps1")));
             var missing = string.Concat(Directory.EnumerateFiles(Path.Combine(path, "03_missing", "objects")).Select(File.ReadAllText));
@@ -134,10 +137,11 @@ public sealed class PgEndToEndTests(PgServer pg)
                 .Content.ReadAsStringAsync());
             Assert.Contains("DROP TABLE \"app\".\"extra\";", drop.GetProperty("dropPreview").GetString());
 
-            // and nothing is applied: there is no apply for PostgreSQL in this version
+            // and nothing is applied without a plan (PgApplyTests runs one)
             var apply = await o.PostJson($"/api/compare/{runId}/apply",
                 $$"""{ "planId": "nope", "targetIndex": 0, "sections": ["01_columns"], "confirmDatabase": "{{tgt}}" }""");
             Assert.Equal(HttpStatusCode.BadRequest, apply.StatusCode);
+            Assert.Empty(o.Temp.Store.GetApplyRuns());
         }
         finally
         {

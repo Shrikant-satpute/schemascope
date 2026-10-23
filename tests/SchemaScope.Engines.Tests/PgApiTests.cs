@@ -53,7 +53,12 @@ public sealed class PgRouteTests : IAsyncLifetime
         Assert.True(pg.GetProperty("preview").GetBoolean());
         Assert.Equal("postgres", pg.GetProperty("browseDatabase").GetString());
         Assert.Equal("pgsql", pg.GetProperty("monacoLanguage").GetString());
-        Assert.Equal(["compare", "objectScripts", "scripts"], pg.GetProperty("capabilities").GetProperty("features").EnumerateArray().Select(f => f.GetString()).Order());
+        Assert.Equal(["apply", "compare", "objectScripts", "scripts"], pg.GetProperty("capabilities").GetProperty("features").EnumerateArray().Select(f => f.GetString()).Order());
+        // the apply dialog's promise comes from the engine's transaction semantics, and the typed name is exact
+        Assert.Equal("perFileTransactional", pg.GetProperty("transactions").GetString());
+        Assert.StartsWith("Each file runs in its own transaction", pg.GetProperty("apply").GetProperty("transactions").GetString());
+        Assert.True(pg.GetProperty("apply").GetProperty("typedNameExact").GetBoolean());
+        Assert.False(engines.Single(e => e.GetProperty("engine").GetString() == "sqlServer").TryGetProperty("apply", out _));
         // the dialog's wording for this engine: psql, an honest validation line, and the sections that do not apply greyed out
         var scripts = pg.GetProperty("scripts");
         Assert.Equal("psql", scripts.GetProperty("runner").GetString());
@@ -177,7 +182,7 @@ public sealed class PgRouteTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Postgres_scripts_need_the_compare_s_snapshots_and_apply_stays_a_clear_400()
+    public async Task Postgres_scripts_need_the_compare_s_snapshots_and_apply_needs_a_plan()
     {
         await _o.SetPreviewAsync(true);
         var run = PgRun();
@@ -206,7 +211,84 @@ public sealed class PgRouteTests : IAsyncLifetime
         var apply = await _o.PostJson($"/api/compare/{run}/apply",
             """{ "planId": "nope", "targetIndex": 0, "sections": ["01_columns"], "confirmDatabase": "app" }""");
         Assert.Equal(HttpStatusCode.BadRequest, apply.StatusCode);
-        Assert.Contains("not available in this version", await Message(apply));
+        Assert.Contains("unknown or has expired", await Message(apply));
         Assert.Empty(_o.Temp.Store.GetApplyRuns());
+    }
+
+    /// <summary>A finished run with the given connections and a live plan for its first target; nothing listens on port 1.</summary>
+    private (string RunId, string PlanId) RunWithPlan(SchemaSource source, SchemaSource target)
+    {
+        var session = _o.App.Services.GetRequiredService<CompareSessionStore>().Create();
+        session.Status = "done";
+        session.Result = new CompareResult
+        {
+            Source = new SnapshotInfo { Label = "Dev", Engine = source.Engine, Server = source.Server, Database = source.Database },
+            Targets = [new TargetSummary { Label = "Prod", Engine = target.Engine, Server = target.Server, Database = target.Database }],
+            Rows = [],
+        };
+        session.SourceConnection = source;
+        session.TargetConnections = [target];
+        var plan = _o.App.Services.GetRequiredService<ApplyPlanStore>().Add(new ApplyPlan
+        {
+            RunId = session.Id, TargetIndex = 0,
+            Sections = [new PlanSection { Folder = "01_columns", Title = "New columns", Files = 1, DefaultSelected = true }],
+        });
+        return (session.Id, plan.Id);
+    }
+
+    private static SchemaSource Pg(string label, string cs) => new()
+    {
+        Label = label, Engine = DatabaseEngine.PostgreSql, Server = "127.0.0.1", Database = "App",
+        ConnectionString = $"{cs};Timeout=2;SSL Mode=Disable",
+    };
+
+    private Task<HttpResponseMessage> Apply(string run, string plan, string confirm) =>
+        _o.PostJson($"/api/compare/{run}/apply",
+            $$"""{ "planId": "{{plan}}", "targetIndex": 0, "sections": ["01_columns"], "confirmDatabase": "{{confirm}}" }""");
+
+    [Fact]
+    public async Task The_postgres_gates_refuse_in_order_before_anything_is_run_or_logged()
+    {
+        await _o.SetPreviewAsync(true);
+        Assert.Equal(HttpStatusCode.OK, (await _o.PostJson("/api/write-mode", """{ "enabled": true, "confirm": "ENABLE" }""")).StatusCode);
+
+        // PostgreSQL names are exact: "app" is not the database "App"
+        var (run, plan) = RunWithPlan(Pg("Dev", "Host=127.0.0.1;Port=1;Database=Src"), Pg("Prod", "Host=127.0.0.1;Port=1;Database=App"));
+        var wrongCase = await Apply(run, plan, "app");
+        Assert.Equal(HttpStatusCode.BadRequest, wrongCase.StatusCode);
+        Assert.Equal("Type the target database name, App, exactly as written (letter case counts), to confirm.", await Message(wrongCase));
+
+        // the source itself, however its host is spelled; on another port it is another server
+        (run, plan) = RunWithPlan(Pg("Dev", "Host=localhost;Port=1;Database=App"), Pg("Prod", "Host=127.0.0.1;Port=1;Database=App"));
+        var source = await Apply(run, plan, "App");
+        Assert.Equal(HttpStatusCode.Forbidden, source.StatusCode);
+        Assert.Contains("source database", await Message(source));
+
+        // so the next gate is reached: a server that cannot be asked who it is is refused (SQL Server would go on)
+        (run, plan) = RunWithPlan(Pg("Dev", "Host=127.0.0.1;Port=2;Database=App"), Pg("Prod", "Host=127.0.0.1;Port=1;Database=App"));
+        var unknown = await Apply(run, plan, "App");
+        Assert.Equal(HttpStatusCode.Forbidden, unknown.StatusCode);
+        Assert.Equal("Prod could not be asked who it is, so nothing was applied.", await Message(unknown));
+        // and the refusals did not use up the plan
+        Assert.NotNull(_o.App.Services.GetRequiredService<ApplyPlanStore>().Get(plan));
+
+        // scripts across engines are never applied, whatever the session holds
+        (run, plan) = RunWithPlan(new SchemaSource { Label = "Dev", Server = "127.0.0.1,1", Database = "App",
+            ConnectionString = "Server=127.0.0.1,1;Database=App;Integrated Security=true;Encrypt=false" }, Pg("Prod", "Host=127.0.0.1;Port=1;Database=App"));
+        var across = await Apply(run, plan, "App");
+        Assert.Equal(HttpStatusCode.BadRequest, across.StatusCode);
+        Assert.Equal("Scripts made across engines are never applied from SchemaScope.", await Message(across));
+
+        Assert.Empty(_o.Temp.Store.GetApplyRuns());
+    }
+
+    [Fact]
+    public async Task Without_the_preview_switch_there_is_no_postgres_apply()
+    {
+        Assert.Equal(HttpStatusCode.OK, (await _o.PostJson("/api/write-mode", """{ "enabled": true, "confirm": "ENABLE" }""")).StatusCode);
+        var (run, plan) = RunWithPlan(Pg("Dev", "Host=127.0.0.1;Port=2;Database=App"), Pg("Prod", "Host=127.0.0.1;Port=1;Database=App"));
+        var apply = await Apply(run, plan, "App");
+        Assert.Equal(HttpStatusCode.BadRequest, apply.StatusCode);
+        Assert.Equal("Applying scripts to PostgreSql is not available in this version.", await Message(apply));
     }
 }

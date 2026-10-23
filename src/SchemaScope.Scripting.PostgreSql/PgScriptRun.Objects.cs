@@ -39,6 +39,21 @@ internal sealed partial class PgScriptRun
     /// </summary>
     private const string BodiesOff = "SET LOCAL check_function_bodies = false;\n";
 
+    /// <summary>
+    /// 03 and 07 create, never replace: a leading CREATE OR REPLACE FUNCTION, PROCEDURE or VIEW (pg_get_functiondef's,
+    /// and the reader's view text) becomes plain CREATE, so the file fails in its own transaction when the target has
+    /// gained that object since the compare, and the target's own code stays. <c>Module</c> is the source's text after
+    /// the CREATE it starts with, which the file holds exactly.
+    /// </summary>
+    internal static (string Text, string Module) CreateOnly(string definition)
+    {
+        const string replace = "CREATE OR REPLACE ";
+        foreach (var kind in new[] { "FUNCTION ", "PROCEDURE ", "VIEW " })
+            if (definition.StartsWith(replace + kind, StringComparison.Ordinal))
+                return ("CREATE " + definition[replace.Length..], definition[replace.Length..]);
+        return (definition, definition);
+    }
+
     private IEnumerable<DbObject> MissingTriggers() =>
         Src.Objects.Where(o => o.Type == DbObjectType.Trigger && StatusOf(o) == Diff.Missing && InScope(o) && !IsExcluded(o));
 
@@ -200,10 +215,10 @@ internal sealed partial class PgScriptRun
                         .Select(q => (q, ownedBy[q.Properties["ownedBy"]!].Column))));
                     break;
                 default:   // views, materialized views, functions, procedures, aggregates
-                    module = o.Definition!.TrimEnd();
+                    (var create, module) = CreateOnly(o.Definition!.TrimEnd());
                     text.Append(NotCompileChecked);
                     if (IsRoutine(o)) text.Append(BodiesOff);
-                    text.Append(PgDdl.Statement(module));
+                    text.Append(PgDdl.Statement(create));
                     break;
             }
             Missing.Files.Add(new PgFile($"{Kind(o).Replace(' ', '_')}_{Display(o)}", text.ToString(), NameOf(o), module));
@@ -326,7 +341,7 @@ internal sealed partial class PgScriptRun
             if (function is not null)
             {
                 text.Append($"-- with its trigger function {PgDdl.OneLine(Display(function))}, which the target does not have yet\n")
-                    .Append(BodiesOff).Append(PgDdl.Statement(function.Definition!.TrimEnd()));
+                    .Append(BodiesOff).Append(PgDdl.Statement(CreateOnly(function.Definition!.TrimEnd()).Text));
                 written.Add(function.Key);
             }
             var module = trg.Definition!.TrimEnd();
@@ -346,11 +361,18 @@ internal sealed partial class PgScriptRun
     private void PlanDifferent()
     {
         var targetMajor = Tgt.MajorVersion;
+        var planned = new Dictionary<string, (DbObject Obj, string Text, string? Module)>(StringComparer.Ordinal);
+        var held = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var o in Src.Objects.Where(o => o.Type.IsModule() && StatusOf(o) == Diff.Different && InScope(o) && !IsExcluded(o))
-                     .OrderBy(Rank).ThenBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal))
+                     .OrderBy(Rank).ThenBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal)
+                     .ThenBy(o => o.Signature ?? "", StringComparer.Ordinal))
         {
             var tgt = Target(o)!;
-            void Hold(string why) => review.Hold(ReviewLog.DifferentNotApplied, Kind(o), Display(o), null, why, Different.Name);
+            void Hold(string why)
+            {
+                held[o.Key] = why;
+                review.Hold(ReviewLog.DifferentNotApplied, Kind(o), Display(o), null, why, Different.Name);
+            }
             if (o.DefinitionUnavailable || tgt.DefinitionUnavailable || string.IsNullOrWhiteSpace(o.Definition))
             {
                 Hold("its text could not be read on both sides");
@@ -398,10 +420,72 @@ internal sealed partial class PgScriptRun
                     Hold("a materialized view cannot be replaced in place: DROP and CREATE would empty it and break what uses it");
                     continue;
             }
+            planned[o.Key] = (o, text, o.Type == DbObjectType.Trigger ? null : o.Definition!.TrimEnd());
+        }
+
+        // what each replacement reads must be there when it runs: on the target, created or added by this run, or replaced before it here
+        string? Blocker(DbObject o)
+        {
+            foreach (var d in o.DependsOn ?? [])
+            {
+                if (d.Via == "foreignkey" || d.Key == o.Key || planned.ContainsKey(d.Key)) continue;
+                if (t.TryGetValue(d.Key, out var have))
+                {
+                    if (d.Column is not { } col) continue;
+                    if (have.Type == DbObjectType.Table && !HasColumn(d.Key, col))
+                        return $"it reads column {have.FullName}.{col}, which the target does not have and 01 does not add";
+                    if (have.Type is DbObjectType.View or DbObjectType.MaterializedView && !Lines(have.Properties.GetValueOrDefault("columns")).Any(l => l.StartsWith(PgDdl.Q(col) + " ", StringComparison.Ordinal)))
+                        return $"it reads column {col} of {Kind(have)} {Display(have)}, which the target's copy does not have" +
+                               (held.TryGetValue(d.Key, out var why) ? $", and its replacement is held ({why})" : "");
+                    continue;
+                }
+                if (created.Contains(d.Key) || withTrigger.Contains(d.Key)) continue;
+                if (s.TryGetValue(d.Key, out var need))
+                    return $"it needs {Kind(need)} {Display(need)}, which the target does not have and this run does not create{Why(need)}";
+            }
+            return null;
+        }
+        void HoldPlanned(DbObject o, string why)
+        {
+            planned.Remove(o.Key);
+            held[o.Key] = why;
+            review.Hold(ReviewLog.DifferentNotApplied, Kind(o), Display(o), null, why, Different.Name);
+        }
+
+        // in pg_depend order, as 03 creates: a view that reads another changed view's new column comes after it
+        List<DbObject> items;
+        while (true)
+        {
+            PlanOrder.HoldUntilStable(planned.Values.Select(p => p.Obj).ToList(), o =>
+            {
+                if (!planned.ContainsKey(o.Key) || Blocker(o) is not { } why) return false;
+                HoldPlanned(o, why);
+                return true;
+            });
+            items = [.. planned.Values.Select(p => p.Obj)];
+            var at = items.Select((o, i) => (o.Key, i)).ToDictionary(p => p.Key, p => p.i, StringComparer.Ordinal);
+            var edges = new List<(int, int)>();
+            for (var i = 0; i < items.Count; i++)
+                foreach (var d in items[i].DependsOn ?? [])
+                    if (d.Via != "foreignkey" && at.TryGetValue(d.Key, out var j) && j != i) edges.Add((j, i));
+            var forced = new List<int>();
+            var order = PlanOrder.StableOrder(items.Count, edges, forced);
+            if (forced.Count == 0)
+            {
+                items = [.. order.Select(i => items[i])];
+                break;
+            }
+            var cycle = string.Join(", ", forced.Select(i => Display(items[i])));
+            foreach (var i in forced) HoldPlanned(items[i], $"it is part of a dependency cycle ({cycle}): no order replaces them one by one");
+        }
+
+        foreach (var o in items)
+        {
+            var (_, text, module) = planned[o.Key];
             review.Note(ReviewLog.DifferentModulesFile, Kind(o), Display(o), null,
                 "replaces the target's code with the source's; a change made only on the target is lost", Different.Name);
             Different.Files.Add(new PgFile($"{Kind(o).Replace(' ', '_')}_{Display(o)}",
-                Header(Different, Kind(o), Display(o)) + NotCompileChecked + text, NameOf(o), o.Type == DbObjectType.Trigger ? null : o.Definition!.TrimEnd()));
+                Header(Different, Kind(o), Display(o)) + NotCompileChecked + text, NameOf(o), module));
         }
     }
 

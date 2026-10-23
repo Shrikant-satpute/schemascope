@@ -153,7 +153,8 @@ public static class StructureDiffService
             Identity = !c.IsIdentity ? ""
                 : c.IdentityKind is { } kind
                     // PostgreSQL: GENERATED ALWAYS / BY DEFAULT AS IDENTITY
-                    ? options.IgnoreIdentitySeed ? $"GENERATED {kind} AS IDENTITY" : $"GENERATED {kind} AS IDENTITY({c.IdentitySeed},{c.IdentityIncrement})"
+                    ? options.IgnoreIdentitySeed ? $"GENERATED {kind} AS IDENTITY"
+                        : $"GENERATED {kind} AS IDENTITY({c.IdentitySeed},{c.IdentityIncrement}{(c.IdentityOptions is { } limits ? ", " + limits : "")})"
                     : options.IgnoreIdentitySeed ? "IDENTITY" : $"IDENTITY({c.IdentitySeed},{c.IdentityIncrement})",
             Default = def?.Definition ?? "",
             Computed = c.IsComputed ? $"AS {c.ComputedDefinition}{(c.IsPersisted ? " PERSISTED" : "")}" : "",

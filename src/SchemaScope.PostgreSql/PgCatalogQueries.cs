@@ -76,7 +76,8 @@ internal static class PgCatalogQueries
 
     /// <summary>
     /// Columns of tables, of standalone composite types (relkind 'c') and of views (what a view returns). attgenerated:
-    /// 's' stored, and from PostgreSQL 18 'v' virtual. An identity column's sequence hangs off it with deptype 'i'.
+    /// 's' stored, and from PostgreSQL 18 'v' virtual. An identity column's sequence hangs off it with deptype 'i': its
+    /// start, step and limits are the column's.
     /// </summary>
     private static string Columns(int versionNum) => $"""
         SELECT a.attrelid, a.attnum, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
@@ -85,7 +86,7 @@ internal static class PgCatalogQueries
                CASE WHEN a.attcollation <> 0 AND a.attcollation <> t.typcollation THEN
                     CASE WHEN cn.nspname = 'pg_catalog' THEN quote_ident(co.collname)
                          ELSE quote_ident(cn.nspname) || '.' || quote_ident(co.collname) END END,
-               s.seqstart, s.seqincrement
+               s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle
         FROM pg_attribute a
         JOIN pg_class c ON c.oid = a.attrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace

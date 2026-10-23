@@ -137,9 +137,19 @@ public abstract class PgScriptTestsBase(PgServer pg)
     private static Task<CompareRun> CompareAsync(PgServer pg, string src, string tgt) =>
         new CompareRunner(_ => new PgSchemaReader()).RunAsync(pg.Source("source", src), [pg.Source("t0", tgt)], new CompareOptions());
 
-    private static bool Explained(CompareRow row, IReadOnlyList<HeldBackItem> held) => held.Any(h =>
-        h.Object == row.FullName || h.Object == row.Name || h.Object.StartsWith(row.FullName + ".", StringComparison.Ordinal) ||
-        h.Object.StartsWith(row.FullName + "(", StringComparison.Ordinal) || h.Object.StartsWith(row.FullName + " ON ", StringComparison.Ordinal));
+    /// <summary>
+    /// The rows the re-compare still shows as not Same, each with every hold that keeps it so (a hold on a sibling
+    /// item never explains a row on its own): anything else left different is a defect.
+    /// </summary>
+    private static readonly Dictionary<string, string[]> StillDifferent = new(StringComparer.Ordinal)
+    {
+        ["Extension pgcrypto.pgcrypto: MissingInTarget"] = ["pgcrypto"],
+        ["Scalar function app.fmt integer: FormattingOnly"] = ["app.fmt(integer)"],
+        ["Scalar function app.kind integer: Different"] = ["app.kind(integer)"],
+        ["Table app.customers: Different"] = ["app.customers.must", "app.customers.customers_name_check", "app.customers.legacy", "app.customers.customers_legacy_ix"],
+        ["Table app.notes: Different"] = ["app.notes.body"],
+        ["Table app.ordered: Different"] = ["app.ordered"],
+    };
 
     protected async Task Generate_validate_run_with_psql_and_match()
     {
@@ -223,31 +233,25 @@ public abstract class PgScriptTestsBase(PgServer pg)
             var runner = File.ReadAllText(Path.Combine(outcome.Path!, "03_missing", "run_all.ps1"));
             Assert.Contains("psql -X -v ON_ERROR_STOP=1 --single-transaction", runner);
 
-            // run it the way RUN.ps1 does, with psql inside the container, then 07 and 10 by hand
+            // run it the way RUN.ps1 does, with psql inside the container, then 07 and 10 by hand: every file, failures collected
             var order = Regex.Match(run, @"\$folders = @\((?<f>[^)]*)\)").Groups["f"].Value.Split(',').Select(f => f.Trim('"')).ToList();
             order.AddRange(["07_triggers", "10_different_modules"]);
-            foreach (var folder in order)
-            {
-                var files = outcome.Files.Where(f => f.Folder == folder && f.IsObjectFile && f.RelativePath.Count(c => c == '\\') == 1)
-                    .OrderBy(f => int.Parse(Path.GetFileName(f.RelativePath)[..3])).ToList();
-                Assert.NotEmpty(files);
-                foreach (var f in files)
-                {
-                    var inContainer = $"/tmp/{Path.GetFileName(outcome.Path!)}/{folder}/{Path.GetFileName(f.RelativePath)}";
-                    await pg.CopyToContainerAsync(await File.ReadAllBytesAsync(f.FullPath), inContainer);
-                    var (code, stdout, stderr) = await pg.ExecInContainerAsync("psql", "-X", "-v", "ON_ERROR_STOP=1", "--single-transaction",
-                        "-U", PgServer.User, "-d", tgt, "-f", inContainer);
-                    Assert.True(code == 0, $"{folder}\\{f.RelativePath} failed ({code}): {stderr}\n{stdout}");
-                }
-            }
+            Assert.All(order, folder => Assert.NotEmpty(PgScriptPair.FilesOf(outcome, folder)));
+            Assert.Empty(await new PgScriptPair(pg, src, tgt, output).RunAsync(outcome, order));
 
+            // exactly these rows still differ, and each is kept so by the holds listed for it; everything else matches
             var after = await CompareAsync(pg, src, tgt);
             var rows = after.Result.Rows;
-            var left = rows.Where(r => r.Cells[0].Status is not (ObjectStatus.Same or ObjectStatus.OnlyInTarget)).ToList();
-            Assert.All(left, r => Assert.True(Explained(r, outcome.HeldBack), $"{r.TypeLabel} {r.FullName} {r.Signature}: {r.Cells[0].Status}, held for no reason"));
-            // the held rows aside, everything matches
-            var notHeld = rows.Where(r => r.Cells[0].Status != ObjectStatus.OnlyInTarget && !Explained(r, outcome.HeldBack)).ToList();
-            Assert.All(notHeld, r => Assert.Equal(ObjectStatus.Same, r.Cells[0].Status));
+            Assert.Equal(StillDifferent.Keys.Order(StringComparer.Ordinal), PgScriptPair.NotSame(after));
+            var expectedHolds = StillDifferent.Values.SelectMany(h => h).Order(StringComparer.Ordinal).ToList();
+            Assert.Equal(expectedHolds, outcome.HeldBack.Select(h => h.Object).Order(StringComparer.Ordinal));
+
+            // and nothing that was not held is left: scripts made again from the new compare write nothing and hold the same things
+            var again = await new PgScriptGenerator().GenerateAsync(new ScriptRequestContext(source, target, after.Source, after.Targets[0],
+                after.Result, 0, options, new HashSet<string>(), new Dictionary<string, LineChange>(), new CompareOptions()), default, null);
+            Assert.True(again.Success, again.Message);
+            Assert.Empty(again.Files.Where(f => f.IsObjectFile).Select(f => f.RelativePath));
+            Assert.Equal(expectedHolds, again.HeldBack.Select(h => h.Object).Order(StringComparer.Ordinal));
             foreach (var name in new[] { "orders", "things" })
                 Assert.Equal(ObjectStatus.Same, rows.Single(r => r.Type == DbObjectType.Table && r.Name == name).Cells[0].Status);
             Assert.Equal(ObjectStatus.Same, rows.Single(r => r.Type == DbObjectType.Trigger && r.Name == "orders_touch").Cells[0].Status);

@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text;
+using SchemaScope.Core.Comparison;
 using SchemaScope.Core.Engines;
+using SchemaScope.Core.Model;
 using SchemaScope.Scripting;
 using SchemaScope.Scripting.PostgreSql;
 
@@ -321,5 +323,86 @@ public class PgScriptOfflineTests
             Directory.Delete(root, true);
             File.Delete(outside);
         }
+    }
+    // ------------------------------------------------------------------ R2 review
+
+    private static DbObject Pg(DbObjectType type, string schema, string name, string? definition = null, string? signature = null) =>
+        new() { Type = type, Schema = schema, Name = name, Fold = IdentifierFold.Exact, Definition = definition, Signature = signature };
+
+    [Fact]
+    public async Task Missing_code_is_created_never_replaced()
+    {
+        var src = new SchemaSnapshot
+        {
+            Engine = DatabaseEngine.PostgreSql, MajorVersion = 16,
+            Objects =
+            [
+                Pg(DbObjectType.Schema, "app", "app"),
+                Pg(DbObjectType.ScalarFunction, "app", "f", "CREATE OR REPLACE FUNCTION app.f()\n RETURNS integer\n LANGUAGE sql\nAS $function$ SELECT 1 $function$\n", ""),
+                Pg(DbObjectType.StoredProcedure, "app", "p", "CREATE OR REPLACE PROCEDURE app.p()\n LANGUAGE sql\nAS $procedure$ SELECT 1 $procedure$\n", ""),
+                Pg(DbObjectType.View, "app", "v", "CREATE OR REPLACE VIEW \"app\".\"v\" AS\n SELECT 1 AS one;"),
+            ]
+        };
+        var tgt = new SchemaSnapshot { Engine = DatabaseEngine.PostgreSql, MajorVersion = 16, Objects = [Pg(DbObjectType.Schema, "app", "app")] };
+        var output = Path.Combine(Path.GetTempPath(), $"schemascope-pg-offline-{Guid.NewGuid():n}");
+        try
+        {
+            var endpoint = new ScriptEndpoint("Target", "db.example", "tgt", "Host=db.example;Database=tgt", DatabaseEngine.PostgreSql);
+            var outcome = await new PgScriptGenerator().GenerateAsync(new ScriptRequestContext(endpoint with { Label = "Source" }, endpoint, src, tgt,
+                new CompareResult(), 0, new ScriptOptions { Sections = [ScriptSection.MissingObjects], OutputFolder = output },
+                new HashSet<string>(), new Dictionary<string, LineChange>()), default, null);
+            Assert.True(outcome.Success, outcome.Message);
+            var files = outcome.Files.Where(f => f.Folder == PgScriptGenerator.MissingFolder && f.FullPath.EndsWith(".sql", StringComparison.Ordinal)).ToList();
+            Assert.NotEmpty(files);
+            Assert.All(files, f => Assert.DoesNotContain("OR REPLACE", File.ReadAllText(f.FullPath)));
+            var all = string.Join("\n", files.Select(f => File.ReadAllText(f.FullPath)));
+            Assert.Contains("CREATE FUNCTION app.f()", all);
+            Assert.Contains("CREATE PROCEDURE app.p()", all);
+            Assert.Contains("CREATE VIEW \"app\".\"v\" AS", all);
+            Assert.True(outcome.Validation.Passed, string.Join("\n", outcome.Validation.Problems));
+            Assert.Equal(3, outcome.Validation.ModulesChecked);
+            Assert.Equal(3, outcome.Validation.ModulesExact);
+        }
+        finally
+        {
+            try { Directory.Delete(output, true); } catch (IOException) { }
+        }
+    }
+
+    [Theory]
+    [InlineData("CREATE OR REPLACE FUNCTION a.f()\n RETURNS integer", "CREATE FUNCTION a.f()\n RETURNS integer")]
+    [InlineData("CREATE OR REPLACE PROCEDURE a.p()", "CREATE PROCEDURE a.p()")]
+    [InlineData("CREATE OR REPLACE VIEW \"a\".\"v\" AS\n SELECT 1;", "CREATE VIEW \"a\".\"v\" AS\n SELECT 1;")]
+    [InlineData("CREATE MATERIALIZED VIEW \"a\".\"m\" AS\n SELECT 1;", "CREATE MATERIALIZED VIEW \"a\".\"m\" AS\n SELECT 1;")]
+    [InlineData("CREATE AGGREGATE a.s(numeric) (\n    SFUNC = numeric_add\n);", "CREATE AGGREGATE a.s(numeric) (\n    SFUNC = numeric_add\n);")]
+    public void Create_only_drops_or_replace_and_keeps_the_rest_exactly(string definition, string expected)
+    {
+        var (text, module) = PgScriptRun.CreateOnly(definition);
+        Assert.Equal(expected, text);
+        Assert.Contains(module, text);
+        Assert.EndsWith(module, definition);
+    }
+
+    [Fact]
+    public void The_functions_a_check_calls_are_read_from_its_parse_tree()
+    {
+        Assert.Equal([(null, "pg_cancel_backend", 1)], PgParser.FunctionsCalled("((pg_cancel_backend(0) IS NOT NULL) OR true)")!);
+        Assert.Equal([(null, "length", 1), (null, "lower", 1)], PgParser.FunctionsCalled("(length(lower(name)) > 0)")!.OrderBy(c => c.Name));
+        Assert.Empty(PgParser.FunctionsCalled("((score >= 0) AND (note <> 'f(x)'::text))")!);
+        Assert.Contains(PgParser.FunctionsCalled("(EXTRACT(year FROM d) > (2000)::numeric)")!, c => c.Name == "extract" && c.Arguments == 2);
+        Assert.Null(PgParser.FunctionsCalled("1); SELECT pg_sleep(10"));
+    }
+
+    [Fact]
+    public void An_index_of_a_partitioned_table_is_built_on_every_partition()
+    {
+        var parent = Pg(DbObjectType.Table, "Sales", "ptab");
+        parent.Properties["partitionBy"] = "RANGE (id)";
+        Assert.Equal("CREATE INDEX ptab_amount_ix ON \"Sales\".ptab USING btree (amount)",
+            PgScriptRun.OnEveryPartition(parent, "CREATE INDEX ptab_amount_ix ON ONLY \"Sales\".ptab USING btree (amount)"));
+        Assert.Equal("CREATE UNIQUE INDEX \"odd ON ONLY x\" ON \"Sales\".ptab USING btree (id)",
+            PgScriptRun.OnEveryPartition(parent, "CREATE UNIQUE INDEX \"odd ON ONLY x\" ON ONLY \"Sales\".ptab USING btree (id)"));
+        var plain = Pg(DbObjectType.Table, "Sales", "t");
+        Assert.Equal("CREATE INDEX t_ix ON ONLY \"Sales\".t USING btree (a)", PgScriptRun.OnEveryPartition(plain, "CREATE INDEX t_ix ON ONLY \"Sales\".t USING btree (a)"));
     }
 }

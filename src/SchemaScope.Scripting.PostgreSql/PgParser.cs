@@ -55,6 +55,25 @@ public static class PgParser
         return r.IsSuccess ? [.. r.Value!.Statements.Select(s => s.Text)] : null;
     }
 
+    /// <summary>
+    /// The functions one expression calls (each FuncCall of its parse tree: schema or null, name folded as the parser
+    /// folds it, and how many arguments it passes), or null when the parser is not used or the text is not exactly one
+    /// expression.
+    /// </summary>
+    internal static IReadOnlyList<(string? Schema, string Name, int Arguments)>? FunctionsCalled(string expression)
+    {
+        if (!Use) return null;
+        var r = Parser.ParseExpression(expression);
+        if (!r.IsSuccess || r.Value is null) return null;
+        var calls = new List<(string?, string, int)>();
+        r.Value.Walk(new NodeVisitor().On<FuncCall>((call, _) =>
+        {
+            var parts = call.Funcname.Select(n => n.String?.Sval ?? "").ToList();
+            calls.Add((parts.Count > 1 ? string.Join(".", parts[..^1]) : null, parts.Count > 0 ? parts[^1] : "", call.Args.Count));
+        }));
+        return calls;
+    }
+
     /// <summary>Whether to use the parser for this run.</summary>
     internal static bool Use => Available && !ForceUnavailable;
 }

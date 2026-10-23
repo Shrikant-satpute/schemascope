@@ -24,6 +24,13 @@ public sealed class ColumnInfo
     /// <summary>PostgreSQL identity columns: "ALWAYS" or "BY DEFAULT". Null for SQL Server, whose IDENTITY has one kind.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? IdentityKind { get; set; }
+
+    /// <summary>
+    /// PostgreSQL identity columns: the identity sequence's limits beyond start and increment, as CREATE writes them
+    /// ("MINVALUE 1 MAXVALUE 2147483647 CACHE 1 NO CYCLE"). Null for SQL Server.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? IdentityOptions { get; set; }
 }
 
 public sealed class IndexColumnInfo

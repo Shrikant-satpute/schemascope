@@ -105,8 +105,9 @@ public sealed class PgEndToEndTests(PgServer pg)
             Assert.True(!outcome.TryGetProperty("planId", out var planId) || planId.ValueKind == JsonValueKind.Null);
             var path = outcome.GetProperty("path").GetString()!;
             Assert.True(File.Exists(Path.Combine(path, "RUN.ps1")));
-            Assert.Contains("CREATE OR REPLACE VIEW \"app\".\"v_missing\"",
-                string.Concat(Directory.EnumerateFiles(Path.Combine(path, "03_missing", "objects")).Select(File.ReadAllText)));
+            var missing = string.Concat(Directory.EnumerateFiles(Path.Combine(path, "03_missing", "objects")).Select(File.ReadAllText));
+            Assert.Contains("CREATE VIEW \"app\".\"v_missing\"", missing);
+            Assert.DoesNotContain("OR REPLACE", missing);   // 03 creates, never replaces
             Assert.All(Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories), f => Assert.DoesNotContain(pg.Password, File.ReadAllText(f)));
 
             // one object: a missing view, through pg_depend and the same generator
@@ -118,7 +119,8 @@ public sealed class PgEndToEndTests(PgServer pg)
             var single = Body(await one.Content.ReadAsStringAsync());
             Assert.True(single.GetProperty("success").GetBoolean(), single.GetRawText());
             var script = single.GetProperty("script").GetString()!;
-            Assert.Contains("CREATE OR REPLACE VIEW \"app\".\"v_missing\"", script);
+            Assert.Contains("CREATE VIEW \"app\".\"v_missing\"", script);
+            Assert.DoesNotContain("OR REPLACE", script);
             Assert.DoesNotContain("\nGO", script);
             Assert.Single(single.GetProperty("parts").EnumerateArray());
             // object scripts go to the app's own scratch folder: leave nothing of this test there

@@ -96,15 +96,66 @@ public partial class PgTargetProbes(string label, string connectionString, int t
     }
 
     /// <summary>
-    /// Rows a CHECK would refuse. Only an expression that names no user object is run on the target: a function, an
-    /// operator or a domain's own check could do anything, and READ ONLY does not stop it reaching another server.
+    /// Rows a CHECK would refuse. The expression is the source's and runs once per row of the target, so it is run only
+    /// when it names no user object (a function, an operator or a domain's own check could do anything, and READ ONLY
+    /// does not stop it reaching another server) and every function it calls is IMMUTABLE on the target. PostgreSQL
+    /// does not require a CHECK to be immutable, and some built-ins act even inside a READ ONLY transaction
+    /// (pg_cancel_backend, pg_advisory_lock...): such a check is not checked, never run.
     /// </summary>
-    public Task<ProbeCount> CheckViolationsAsync(string table, string check, string expression, CancellationToken ct)
+    public async Task<ProbeCount> CheckViolationsAsync(string table, string check, string expression, CancellationToken ct)
     {
         var what = $"rows of {table} that check {check} refuses";
-        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
-        if (NamesAnObject(expression)) return NotRun(what, "the check names a function, operator or type, which is not run on the target");
-        return CountAsync(what, $"SELECT count(*) FROM {table} WHERE NOT ({expression})", ct);
+        if (!CheckExistingData) return new ProbeCount(null, DataOff);
+        if (NamesAnObject(expression)) return await NotRun(what, "the check names a function, operator or type, which is not run on the target");
+        if (PgParser.FunctionsCalled(expression) is not { } calls)
+            return await NotRun(what, "the check could not be parsed to see which functions it calls, so it is not run on the target");
+        if (calls.Any(c => c.Schema is not null && c.Schema != "pg_catalog"))
+            return await NotRun(what, "the check names a function, operator or type, which is not run on the target");
+        if (calls.Count > 0)
+        {
+            if (await NotImmutableAsync(calls.Select(c => c.Name).ToArray(), calls.Select(c => c.Arguments).ToArray(), ct) is not { } volatileOnes)
+                return await NotRun(what, "whether the functions it calls are IMMUTABLE could not be looked up on the target, so it is not run");
+            if (volatileOnes.Count > 0)
+                return await NotRun(what, $"it calls {string.Join(", ", volatileOnes)}, which {(volatileOnes.Count == 1 ? "is" : "are")} not IMMUTABLE on the target " +
+                                          "and could act on the server, so it is not run there");
+        }
+        return await CountAsync(what, $"SELECT count(*) FROM {table} WHERE NOT ({expression})", ct);
+    }
+
+    /// <summary>
+    /// Of the calls <paramref name="names"/> with <paramref name="arguments"/> (unqualified, so resolved in pg_catalog
+    /// under the probes' search_path), the functions the target does not have, or has an overload of that takes that
+    /// many arguments and is not IMMUTABLE (whichever overload PostgreSQL picks, it is then immutable); null when that
+    /// could not be asked.
+    /// </summary>
+    private async Task<List<string>?> NotImmutableAsync(string[] names, int[] arguments, CancellationToken ct)
+    {
+        var conn = await ConnectAsync(ct);
+        if (conn is null) return null;
+        try
+        {
+            await using var tx = await conn.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+            await using (var setup = new NpgsqlCommand(PgSchemaReader.SessionSetup(timeoutSeconds), conn, tx)) await setup.ExecuteNonQueryAsync(ct);
+            await using var cmd = new NpgsqlCommand("""
+                WITH f(name, n) AS (SELECT * FROM unnest($1::text[], $2::int[])),
+                c AS (SELECT f.name, p.provolatile FROM f JOIN pg_proc p ON p.pronamespace = 'pg_catalog'::regnamespace AND p.proname = f.name
+                      AND (f.n BETWEEN p.pronargs - p.pronargdefaults AND p.pronargs OR (p.provariadic <> 0 AND f.n >= p.pronargs - 1)))
+                SELECT DISTINCT f.name FROM f
+                WHERE NOT EXISTS (SELECT 1 FROM c WHERE c.name = f.name) OR EXISTS (SELECT 1 FROM c WHERE c.name = f.name AND c.provolatile <> 'i')
+                ORDER BY 1
+                """, conn, tx);
+            cmd.Parameters.AddWithValue(names);
+            cmd.Parameters.AddWithValue(arguments);
+            var found = new List<string>();
+            await using (var r = await cmd.ExecuteReaderAsync(ct))
+                while (await r.ReadAsync(ct)) found.Add(r.GetString(0));
+            await tx.RollbackAsync(ct);
+            return found;
+        }
+        catch (Exception ex) when (Failed(ex, ct))
+        {
+            return null;
+        }
     }
 
     /// <summary>

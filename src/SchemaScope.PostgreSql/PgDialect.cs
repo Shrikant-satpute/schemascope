@@ -172,7 +172,8 @@ public static class PgCanonicalWriter
         if (c.IsIdentity)
         {
             sb.Append($" GENERATED {c.IdentityKind} AS IDENTITY");
-            if (!opt.IgnoreIdentitySeed) sb.Append($" (START WITH {c.IdentitySeed} INCREMENT BY {c.IdentityIncrement})");
+            if (!opt.IgnoreIdentitySeed)
+                sb.Append($" (START WITH {c.IdentitySeed} INCREMENT BY {c.IdentityIncrement}{(c.IdentityOptions is { } limits ? " " + limits : "")})");
         }
 
         if (c.IsComputed) sb.Append($" GENERATED ALWAYS AS ({c.ComputedDefinition}) {(c.IsPersisted ? "STORED" : "VIRTUAL")}");

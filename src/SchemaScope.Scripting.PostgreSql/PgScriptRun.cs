@@ -239,8 +239,13 @@ internal sealed partial class PgScriptRun
                 continue;
             }
 
-            // a generated column reads the others: after the plain ones
-            foreach (var c in newCols.Where(c => !c.IsComputed).Concat(newCols.Where(c => c.IsComputed)))
+            // the source's order; a generated column moves only behind a new column it reads that comes after it
+            var edges = new List<(int, int)>();
+            for (var g = 0; g < newCols.Count; g++)
+                if (newCols[g].IsComputed)
+                    for (var n = 0; n < newCols.Count; n++)
+                        if (n != g && PgDdl.MentionsColumn(newCols[g].ComputedDefinition, newCols[n].Name)) edges.Add((n, g));
+            foreach (var c in PlanOrder.StableOrder(newCols.Count, edges, []).Select(i => newCols[i]))
             {
                 var def = DefaultOf(src, c.Name);
                 if (!c.IsNullable && def is null && !c.IsIdentity && !c.IsComputed)
@@ -285,8 +290,16 @@ internal sealed partial class PgScriptRun
         sb.Append(PgDdl.Q(c.Name)).Append(' ').Append(c.DataType);
         if (!string.IsNullOrEmpty(c.Collation)) sb.Append(" COLLATE ").Append(c.Collation);
         if (c.IsIdentity)
-            sb.Append($" GENERATED {c.IdentityKind ?? "BY DEFAULT"} AS IDENTITY")
-              .Append(c.IdentitySeed is { } seed && c.IdentityIncrement is { } inc ? $" (START WITH {seed} INCREMENT BY {inc})" : "");
+        {
+            // the identity sequence's start, step and limits, so the target's sequence is the source's
+            var options = string.Join(" ", new[]
+            {
+                c.IdentitySeed is { } seed ? $"START WITH {seed}" : null,
+                c.IdentityIncrement is { } inc ? $"INCREMENT BY {inc}" : null,
+                c.IdentityOptions,
+            }.OfType<string>());
+            sb.Append($" GENERATED {c.IdentityKind ?? "BY DEFAULT"} AS IDENTITY").Append(options.Length > 0 ? $" ({options})" : "");
+        }
         if (c.IsComputed) sb.Append($" GENERATED ALWAYS AS ({c.ComputedDefinition}) {(c.IsPersisted ? "STORED" : "VIRTUAL")}");
         if (!c.IsNullable && !c.IsIdentity) sb.Append(" NOT NULL");
         if (!c.IsComputed && DefaultOf(table, c.Name) is { } def) sb.Append(" DEFAULT ").Append(def.Definition);
@@ -316,6 +329,10 @@ internal sealed partial class PgScriptRun
                 if (c.IsIdentity != tc.IsIdentity || c.IdentityKind != tc.IdentityKind)
                     review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
                         $"identity differs (source: {Identity(c)}, target: {Identity(tc)}); changing it is not scripted", ColumnTypes.Name);
+                else if (c.IsIdentity && !compare.IgnoreIdentitySeed && IdentitySequence(c) != IdentitySequence(tc))
+                    review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
+                        $"its identity sequence differs (source: {IdentitySequence(c)}; target: {IdentitySequence(tc)}); changing it is not scripted",
+                        ColumnTypes.Name);
                 if (c.IsComputed != tc.IsComputed || c.IsPersisted != tc.IsPersisted ||
                     !string.Equals(c.ComputedDefinition, tc.ComputedDefinition, StringComparison.Ordinal))
                     review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
@@ -369,6 +386,8 @@ internal sealed partial class PgScriptRun
     }
 
     private static string Identity(ColumnInfo c) => c.IsIdentity ? $"GENERATED {c.IdentityKind} AS IDENTITY" : "none";
+
+    private static string IdentitySequence(ColumnInfo c) => $"START WITH {c.IdentitySeed} INCREMENT BY {c.IdentityIncrement} {c.IdentityOptions}".TrimEnd();
 
     /// <summary>The target objects whose definition reads <paramref name="column"/> of <paramref name="table"/> (pg_depend, column level).</summary>
     private List<string> ReadersOf(DbObject table, string column)
@@ -443,7 +462,8 @@ internal sealed partial class PgScriptRun
         {
             if (IsChild(src))
             {
-                if (KeyText(src) != KeyText(tgt))
+                var indexes = !IsPartition(src) || !Selected(ScriptSection.Indexes);   // else 06 looks at a partition's plain indexes
+                if (KeyText(src, indexes) != KeyText(tgt, indexes))
                     review.Hold(ReviewLog.NotAppliedConstraints, "table", src.FullName, null, ChildReason, Constraints.Name);
                 continue;
             }
@@ -481,8 +501,8 @@ internal sealed partial class PgScriptRun
     private const string TargetOnly =
         "only the target has it; removing it can change what the database accepts or lose data, and 11_destructive is not available for PostgreSQL in this version";
 
-    private static string KeyText(DbObject o) => string.Join("\n",
-        o.Indexes.Select(i => i.Name + i.Definition).Concat(o.Constraints.Select(c => c.Name + c.Definition)).Concat(o.ForeignKeys.Select(f => f.Name + f.Definition)).Order(StringComparer.Ordinal));
+    private static string KeyText(DbObject o, bool indexes = true) => string.Join("\n",
+        o.Indexes.Where(i => indexes || IsKey(i)).Select(i => i.Name + i.Definition).Concat(o.Constraints.Select(c => c.Name + c.Definition)).Concat(o.ForeignKeys.Select(f => f.Name + f.Definition)).Order(StringComparer.Ordinal));
 
     /// <summary>A foreign key's definition without NOT VALID (its trust is compared on its own).</summary>
     private static string Strip(string? def)
@@ -491,10 +511,12 @@ internal sealed partial class PgScriptRun
         return d.EndsWith(" NOT VALID", StringComparison.Ordinal) ? d[..^" NOT VALID".Length] : d;
     }
 
-    private void Validate(DbObject table, string constraint)
+    /// <summary>A VALIDATE file for the end of 05, or with <paramref name="after06"/> for the end of 06.</summary>
+    private void Validate(DbObject table, string constraint, bool after06 = false)
     {
         var sql = $"ALTER TABLE {PgDdl.Q(table)} VALIDATE CONSTRAINT {PgDdl.Q(constraint)};\n";
-        validations.Add(new PgFile($"validate_{table.Schema}.{table.Name}.{constraint}", Header(Constraints, "validate", $"{table.FullName}.{constraint}") +
+        (after06 ? indexValidations : validations).Add(new PgFile($"validate_{table.Schema}.{table.Name}.{constraint}",
+            Header(after06 ? Indexes : Constraints, "validate", $"{table.FullName}.{constraint}") +
             "-- Checks the rows that were there before; new rows were already checked from the moment it was added.\n" + sql,
             new ObjectName(table.Schema, table.Name)));
     }
@@ -662,7 +684,14 @@ internal sealed partial class PgScriptRun
             review.Hold(ReviewLog.NotAppliedDestructive, "key", tkey.Name, src.FullName, TargetOnly, Constraints.Name);
     }
 
-    private async Task PlanForeignKeyAsync(DbObject src, ForeignKeyInfo fk, bool isNew)
+    /// <summary>Foreign keys whose referenced columns only a unique index of 06 covers: planned again at the end of 06.</summary>
+    private readonly List<(DbObject Src, ForeignKeyInfo Fk, bool NewTable)> afterIndexes = [];
+    /// <summary>VALIDATE files for the foreign keys 06 adds, after them.</summary>
+    private readonly List<PgFile> indexValidations = [];
+    /// <summary>Table key -> column sets of the plain unique indexes 06 adds.</summary>
+    private readonly Dictionary<string, List<HashSet<string>>> addedUnique = new(StringComparer.Ordinal);
+
+    private async Task PlanForeignKeyAsync(DbObject src, ForeignKeyInfo fk, bool isNew, bool after06 = false)
     {
         var refKey = KeyOf(DbObjectType.Table, fk.ReferencedSchema, fk.ReferencedTable);
         var refName = $"{fk.ReferencedSchema}.{fk.ReferencedTable}";
@@ -680,23 +709,35 @@ internal sealed partial class PgScriptRun
             return;
         }
         var refCols = fk.ReferencedColumns.ToHashSet(StringComparer.Ordinal);
-        bool Unique(DbObject table) =>
-            table.Indexes.Any(i => (i.IsPrimaryKey || i.IsUniqueConstraint || (i.IsUnique && i.FilterDefinition is null)) &&
-                                   i.KeyColumns.Count == refCols.Count && i.KeyColumns.All(k => refCols.Contains(k.Name)));
-        var keyed = created.Contains(refKey) ||
+        bool On(IndexInfo i) => i.KeyColumns.Count == refCols.Count && i.KeyColumns.All(k => refCols.Contains(k.Name));
+        bool Unique(DbObject table) => table.Indexes.Any(i => (i.IsPrimaryKey || i.IsUniqueConstraint || (i.IsUnique && i.FilterDefinition is null)) && On(i));
+        // a table 03 creates has its primary and unique keys at once; its unique indexes come in 06
+        var keyed = (created.Contains(refKey) && s.TryGetValue(refKey, out var refSrc) && refSrc.Indexes.Any(i => (i.IsPrimaryKey || i.IsUniqueConstraint) && On(i))) ||
                     (t.TryGetValue(refKey, out var refTgt) && Unique(refTgt)) ||
-                    (addedKeys.TryGetValue(refKey, out var keys) && keys.Any(k => k.SetEquals(refCols)));
+                    (addedKeys.TryGetValue(refKey, out var keys) && keys.Any(k => k.SetEquals(refCols))) ||
+                    (after06 && addedUnique.TryGetValue(refKey, out var unique) && unique.Any(k => k.SetEquals(refCols)));
         if (!keyed)
         {
+            var index = s.GetValueOrDefault(refKey)?.Indexes.FirstOrDefault(i => !IsKey(i) && i.IsUnique && i.FilterDefinition is null && On(i));
+            if (index is not null && !after06 && Selected(ScriptSection.Indexes))
+            {
+                afterIndexes.Add((src, fk, isNew));   // planned again once 06 has added the index
+                return;
+            }
             review.Hold(ReviewLog.NotAppliedConstraints, "foreignkey", fk.Name, src.FullName,
-                $"on the target, {refName} has no primary or unique key on ({string.Join(", ", fk.ReferencedColumns)}) and this run does not add one", Constraints.Name);
+                index is null
+                    ? $"on the target, {refName} has no primary or unique key on ({string.Join(", ", fk.ReferencedColumns)}) and this run does not add one"
+                    : $"on the target, {refName} has no primary or unique key on ({string.Join(", ", fk.ReferencedColumns)}); the source's unique index {index.Name} " +
+                      $"would be one, and {(Selected(ScriptSection.Indexes) ? "06_indexes does not add it in this run" : "06_indexes is not selected")}",
+                after06 ? Indexes.Name : Constraints.Name);
             return;
         }
+        var folder = after06 ? Indexes : Constraints;
 
         var def = Strip(fk.Definition);
         if (isNew)
         {
-            Constraints.Files.Add(new PgFile($"foreignkey_{src.Schema}.{src.Name}.{fk.Name}", Header(Constraints, "foreign key", $"{src.FullName}.{fk.Name}") +
+            folder.Files.Add(new PgFile($"foreignkey_{src.Schema}.{src.Name}.{fk.Name}", Header(folder, "foreign key", $"{src.FullName}.{fk.Name}") +
                 $"ALTER TABLE {PgDdl.Q(src)} ADD CONSTRAINT {PgDdl.Q(fk.Name)} {def}{(fk.IsNotTrusted ? " NOT VALID" : "")};\n", new ObjectName(src.Schema, src.Name)));
             return;
         }
@@ -709,14 +750,14 @@ internal sealed partial class PgScriptRun
             if (orphans.Count > 0)
             {
                 review.Hold(ReviewLog.NotAppliedConstraints, "foreignkey", fk.Name, src.FullName,
-                    $"{orphans.Count:N0} existing row(s) have no match in {refName}; fix the data first", Constraints.Name);
+                    $"{orphans.Count:N0} existing row(s) have no match in {refName}; fix the data first", folder.Name);
                 return;
             }
         }
-        Constraints.Files.Add(new PgFile($"foreignkey_{src.Schema}.{src.Name}.{fk.Name}", Header(Constraints, "foreign key", $"{src.FullName}.{fk.Name}") +
+        folder.Files.Add(new PgFile($"foreignkey_{src.Schema}.{src.Name}.{fk.Name}", Header(folder, "foreign key", $"{src.FullName}.{fk.Name}") +
             "-- Added NOT VALID: checks new rows at once, without a long lock; the existing rows are checked by VALIDATE in a later file.\n" +
             $"ALTER TABLE {PgDdl.Q(src)} ADD CONSTRAINT {PgDdl.Q(fk.Name)} {def} NOT VALID;\n", new ObjectName(src.Schema, src.Name)));
-        if (!fk.IsNotTrusted) Validate(src, fk.Name);
+        if (!fk.IsNotTrusted) Validate(src, fk.Name, after06);
     }
 
     // ------------------------------------------------------------------ 06_indexes
@@ -727,9 +768,15 @@ internal sealed partial class PgScriptRun
             .Concat(Src.Objects.Where(o => o.Type == DbObjectType.Table && created.Contains(o.Key))
                 .OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal)
                 .Select(o => (Src: o, Tgt: (DbObject?)null)));
+        var partitions = new List<(DbObject Src, DbObject Tgt)>();
         foreach (var (src, tgt) in tables)
         {
-            if (IsChild(src) && tgt is not null) continue;   // held with the table's keys in 05
+            if (IsChild(src) && tgt is not null)
+            {
+                // a partition's plain indexes come from its parent's: looked at once every parent's are planned; an inheritance child's are held in 05
+                if (IsPartition(src)) partitions.Add((src, tgt));
+                continue;
+            }
             foreach (var ix in src.Indexes.Where(i => !IsKey(i)).OrderBy(i => i.Name, StringComparer.Ordinal))
             {
                 var tix = tgt?.Indexes.FirstOrDefault(x => !IsKey(x) && x.Name == ix.Name);
@@ -776,13 +823,96 @@ internal sealed partial class PgScriptRun
                             Indexes.Name);
                 }
                 Indexes.Files.Add(new PgFile($"index_{src.Schema}.{src.Name}.{ix.Name}", Header(Indexes, "index", $"{src.FullName}.{ix.Name}") +
-                    PgDdl.Statement(ix.Definition ?? ""), new ObjectName(src.Schema, src.Name)));
+                    PgDdl.Statement(OnEveryPartition(src, ix.Definition ?? "")), new ObjectName(src.Schema, src.Name)));
                 Names(src.Schema).Add(ix.Name);
+                if (src.Properties.ContainsKey("partitionBy")) (onPartitions.TryGetValue(src.Key, out var built) ? built : onPartitions[src.Key] = []).Add(ix);
+                if (ix.IsUnique && ix.FilterDefinition is null && ix.KeyColumns.All(k => src.Columns.Any(c => c.Name == k.Name)))
+                    (addedUnique.TryGetValue(src.Key, out var sets) ? sets : addedUnique[src.Key] = []).Add(ix.KeyColumns.Select(k => k.Name).ToHashSet(StringComparer.Ordinal));
             }
             if (tgt is not null)
                 foreach (var tix in tgt.Indexes.Where(x => !IsKey(x) && src.Indexes.All(i => IsKey(i) || i.Name != x.Name)))
                     review.Hold(ReviewLog.NotAppliedDestructive, "index", tix.Name, src.FullName, TargetOnly, Indexes.Name);
         }
+        foreach (var (src, tgt) in partitions) PlanPartitionIndexes(src, tgt);
+
+        // the foreign keys whose referenced columns only a unique index of this folder covers, then their VALIDATE
+        foreach (var (src, fk, isNew) in afterIndexes) await PlanForeignKeyAsync(src, fk, isNew, after06: true);
+        Indexes.Files.AddRange(indexValidations);
+    }
+
+    /// <summary>Parent table key -> the indexes 06 writes on it that PostgreSQL also builds on each of its partitions.</summary>
+    private readonly Dictionary<string, List<IndexInfo>> onPartitions = new(StringComparer.Ordinal);
+
+    private static bool IsPartition(DbObject table) => table.Properties.ContainsKey("partitionOf");
+
+    /// <summary>
+    /// pg_get_indexdef writes an index of a partitioned table as ON ONLY the parent. Built that way it stays invalid and
+    /// no partition gets one; without ONLY, PostgreSQL builds it on every partition (or attaches a matching index a
+    /// partition already has) and the parent's index is valid.
+    /// </summary>
+    internal static string OnEveryPartition(DbObject table, string definition) =>
+        table.Properties.ContainsKey("partitionBy") ? OnOnlyRx().Replace(definition, "${head}", 1) : definition;
+
+    [GeneratedRegex(@"^(?<head>CREATE (?:UNIQUE )?INDEX (?:""(?:[^""]|"""")*""|\S+) ON )ONLY ", RegexOptions.CultureInvariant)]
+    private static partial Regex OnOnlyRx();
+
+    /// <summary>
+    /// A partition's plain indexes: each the source has and the target lacks is fine when it is the copy of a parent's
+    /// index 06 writes, and PostgreSQL will give that copy the source's name; anything else is held with why.
+    /// </summary>
+    private void PlanPartitionIndexes(DbObject src, DbObject tgt)
+    {
+        var parent = Src.Objects.FirstOrDefault(o => o.Type == DbObjectType.Table && $"{PgDdl.Ident(o.Schema)}.{PgDdl.Ident(o.Name)}" == src.Properties["partitionOf"]);
+        var fromParent = parent is not null ? onPartitions.GetValueOrDefault(parent.Key) ?? [] : [];
+        foreach (var ix in src.Indexes.Where(i => !IsKey(i)).OrderBy(i => i.Name, StringComparer.Ordinal))
+        {
+            var tix = tgt.Indexes.FirstOrDefault(x => !IsKey(x) && x.Name == ix.Name);
+            if (tix is not null)
+            {
+                if (tix.Definition != ix.Definition) review.Hold(ReviewLog.NotAppliedConstraints, "index", ix.Name, src.FullName, ChildReason, Indexes.Name);
+                continue;
+            }
+            var of = fromParent.FirstOrDefault(p => SameShape(p, ix));
+            if (of is null)
+            {
+                review.Hold(ReviewLog.NotAppliedConstraints, "index", ix.Name, src.FullName, ChildReason, Indexes.Name);
+                continue;
+            }
+            // PostgreSQL attaches a matching index the partition already has, or builds one under a name it chooses
+            var name = tgt.Indexes.FirstOrDefault(x => !IsKey(x) && SameShape(x, ix))?.Name ?? ChosenName(src, ix);
+            if (name != ix.Name)
+            {
+                review.Hold(ReviewLog.NotAppliedConstraints, "index", ix.Name, src.FullName,
+                    $"06 builds {parent!.FullName}.{of.Name} on this partition too, but PostgreSQL names that copy {(name is null ? "itself" : name)}, not {ix.Name} as the source does",
+                    Indexes.Name);
+                continue;
+            }
+            Names(src.Schema).Add(name);
+            review.Note(ReviewLog.NotAppliedConstraints, "index", ix.Name, src.FullName,
+                $"built on this partition by 06's index {parent!.FullName}.{of.Name} on its parent", Indexes.Name);
+        }
+        foreach (var tix in tgt.Indexes.Where(x => !IsKey(x) && src.Indexes.All(i => IsKey(i) || i.Name != x.Name)))
+            review.Hold(ReviewLog.NotAppliedDestructive, "index", tix.Name, src.FullName, TargetOnly, Indexes.Name);
+    }
+
+    /// <summary>The same index but for its name and table: uniqueness, then the deparse from USING on (method, columns, INCLUDE, WHERE).</summary>
+    private static bool SameShape(IndexInfo a, IndexInfo b)
+    {
+        static string? Tail(string? def) => def?.IndexOf(" USING ", StringComparison.Ordinal) is int at and >= 0 ? def[at..] : null;
+        return a.IsUnique == b.IsUnique && Tail(a.Definition) is { } tail && tail == Tail(b.Definition);
+    }
+
+    /// <summary>
+    /// The name PostgreSQL gives a partition's copy of its parent's index (ChooseIndexName: table_columns_idx), when it
+    /// can be told for sure: plain columns, a name that fits in 63 bytes and is not taken. Null otherwise.
+    /// </summary>
+    private string? ChosenName(DbObject partition, IndexInfo ix)
+    {
+        var columns = ix.KeyColumns.Select(k => k.Name).Concat(ix.IncludedColumns).ToList();
+        if (columns.Count == 0 || columns.Distinct(StringComparer.Ordinal).Count() != columns.Count ||
+            !columns.All(c => partition.Columns.Any(x => x.Name == c))) return null;
+        var name = $"{partition.Name}_{string.Join("_", columns)}_idx";
+        return Encoding.UTF8.GetByteCount(name) <= 63 && !Names(partition.Schema).Contains(name) ? name : null;
     }
 
     // ------------------------------------------------------------------ helpers

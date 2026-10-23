@@ -137,7 +137,7 @@ public sealed class PgSchemaReader : ISchemaReader
     private sealed record Policy(uint Rel, string Name, bool Permissive, char Command, string[] Roles, string? Using,
         string? WithCheck);
     private sealed record Col(uint Rel, int Num, string Name, string Type, bool NotNull, string Identity, string Generated,
-        string? Default, string? Collation, long? SeqStart, long? SeqIncrement);
+        string? Default, string? Collation, long? SeqStart, long? SeqIncrement, long? SeqMin, long? SeqMax, long? SeqCache, bool? SeqCycle);
     private sealed record Con(uint Rel, uint TypeOid, string Name, char Kind, string Definition, bool Validated,
         string[] Columns, string? RefSchema, string? RefTable, string[] RefColumns, string DeleteAction, string UpdateAction);
     private sealed record Idx(uint Rel, string Name, string Method, bool Unique, string Definition, string? Predicate,
@@ -189,7 +189,8 @@ public sealed class PgSchemaReader : ISchemaReader
         while (await r.ReadAsync(ct))
             raw.Columns.Add(new Col(r.GetFieldValue<uint>(0), r.GetInt16(1), r.GetString(2), r.GetString(3), r.GetBoolean(4),
                 Str(r, 5) ?? "", Str(r, 6) ?? "", Str(r, 7), Str(r, 8),
-                r.IsDBNull(9) ? null : r.GetInt64(9), r.IsDBNull(10) ? null : r.GetInt64(10)));
+                r.IsDBNull(9) ? null : r.GetInt64(9), r.IsDBNull(10) ? null : r.GetInt64(10), r.IsDBNull(11) ? null : r.GetInt64(11),
+                r.IsDBNull(12) ? null : r.GetInt64(12), r.IsDBNull(13) ? null : r.GetInt64(13), r.IsDBNull(14) ? null : r.GetBoolean(14)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -480,6 +481,9 @@ public sealed class PgSchemaReader : ISchemaReader
         IdentityKind = c.Identity switch { "a" => "ALWAYS", "d" => "BY DEFAULT", _ => null },
         IdentitySeed = c.SeqStart?.ToString(),
         IdentityIncrement = c.SeqIncrement?.ToString(),
+        IdentityOptions = c.SeqMin is { } min && c.SeqMax is { } max && c.SeqCache is { } cache
+            ? $"MINVALUE {min} MAXVALUE {max} CACHE {cache} {(c.SeqCycle == true ? "CYCLE" : "NO CYCLE")}"
+            : null,
         // 's' stored; 'v' virtual (PostgreSQL 18)
         IsComputed = c.Generated is "s" or "v",
         IsPersisted = c.Generated == "s",

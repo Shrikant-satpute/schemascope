@@ -87,7 +87,9 @@ public sealed class PgScriptGenerator : IScriptGenerator
             Add(run.ColumnTypes, ScriptSection.ColumnTypes);
             Add(run.Constraints, ScriptSection.Constraints,
                 "Checks and foreign keys on existing tables are added NOT VALID, then validated by later files of this folder.");
-            Add(run.Indexes, ScriptSection.Indexes, "No CONCURRENTLY: each index is built inside its file's transaction.");
+            Add(run.Indexes, ScriptSection.Indexes, run.Indexes.Files.Any(f => f.Name.StartsWith("foreignkey_", StringComparison.Ordinal))
+                ? ["No CONCURRENTLY: each index is built inside its file's transaction.", "A foreign key that needs a unique index of this folder comes after the indexes."]
+                : ["No CONCURRENTLY: each index is built inside its file's transaction."]);
             Add(run.Triggers, ScriptSection.Triggers, "A trigger's file also creates its trigger function when the target lacks it.");
             if (options.Sections.Contains(ScriptSection.Formatting))
             {
@@ -210,10 +212,10 @@ public sealed class PgScriptGenerator : IScriptGenerator
     {
         [ColumnsFolder] = "Adds columns the source has on tables both sides have: only those that are nullable or have a default (or are identity or generated). A NOT NULL column with no default cannot be added to a table that has rows - see 99_review.",
         [TableTypesFolder] = "Not applicable: PostgreSQL has no table types.",
-        [MissingFolder] = "Creates the schemas, enum, domain and composite types, sequences, tables, views, materialized views, functions, procedures and aggregates the target lacks, in pg_depend order. Code is copied from the source's pg_get_*def text and is not compile-checked. Extensions are only noted in 99_review. No triggers (see 07), no foreign keys (05) and no indexes (06).",
+        [MissingFolder] = "Creates the schemas, enum, domain and composite types, sequences, tables, views, materialized views, functions, procedures and aggregates the target lacks, in pg_depend order. Code is copied from the source's pg_get_*def text and is not compile-checked; it is created with plain CREATE, never OR REPLACE, so a file fails and changes nothing when the target already has that object. Extensions are only noted in 99_review. No triggers (see 07), no foreign keys (05) and no indexes (06).",
         [ColumnTypesFolder] = "Widens columns (longer varchar, numeric with more digits, int to bigint) and relaxes NOT NULL to NULL where the source does. Never narrows, never tightens; held while a view or similar reads the column.",
         [ConstraintsFolder] = "Adds defaults, checks, primary and unique keys and foreign keys the target lacks. On an existing table a check or foreign key is added NOT VALID (new rows are checked at once, without a long lock) and validated by a later file.",
-        [IndexesFolder] = "Adds indexes the target lacks, without CONCURRENTLY (it cannot run inside the file's transaction), so writes to the table wait while each one builds.",
+        [IndexesFolder] = "Adds indexes the target lacks, without CONCURRENTLY (it cannot run inside the file's transaction), so writes to the table wait while each one builds. An index of a partitioned table is built on every partition. A foreign key whose referenced columns only a unique index of this folder covers comes after the indexes.",
         [TriggersFolder] = "Creates source triggers the target lacks, each with its trigger function when the target lacks that too. A trigger changes every write to its table, so this folder is never run by RUN.ps1.",
         [FormattingModulesFolder] = "Not applicable: PostgreSQL keeps each body as written.",
         [FormattingTablesFolder] = "Not applicable: PostgreSQL names are exact.",

@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="SchemaScope.Engines.Tests" />
+    <InternalsVisibleTo Include="SchemaScope.Scripting.PostgreSql" />
   </ItemGroup>
 
   <ItemGroup>

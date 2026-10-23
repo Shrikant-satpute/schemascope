@@ -28,6 +28,7 @@
     <ProjectReference Include="..\SchemaScope.SqlServer\SchemaScope.SqlServer.csproj" />
     <ProjectReference Include="..\SchemaScope.PostgreSql\SchemaScope.PostgreSql.csproj" />
     <ProjectReference Include="..\SchemaScope.Scripting\SchemaScope.Scripting.csproj" />
+    <ProjectReference Include="..\SchemaScope.Scripting.PostgreSql\SchemaScope.Scripting.PostgreSql.csproj" />
   </ItemGroup>
 
   <ItemGroup>

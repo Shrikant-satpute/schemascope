@@ -276,11 +276,13 @@ public class EngineCatalogTests
     }
 
     [Fact]
-    public void Postgres_offers_compare_only()
+    public void Postgres_offers_compare_and_scripts_but_not_apply()
     {
         var p = new PgEngineProvider();
         Assert.True(p.Capabilities.Preview);
-        Assert.Equal([EngineFeature.Compare], p.Capabilities.Features);
+        Assert.Equal([EngineFeature.Compare, EngineFeature.Scripts, EngineFeature.ObjectScripts], p.Capabilities.Features.Order());
+        Assert.DoesNotContain(EngineFeature.Apply, p.Capabilities.Features);
+        Assert.DoesNotContain(EngineFeature.Destructive, p.Capabilities.Features);
         Assert.Equal("postgres", p.Connections.BrowseDatabase);
         Assert.IsType<PgSchemaReader>(p.CreateReader());
         Assert.Equal(63, p.Capabilities.MaxIdentifierBytes);

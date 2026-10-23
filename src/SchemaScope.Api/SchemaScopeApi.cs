@@ -10,6 +10,7 @@ using SchemaScope.Core.Model;
 using SchemaScope.Core.Storage;
 using SchemaScope.PostgreSql;
 using SchemaScope.Scripting;
+using SchemaScope.Scripting.PostgreSql;
 using SchemaScope.SqlServer;
 
 namespace SchemaScope.Api;
@@ -72,7 +73,7 @@ public static class SchemaScopeApi
         // the engines turned on right now (a preview engine only with "Show preview engines"), asked afresh each time
         builder.Services.AddTransient(sp => sp.GetRequiredService<EngineCatalog>().Enabled);
         builder.Services.AddSingleton<IApplyExecutor>(SqlServerApplyExecutor.Instance);
-        builder.Services.AddSingleton<IScriptGeneratorFactory, ScriptGeneratorFactory>();
+        builder.Services.AddSingleton<IScriptGeneratorFactory, EngineScriptGeneratorFactory>();
         builder.Services.AddSingleton<CompareSessionStore>();
         builder.Services.AddSingleton<ScriptProgressStore>();
         builder.Services.AddSingleton<ExportService>();
@@ -811,6 +812,12 @@ public static class SchemaScopeApi
                         ? $"Scripts are not available for {ConnectionRules.NameOf(source.Engine)} in this version."
                         : $"Scripts are not available for {source.Engine} to {target.Engine} in this version."
                 });
+            // the engine is the session's: an engine without 11_destructive refuses it whatever the UI sent
+            if (options.IncludeDestructive && !Engines.Supports(target.Engine, EngineFeature.Destructive))
+                return Results.BadRequest(new
+                {
+                    message = $"Changes that can lose data are not available for {ConnectionRules.NameOf(target.Engine)} in this version."
+                });
 
             ScriptOutcome outcome;
             using var progress = request.ProgressId is { } progressId ? progressStore.Track(progressId) : null;
@@ -818,7 +825,7 @@ public static class SchemaScopeApi
             {
                 outcome = await generator.GenerateAsync(new ScriptRequestContext(source, target, session.Source,
                     index < session.Targets.Count ? session.Targets[index] : null, result, index, options,
-                    FormattingCandidates(result, index), DifferentCandidates(result, index)), ct, progress);
+                    FormattingCandidates(result, index), DifferentCandidates(result, index), session.Options), ct, progress);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -874,6 +881,7 @@ public static class SchemaScopeApi
             int? index = int.TryParse(targetIndex, out var i) ? i : null;
             if (ObjectScripts.Check(session, key, index, out var row) is { } problem) return Bad(problem);
             if (ObjectScriptEngineProblem(session, index!.Value, engines) is { } notHere) return Bad(notHere);
+            if (IsPostgres(session, index!.Value)) return Results.Ok(PgObjectScripts.Dependencies(session, row!, index!.Value));
             return Results.Ok(ObjectScripts.Dependencies(session, row!, index!.Value));
         });
 
@@ -912,9 +920,12 @@ public static class SchemaScopeApi
 
             var result = session.Result!;
             var index = request.TargetIndex!.Value;
-            var plan = ObjectScripts.Plan(result, row!, index, out var why);
+            // PostgreSQL has its own single-object path (R2b); SQL Server's below is unchanged
+            var postgres = IsPostgres(session, index);
+            var plan = postgres ? PgObjectScripts.Plan(result, row!, index, out var why) : ObjectScripts.Plan(result, row!, index, out why);
             if (plan is "identical" or "unavailable") return Bad(why!);
-            if (plan == "extra") return Results.Ok(ObjectScripts.ExtraOutcome(row!, result.Targets[index].Label));
+            if (plan == "extra")
+                return Results.Ok(postgres ? PgObjectScripts.ExtraOutcome(row!, result.Targets[index].Label) : ObjectScripts.ExtraOutcome(row!, result.Targets[index].Label));
             if (ObjectScripts.CheckIncludes(session, row!, index, request.IncludeDependencies, out var included) is { } badDeps)
                 return Bad(badDeps);
             if (session.SourceConnection is null || index >= session.TargetConnections.Count)
@@ -927,9 +938,12 @@ public static class SchemaScopeApi
             using var progress = request.ProgressId is { } id ? progressStore.Track(id) : null;
             try
             {
-                outcome = await ObjectScripts.RunAsync(session, row!, index, included, source, target,
-                    FormattingCandidates(result, index), DifferentCandidates(result, index),
-                    new ScriptGenerator(), ObjectScripts.ScratchRoot, progress, ct);
+                outcome = postgres
+                    ? await PgObjectScripts.RunAsync(session, row!, index, included, source, target,
+                        new PgScriptGenerator(), ObjectScripts.ScratchRoot, progress, ct)
+                    : await ObjectScripts.RunAsync(session, row!, index, included, source, target,
+                        FormattingCandidates(result, index), DifferentCandidates(result, index),
+                        new ScriptGenerator(), ObjectScripts.ScratchRoot, progress, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -953,6 +967,10 @@ public static class SchemaScopeApi
             return Results.Ok(outcome);
         });
     }
+
+    /// <summary>True when this run's target is PostgreSQL (the session's engine, never the request's); call after <c>ObjectScriptEngineProblem</c>.</summary>
+    private static bool IsPostgres(CompareSession session, int index) =>
+        (index < session.TargetConnections.Count ? session.TargetConnections[index].Engine : session.Result!.Targets[index].Engine) == DatabaseEngine.PostgreSql;
 
     /// <summary>
     /// Null when this run's source and target are one engine that has single-object scripts (SQL Server), else the
@@ -1132,6 +1150,9 @@ public static class SchemaScopeApi
         WriteMode writeMode, ApplyPlanStore plans, SchemaScopeStore store)
     {
         if (generated is null || !complete) return PlanOffer.None;
+        // nothing to offer on an engine this version cannot apply to (PostgreSQL until R3): no Apply button, not even a protected one
+        if (index < session.TargetConnections.Count && !Engines.Supports(session.TargetConnections[index].Engine, EngineFeature.Apply))
+            return PlanOffer.None;
         List<PlanFile> files;
         List<PlanSection> sections;
         try
@@ -1145,7 +1166,9 @@ public static class SchemaScopeApi
 
         var target = ApplyTargetOf(session, index, store);
         string? planId = null;
-        if (writeMode.Enabled && files.Count > 0 && !target.Protected && !IsSource(session, index))
+        // and never a plan for such an engine, whatever the session holds
+        if (writeMode.Enabled && files.Count > 0 && !target.Protected && !IsSource(session, index) &&
+            Engines.Supports(target.Engine, EngineFeature.Apply))
             planId = plans.Add(new ApplyPlan { RunId = session.Id, TargetIndex = index, Files = files, Sections = sections }).Id;
         return new PlanOffer(planId, target, sections);
     }

@@ -41,10 +41,10 @@ internal static class PgCatalogQueries
 
     /// <summary>
     /// Every catalog set in one round trip, in this order: schemas, relations, columns, constraints, indexes,
-    /// routines, triggers, sequences, types, extensions, row security policies.
+    /// routines, triggers, sequences, types, extensions, row security policies, dependencies.
     /// </summary>
     public static string Catalog(int versionNum) => string.Join("\n", Schemas, Relations, Columns(versionNum), Constraints,
-        Indexes, Routines, Triggers, Sequences, Types, Extensions, Policies);
+        Indexes, Routines, Triggers, Sequences, Types, Extensions, Policies, Dependencies);
 
     private static readonly string Schemas = $"""
         SELECT n.nspname, pg_get_userbyid(n.nspowner)
@@ -75,8 +75,8 @@ internal static class PgCatalogQueries
         """;
 
     /// <summary>
-    /// Columns of tables and of standalone composite types (relkind 'c'). attgenerated: 's' stored, and from
-    /// PostgreSQL 18 'v' virtual. An identity column's sequence hangs off it with deptype 'i'.
+    /// Columns of tables, of standalone composite types (relkind 'c') and of views (what a view returns). attgenerated:
+    /// 's' stored, and from PostgreSQL 18 'v' virtual. An identity column's sequence hangs off it with deptype 'i'.
     /// </summary>
     private static string Columns(int versionNum) => $"""
         SELECT a.attrelid, a.attnum, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
@@ -96,7 +96,7 @@ internal static class PgCatalogQueries
         LEFT JOIN pg_depend sd ON sd.refclassid = 'pg_class'::regclass AND sd.refobjid = a.attrelid
              AND sd.refobjsubid = a.attnum AND sd.classid = 'pg_class'::regclass AND sd.deptype = 'i' AND a.attidentity <> ''
         LEFT JOIN pg_sequence s ON s.seqrelid = sd.objid
-        WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'c') AND {UserSchema("n")}
+        WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'c', 'v', 'm') AND {UserSchema("n")}
         ORDER BY a.attrelid, a.attnum;
         """;
 
@@ -162,7 +162,7 @@ internal static class PgCatalogQueries
 
     // user triggers only: not the internal ones behind foreign keys, not the clones a partition gets from its parent
     private static readonly string Triggers = $"""
-        SELECT n.nspname, c.relname, t.tgname, pg_get_triggerdef(t.oid, true), t.tgenabled::text
+        SELECT n.nspname, c.relname, t.tgname, pg_get_triggerdef(t.oid, true), t.tgenabled::text, t.oid
         FROM pg_trigger t
         JOIN pg_class c ON c.oid = t.tgrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -180,7 +180,8 @@ internal static class PgCatalogQueries
                 JOIN pg_attribute ra ON ra.attrelid = d.refobjid AND ra.attnum = d.refobjsubid
                 WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.refclassid = 'pg_class'::regclass
                   AND d.deptype = 'a'
-                LIMIT 1)
+                LIMIT 1),
+               c.oid
         FROM pg_sequence s
         JOIN pg_class c ON c.oid = s.seqrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -222,5 +223,57 @@ internal static class PgCatalogQueries
         JOIN pg_class c ON c.oid = pol.polrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE {UserSchema("n")};
+        """;
+
+    /// <summary>
+    /// What each object needs (pg_depend, normal and automatic dependencies only), with both ends resolved to what the
+    /// reader lists: a view's rule, a default or generated column, a constraint and a policy stand for their table (a
+    /// domain's constraint for its domain), a row type for its table, an array type for its element type. The needed
+    /// object's extension is named when an extension made it. Built-in objects (oid below 16384) are never needed by
+    /// name, so they are left out. A foreign key is marked as one: scripts add those once every table exists.
+    /// </summary>
+    private const string Dependencies = """
+        SELECT x.dep_kind, x.dep_oid, x.ref_kind, x.ref_oid, x.ref_col, x.via, e.extname
+        FROM (
+            SELECT CASE WHEN dp.classid = 'pg_type'::regclass OR (dp.classid = 'pg_constraint'::regclass AND co.conrelid = 0) THEN 't'
+                        WHEN dp.classid = 'pg_proc'::regclass THEN 'p'
+                        WHEN dp.classid = 'pg_trigger'::regclass THEN 'g'
+                        ELSE 'c' END AS dep_kind,
+                   CASE WHEN dp.classid = 'pg_rewrite'::regclass THEN rw.ev_class
+                        WHEN dp.classid = 'pg_attrdef'::regclass THEN ad.adrelid
+                        WHEN dp.classid = 'pg_constraint'::regclass THEN CASE WHEN co.conrelid <> 0 THEN co.conrelid ELSE co.contypid END
+                        WHEN dp.classid = 'pg_policy'::regclass THEN pol.polrelid
+                        ELSE dp.objid END AS dep_oid,
+                   CASE WHEN dp.refclassid = 'pg_proc'::regclass THEN 'p'
+                        WHEN dp.refclassid = 'pg_class'::regclass OR rt.typrelid <> 0 THEN 'c'
+                        ELSE 't' END AS ref_kind,
+                   CASE WHEN dp.refclassid = 'pg_type'::regclass THEN CASE WHEN rt.typrelid <> 0 THEN rt.typrelid ELSE rt.oid END
+                        ELSE dp.refobjid END AS ref_oid,
+                   CASE WHEN dp.refclassid = 'pg_class'::regclass AND dp.refobjsubid > 0 THEN
+                        (SELECT a.attname::text FROM pg_attribute a WHERE a.attrelid = dp.refobjid AND a.attnum = dp.refobjsubid) END AS ref_col,
+                   CASE WHEN dp.classid = 'pg_rewrite'::regclass THEN 'view'
+                        WHEN dp.classid = 'pg_attrdef'::regclass THEN 'default'
+                        WHEN dp.classid = 'pg_constraint'::regclass THEN CASE WHEN co.contype = 'f' THEN 'foreignkey' ELSE 'constraint' END
+                        WHEN dp.classid = 'pg_trigger'::regclass THEN 'trigger'
+                        WHEN dp.classid = 'pg_policy'::regclass THEN 'policy'
+                        WHEN dp.classid = 'pg_proc'::regclass THEN 'routine'
+                        WHEN dp.classid = 'pg_type'::regclass THEN 'type'
+                        ELSE 'relation' END AS via
+            FROM pg_depend dp
+            LEFT JOIN pg_rewrite rw ON dp.classid = 'pg_rewrite'::regclass AND rw.oid = dp.objid
+            LEFT JOIN pg_attrdef ad ON dp.classid = 'pg_attrdef'::regclass AND ad.oid = dp.objid
+            LEFT JOIN pg_constraint co ON dp.classid = 'pg_constraint'::regclass AND co.oid = dp.objid
+            LEFT JOIN pg_policy pol ON dp.classid = 'pg_policy'::regclass AND pol.oid = dp.objid
+            LEFT JOIN pg_type rt0 ON dp.refclassid = 'pg_type'::regclass AND rt0.oid = dp.refobjid
+            LEFT JOIN pg_type rt ON rt.oid = CASE WHEN rt0.typcategory = 'A' AND rt0.typelem <> 0 THEN rt0.typelem ELSE rt0.oid END
+            WHERE dp.deptype IN ('n', 'a') AND dp.objid >= 16384 AND dp.refobjid >= 16384
+              AND dp.classid IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_rewrite'::regclass,
+                                 'pg_attrdef'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass)
+              AND dp.refclassid IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass)
+        ) x
+        LEFT JOIN pg_depend xd ON xd.classid = CASE x.ref_kind WHEN 'c' THEN 'pg_class'::regclass WHEN 't' THEN 'pg_type'::regclass ELSE 'pg_proc'::regclass END
+             AND xd.objid = x.ref_oid AND xd.refclassid = 'pg_extension'::regclass AND xd.deptype = 'e'
+        LEFT JOIN pg_extension e ON e.oid = xd.refobjid
+        WHERE x.dep_oid IS NOT NULL AND x.ref_oid IS NOT NULL;
         """;
 }

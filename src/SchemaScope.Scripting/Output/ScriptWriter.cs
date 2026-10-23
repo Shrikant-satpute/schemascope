@@ -58,7 +58,7 @@ public sealed record WrittenFile(string Folder, string RelativePath, string Full
 /// Writes every file of a run. All writes go under <see cref="Root"/> - a path that resolves
 /// outside it is refused - and every file is recorded so the validator knows what to check.
 /// .sql and .ps1 are UTF-8 with BOM (sqlcmd -f 65001 and PowerShell 5 both need it to read
-/// non-ASCII correctly); markdown is UTF-8 without BOM. Text is written exactly as given: no
+/// non-ASCII correctly; .sql without one for psql and mysql); markdown is UTF-8 without BOM. Text is written exactly as given: no
 /// newline translation, so CRLF headers and bare-LF DDL bodies reach disk byte for byte.
 /// </summary>
 public sealed class ScriptWriter
@@ -68,11 +68,20 @@ public sealed class ScriptWriter
     private static readonly UTF8Encoding NoBom = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     private readonly List<WrittenFile> files = [];
+    private readonly UTF8Encoding sqlEncoding;
     private readonly string rootWithSep;
 
     /// <param name="root">The run root; created if missing. Must be fully qualified.</param>
-    public ScriptWriter(string root)
+    public ScriptWriter(string root) : this(root, sqlBom: true) { }
+
+    /// <param name="root">The run root; created if missing. Must be fully qualified.</param>
+    /// <param name="sqlBom">
+    /// Whether .sql files start with a BOM: yes for sqlcmd; no for psql and mysql, which read a BOM as part of the first
+    /// statement. The SHA-256 of each file is of the bytes written either way.
+    /// </param>
+    public ScriptWriter(string root, bool sqlBom)
     {
+        sqlEncoding = sqlBom ? Bom : NoBom;
         if (!Path.IsPathFullyQualified(root)) throw new ArgumentException("The output folder must be a full path.", nameof(root));
         var full = Path.GetFullPath(root);
         // A drive or share root ("D:\") would trim to "D:", and Path.Combine("D:", x) is relative to D:'s current directory.
@@ -122,14 +131,17 @@ public sealed class ScriptWriter
             ExpectedModules = expectedModules ?? [],
             IsRollback = rel.StartsWith("rollback\\", StringComparison.OrdinalIgnoreCase),
         };
-        return Save(f, text, Bom);
+        return Save(f, text, sqlEncoding);
     }
 
     /// <summary>Writes the folder's <c>run_all.ps1</c> (<see cref="ScriptText.Runner"/>, BOM).</summary>
-    public WrittenFile WriteRunner(string folder, string server)
+    public WrittenFile WriteRunner(string folder, string server) => WriteRunnerText(folder, ScriptText.Runner(server));
+
+    /// <summary>Writes the folder's <c>run_all.ps1</c> with the given text (another engine's client; BOM, as PowerShell 5 needs).</summary>
+    public WrittenFile WriteRunnerText(string folder, string text)
     {
         var f = new WrittenFile(folder, "run_all.ps1", Resolve(folder, "run_all.ps1"), WrittenFileKind.Runner);
-        return Save(f, ScriptText.Runner(server), Bom);
+        return Save(f, text, Bom);
     }
 
     /// <summary>Writes a markdown file (UTF-8, no BOM, LF as given), e.g. folder "99_review", "flow_safety.md"; folder "" for README.md.</summary>

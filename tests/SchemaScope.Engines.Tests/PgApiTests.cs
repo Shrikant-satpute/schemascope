@@ -53,7 +53,14 @@ public sealed class PgRouteTests : IAsyncLifetime
         Assert.True(pg.GetProperty("preview").GetBoolean());
         Assert.Equal("postgres", pg.GetProperty("browseDatabase").GetString());
         Assert.Equal("pgsql", pg.GetProperty("monacoLanguage").GetString());
-        Assert.Equal(["compare"], pg.GetProperty("capabilities").GetProperty("features").EnumerateArray().Select(f => f.GetString()));
+        Assert.Equal(["compare", "objectScripts", "scripts"], pg.GetProperty("capabilities").GetProperty("features").EnumerateArray().Select(f => f.GetString()).Order());
+        // the dialog's wording for this engine: psql, an honest validation line, and the sections that do not apply greyed out
+        var scripts = pg.GetProperty("scripts");
+        Assert.Equal("psql", scripts.GetProperty("runner").GetString());
+        Assert.StartsWith("Parsed with the PostgreSQL parser", scripts.GetProperty("validation").GetString());
+        var sections = scripts.GetProperty("sections").EnumerateArray().ToList();
+        Assert.Equal(["tableTypes", "formatting"], sections.Where(s => !s.GetProperty("applicable").GetBoolean()).Select(s => s.GetProperty("section").GetString()));
+        Assert.False(engines.Single(e => e.GetProperty("engine").GetString() == "sqlServer").TryGetProperty("scripts", out _));
         Assert.True(pg.GetProperty("form").GetProperty("sslMode").GetBoolean());
         Assert.False(pg.GetProperty("defaults").GetProperty("trustServerCertificate").GetBoolean());
 
@@ -154,12 +161,10 @@ public sealed class PgRouteTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scripts_object_scripts_and_apply_are_a_clear_400_for_postgres()
+    public async Task Without_the_preview_switch_postgres_scripts_are_a_clear_400()
     {
-        await _o.SetPreviewAsync(true);
         var run = PgRun();
         var folder = JsonSerializer.Serialize(Path.Combine(_o.Temp.Folder, "scripts"));
-
         var scripts = await _o.PostJson($"/api/compare/{run}/scripts",
             $$"""{ "targetIndex": 0, "options": { "outputFolder": {{folder}}, "sections": ["newColumns"] } }""");
         Assert.Equal(HttpStatusCode.BadRequest, scripts.StatusCode);
@@ -169,8 +174,35 @@ public sealed class PgRouteTests : IAsyncLifetime
         var one = await _o.PostJson($"/api/compare/{run}/object-script", """{ "targetIndex": 0, "key": "1|app.t", "includeDependencies": [] }""");
         Assert.Equal(HttpStatusCode.BadRequest, one.StatusCode);
         Assert.Equal("Single-object scripts are not available for PostgreSQL in this version.", await Message(one));
+    }
+
+    [Fact]
+    public async Task Postgres_scripts_need_the_compare_s_snapshots_and_apply_stays_a_clear_400()
+    {
+        await _o.SetPreviewAsync(true);
+        var run = PgRun();
+        var folder = JsonSerializer.Serialize(Path.Combine(_o.Temp.Folder, "scripts"));
+
+        // this session has no snapshots, so the generator refuses before it writes anything
+        var scripts = await _o.PostJson($"/api/compare/{run}/scripts",
+            $$"""{ "targetIndex": 0, "options": { "outputFolder": {{folder}}, "sections": ["newColumns"] } }""");
+        Assert.Equal(HttpStatusCode.OK, scripts.StatusCode);
+        var body = JsonDocument.Parse(await scripts.Content.ReadAsStringAsync()).RootElement;
+        Assert.False(body.GetProperty("success").GetBoolean());
+        Assert.Contains("could not be read in this comparison", body.GetProperty("message").GetString());
+        Assert.False(Directory.Exists(Path.Combine(_o.Temp.Folder, "scripts")));
+
+        var one = await _o.PostJson($"/api/compare/{run}/object-script", """{ "targetIndex": 0, "key": "1|app.t", "includeDependencies": [] }""");
+        Assert.Equal(HttpStatusCode.OK, one.StatusCode);
+        Assert.False(JsonDocument.Parse(await one.Content.ReadAsStringAsync()).RootElement.GetProperty("success").GetBoolean());
 
         Assert.Equal(HttpStatusCode.OK, (await _o.PostJson("/api/write-mode", """{ "enabled": true, "confirm": "ENABLE" }""")).StatusCode);
+        // 11_destructive does not exist for PostgreSQL yet, whatever the dialog sends
+        var destructive = await _o.PostJson($"/api/compare/{run}/scripts",
+            $$"""{ "targetIndex": 0, "options": { "outputFolder": {{folder}}, "sections": ["newColumns"], "includeDestructive": true } }""");
+        Assert.Equal(HttpStatusCode.BadRequest, destructive.StatusCode);
+        Assert.Equal("Changes that can lose data are not available for PostgreSQL in this version.", await Message(destructive));
+
         var apply = await _o.PostJson($"/api/compare/{run}/apply",
             """{ "planId": "nope", "targetIndex": 0, "sections": ["01_columns"], "confirmDatabase": "app" }""");
         Assert.Equal(HttpStatusCode.BadRequest, apply.StatusCode);

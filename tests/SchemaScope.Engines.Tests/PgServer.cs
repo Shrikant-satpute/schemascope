@@ -141,6 +141,9 @@ public class PgServer : IAsyncLifetime
         return ((int)(r.ExitCode ?? -1), r.Stdout, r.Stderr);
     }
 
+    /// <summary>Puts a file into this container (the scripts psql then runs inside it).</summary>
+    public Task CopyToContainerAsync(byte[] content, string path) => _container!.CopyAsync(content, path);
+
     private static readonly Regex TestName = new("^schemascope_test_[0-9a-f]{32}_[a-z0-9]+$", RegexOptions.CultureInvariant);
 
     public static string NewName(string part) => $"schemascope_test_{Guid.NewGuid():n}_{part}";

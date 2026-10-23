@@ -142,11 +142,13 @@ public sealed class PgSchemaReader : ISchemaReader
         string[] Columns, string? RefSchema, string? RefTable, string[] RefColumns, string DeleteAction, string UpdateAction);
     private sealed record Idx(uint Rel, string Name, string Method, bool Unique, string Definition, string? Predicate,
         int KeyCount, string[] Columns, bool?[] Descending);
-    private sealed record Routine(string Schema, string Name, char Kind, bool ReturnsSet, string Signature,
-        string Definition, string Arguments);
-    private sealed record Trg(string Schema, string Table, string Name, string Definition, char Enabled);
+    private sealed record Routine(uint Oid, string Schema, string Name, char Kind, bool ReturnsSet, string Signature,
+        string Definition, string Arguments, string? Result);
+    private sealed record Trg(string Schema, string Table, string Name, string Definition, char Enabled, uint Oid);
     private sealed record Seq(string Schema, string Name, string Type, long Start, long Increment, long Min, long Max,
-        long Cache, bool Cycle, string? OwnedBy);
+        long Cache, bool Cycle, string? OwnedBy, uint Oid);
+    /// <summary>One pg_depend row resolved (<see cref="PgCatalogQueries"/>): kinds c relation, t type, p routine, g trigger.</summary>
+    private sealed record Dep(char Kind, uint Oid, char RefKind, uint RefOid, string? RefColumn, string Via, string? Extension);
     private sealed record Typ(uint Oid, string Schema, string Name, char Kind, string BaseType, bool NotNull, string? Default,
         string? Collation, string[] Labels, uint RelOid);
 
@@ -163,6 +165,7 @@ public sealed class PgSchemaReader : ISchemaReader
         public List<Typ> Types { get; } = [];
         public List<(string Name, string Version, string Schema)> Extensions { get; } = [];
         public List<Policy> Policies { get; } = [];
+        public List<Dep> Dependencies { get; } = [];
     }
 
     private async Task<RawCatalog> ReadCatalogAsync(NpgsqlConnection conn, NpgsqlTransaction tx, int versionNum, CancellationToken ct)
@@ -201,17 +204,17 @@ public sealed class PgSchemaReader : ISchemaReader
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
-            raw.Routines.Add(new Routine(r.GetString(1), r.GetString(2), Ch(r, 3), r.GetBoolean(4), r.GetString(5),
-                Str(r, 6) ?? "", Str(r, 7) ?? ""));
+            raw.Routines.Add(new Routine(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), r.GetBoolean(4),
+                r.GetString(5), Str(r, 6) ?? "", Str(r, 7) ?? "", Str(r, 8)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
-            raw.Triggers.Add(new Trg(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), Ch(r, 4)));
+            raw.Triggers.Add(new Trg(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), Ch(r, 4), r.GetFieldValue<uint>(5)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.Sequences.Add(new Seq(r.GetString(0), r.GetString(1), r.GetString(2), r.GetInt64(3), r.GetInt64(4), r.GetInt64(5),
-                r.GetInt64(6), r.GetInt64(7), r.GetBoolean(8), Str(r, 9)));
+                r.GetInt64(6), r.GetInt64(7), r.GetBoolean(8), Str(r, 9), r.GetFieldValue<uint>(10)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -226,6 +229,11 @@ public sealed class PgSchemaReader : ISchemaReader
             raw.Policies.Add(new Policy(r.GetFieldValue<uint>(0), r.GetString(1), r.GetBoolean(2), Ch(r, 3),
                 r.GetFieldValue<string[]>(4), Str(r, 5), Str(r, 6)));
 
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.Dependencies.Add(new Dep(Ch(r, 0), r.GetFieldValue<uint>(1), Ch(r, 2), r.GetFieldValue<uint>(3), Str(r, 4),
+                r.GetString(5), Str(r, 6)));
+
         return raw;
     }
 
@@ -237,6 +245,11 @@ public sealed class PgSchemaReader : ISchemaReader
     private static List<DbObject> Assemble(RawCatalog raw, CompareOptions options)
     {
         var objects = new List<DbObject>();
+        // by oid, for the dependencies: relations (and a composite type's relation), types, routines, triggers
+        var byRel = new Dictionary<uint, DbObject>();
+        var byType = new Dictionary<uint, DbObject>();
+        var byProc = new Dictionary<uint, DbObject>();
+        var byTrigger = new Dictionary<uint, DbObject>();
 
         foreach (var (name, owner) in raw.Schemas)
         {
@@ -288,8 +301,11 @@ public sealed class PgSchemaReader : ISchemaReader
                     o.Indexes.Add(Index(ix));
                 }
                 o.Definition = sb.ToString();
+                // what the view returns, one column a line, in order: CREATE OR REPLACE VIEW may only add columns at the end
+                o.Properties["columns"] = string.Join("\n", columns[rel.Oid].Select(c => $"{PgCanonicalWriter.Q(c.Name)} {c.Type}"));
             }
             objects.Add(o);
+            byRel[rel.Oid] = o;
         }
 
         foreach (var p in raw.Routines)
@@ -305,7 +321,9 @@ public sealed class PgSchemaReader : ISchemaReader
             o.Signature = p.Signature;
             o.Definition = p.Definition;
             o.Properties["arguments"] = p.Arguments;
+            if (p.Result is not null) o.Properties["result"] = p.Result;
             objects.Add(o);
+            byProc[p.Oid] = o;
         }
 
         foreach (var t in raw.Triggers)
@@ -319,6 +337,7 @@ public sealed class PgSchemaReader : ISchemaReader
                 ? $"{t.Definition};\nALTER TABLE {PgCanonicalWriter.Q(t.Schema)}.{PgCanonicalWriter.Q(t.Table)} DISABLE TRIGGER {PgCanonicalWriter.Q(t.Name)};"
                 : t.Definition + ";";
             objects.Add(o);
+            byTrigger[t.Oid] = o;
         }
 
         foreach (var s in raw.Sequences)
@@ -334,6 +353,7 @@ public sealed class PgSchemaReader : ISchemaReader
             o.Properties["isCycling"] = s.Cycle ? "1" : "0";
             if (s.OwnedBy is not null) o.Properties["ownedBy"] = s.OwnedBy;
             objects.Add(o);
+            byRel[s.Oid] = o;
         }
 
         foreach (var t in raw.Types)
@@ -355,9 +375,11 @@ public sealed class PgSchemaReader : ISchemaReader
                     break;
                 default:
                     o.Columns = [.. columns[t.RelOid].Select(Column)];
+                    byRel[t.RelOid] = o;
                     break;
             }
             objects.Add(o);
+            byType[t.Oid] = o;
         }
 
         foreach (var (name, version, schema) in raw.Extensions)
@@ -369,7 +391,44 @@ public sealed class PgSchemaReader : ISchemaReader
             objects.Add(o);
         }
 
+        AddDependencies(raw.Dependencies, byRel, byType, byProc, byTrigger);
         return objects;
+    }
+
+    /// <summary>
+    /// <see cref="DbObject.DependsOn"/> from pg_depend: what each listed object needs among the listed objects (or the
+    /// extension that made it). A sequence's ownership by a column is not a need (the column needs the sequence), and an
+    /// object needing itself is kept only with a column - a generated column or a trigger naming one of its own table's.
+    /// </summary>
+    private static void AddDependencies(List<Dep> deps, Dictionary<uint, DbObject> byRel, Dictionary<uint, DbObject> byType,
+        Dictionary<uint, DbObject> byProc, Dictionary<uint, DbObject> byTrigger)
+    {
+        DbObject? Find(char kind, uint oid) => kind switch
+        {
+            'c' => byRel.GetValueOrDefault(oid),
+            't' => byType.GetValueOrDefault(oid),
+            'p' => byProc.GetValueOrDefault(oid),
+            'g' => byTrigger.GetValueOrDefault(oid),
+            _ => null
+        };
+
+        foreach (var d in deps)
+        {
+            if (Find(d.Kind, d.Oid) is not { } dependent) continue;
+            string key;
+            if (d.Extension is { } ext) key = New(DbObjectType.Extension, ext, ext).Key;
+            else if (Find(d.RefKind, d.RefOid) is { } needed)
+            {
+                if (dependent.Type == DbObjectType.Sequence && needed.Type == DbObjectType.Table) continue;   // OWNED BY
+                if (ReferenceEquals(needed, dependent) && d.RefColumn is null) continue;
+                key = needed.Key;
+            }
+            else continue;
+
+            var dep = new DbDependency(key, d.RefColumn, d.Via);
+            dependent.DependsOn ??= [];
+            if (!dependent.DependsOn.Contains(dep)) dependent.DependsOn.Add(dep);
+        }
     }
 
     /// <summary>

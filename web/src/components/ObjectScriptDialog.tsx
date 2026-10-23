@@ -17,6 +17,7 @@ import { canOpenFolder, openFolder } from '../host'
 import { Button, Modal, Spinner } from './ui'
 import { applyPlanOf } from '../scriptSections'
 import { Banner, RunProgress } from './ScriptDialog'
+import { engineOf, useEngines } from '../engines'
 
 const noop = () => undefined
 
@@ -77,6 +78,8 @@ export function ObjectScriptDialog({
   const status: ObjectStatus | undefined = row?.cells[targetIndex]?.status
   const objectName = row ? `${row.schema}.${row.name}` : objectKey
   const targetLabel = target?.label ?? 'the target'
+  // the target engine's editor language (pgsql for PostgreSQL)
+  const language = engineOf(useEngines(), target?.engine).monacoLanguage
 
   const [deps, setDeps] = useState<ObjectScriptDependencies | null>(null)
   const [depsError, setDepsError] = useState<string | null>(null)
@@ -318,7 +321,7 @@ export function ObjectScriptDialog({
             <div className="overflow-hidden rounded-md border" style={{ borderColor: 'var(--line)' }}>
               <Editor
                 height="440px"
-                language="sql"
+                language={language}
                 value={shown}
                 theme={theme === 'dark' ? THEME_DARK : THEME_LIGHT}
                 beforeMount={defineThemes}

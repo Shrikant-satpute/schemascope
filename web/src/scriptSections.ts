@@ -1,4 +1,4 @@
-import type { ApplyPlan, ScriptOptions, ScriptSection } from './types'
+import type { ApplyPlan, EngineScriptText, ScriptOptions, ScriptSection } from './types'
 
 /**
  * The words and defaults for the "Create scripts" dialog.
@@ -19,6 +19,8 @@ export interface ScriptSectionInfo {
    * the running application behaves have one, and those are off by default.
    */
   warning?: string
+  /** False when the engine has no such thing (PostgreSQL's table types): shown greyed out, never sent. */
+  applicable?: boolean
 }
 
 /**
@@ -85,6 +87,19 @@ export const SCRIPT_SECTIONS: readonly ScriptSectionInfo[] = [
       "Overwrites the target's own code - a fix made only on the target is lost, and a changed parameter list can break the application. Check 99_review first.",
   },
 ]
+
+/** The sections for an engine: the server's list when it sends one, else the built-in SQL Server list above. */
+export function scriptSectionsFor(text: EngineScriptText | null | undefined): readonly ScriptSectionInfo[] {
+  if (!text) return SCRIPT_SECTIONS
+  return text.sections.map((s) => ({
+    key: s.section,
+    folder: s.folder,
+    label: s.label,
+    hint: s.hint,
+    warning: s.warning ?? undefined,
+    applicable: s.applicable,
+  }))
+}
 
 /** Same as the server's ScriptOptions defaults: everything that cannot break the running flow. */
 export const DEFAULT_SCRIPT_SECTIONS: readonly ScriptSection[] = SCRIPT_SECTIONS.filter(

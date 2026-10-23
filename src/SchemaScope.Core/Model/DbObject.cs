@@ -68,6 +68,13 @@ public sealed class DbObject
     /// </summary>
     public Dictionary<string, string?> Properties { get; set; } = [];
 
+    /// <summary>
+    /// The objects of this snapshot (and the extensions) this one needs, as the engine records it (PostgreSQL: pg_depend).
+    /// Scripts use it to create objects in an order that works; the compare never reads it. Null for SQL Server.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<DbDependency>? DependsOn { get; set; }
+
     // ---- filled in by the normalizer, not by the reader ----
 
     /// <summary>
@@ -98,3 +105,10 @@ public sealed class DbObject
 
     public int LineCount { get; set; }
 }
+
+/// <summary>One thing a <see cref="DbObject"/> needs.</summary>
+/// <param name="Key">The needed object's <see cref="DbObject.Key"/> (an extension's when it belongs to one).</param>
+/// <param name="Column">The column of that table or view it names, when the dependency is on one column.</param>
+/// <param name="Via">What records the need: view (a view's or rule's query), default (a default or generated column),
+/// constraint, trigger, policy, routine, type or relation.</param>
+public sealed record DbDependency(string Key, string? Column = null, string Via = "relation");

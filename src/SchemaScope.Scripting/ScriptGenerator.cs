@@ -264,7 +264,7 @@ public sealed class ScriptGenerator
     /// both get the same folder and the second would overwrite the first. A process-wide lock covers the
     /// API host; a named mutex covers a second SchemaScope process on the same machine.
     /// </summary>
-    private static string NewRunRoot(string outputFolder, string name)
+    public static string NewRunRoot(string outputFolder, string name)
     {
         Directory.CreateDirectory(outputFolder);
         var baseName = ScriptText.Safe(name);
@@ -323,7 +323,7 @@ public sealed class ScriptGenerator
     /// (folders 01-06 may be complete on disk, with their run_all.ps1, although nothing was validated and RUN.ps1,
     /// README.md and 99_review are missing), and returns the sentence for the message - or "" when no script was written.
     /// </summary>
-    private static string PartialNote(ScriptWriter? w, string why)
+    public static string PartialNote(ScriptWriter? w, string why)
     {
         if (w is null) return "";
         try

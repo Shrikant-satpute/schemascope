@@ -1,5 +1,7 @@
 using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
+using SchemaScope.Scripting;
+using SchemaScope.Scripting.PostgreSql;
 
 namespace SchemaScope.Api.Services;
 
@@ -14,6 +16,16 @@ public sealed record EngineFormText(
     string ConnectionStringHint, string ConnectionStringPlaceholder, string DatabasePlaceholder,
     bool Port, bool SslMode, bool Encrypt, bool TrustServerCertificate, bool ReadOnlyIntent);
 
+/// <summary>One "Create scripts" section as the dialog shows it for an engine.</summary>
+/// <param name="Applicable">False: the engine has no such thing (PostgreSQL's table types); shown greyed out, never sent.</param>
+public sealed record EngineScriptSection(ScriptSection Section, string Folder, string Label, string Hint, string? Warning, bool Applicable);
+
+/// <summary>The "Create scripts" dialog's wording for an engine. Null for SQL Server, whose wording is built into the UI.</summary>
+/// <param name="Runner">The client the folders' run_all.ps1 call: "psql".</param>
+/// <param name="Validation">What the offline check does on this build, in words (it never claims a parse it cannot do).</param>
+/// <param name="Parsed">True when that check uses the engine's own parser; false for a lexical check only.</param>
+public sealed record EngineScriptText(string Runner, string Validation, bool Parsed, IReadOnlyList<EngineScriptSection> Sections);
+
 /// <summary>What a new connection of this engine starts with.</summary>
 public sealed record EngineDefaults(AuthMode Auth, bool Encrypt, bool TrustServerCertificate, int ConnectTimeoutSeconds);
 
@@ -26,7 +38,8 @@ public sealed record EngineDescriptor(
     DatabaseEngine Engine, string DisplayName, string ShortName, bool Preview,
     int? DefaultPort, string? BrowseDatabase, string DefaultSchema, IReadOnlyList<string> DefaultExcludedSchemas,
     string MonacoLanguage, string WordSeparators, TransactionSemantics Transactions,
-    EngineCapabilities Capabilities, IReadOnlyList<EngineAuthOption> Auth, EngineFormText Form, EngineDefaults Defaults);
+    EngineCapabilities Capabilities, IReadOnlyList<EngineAuthOption> Auth, EngineFormText Form, EngineDefaults Defaults,
+    EngineScriptText? Scripts = null);
 
 /// <summary>Builds <see cref="EngineDescriptor"/>s: the provider's facts plus the form's wording for that engine.</summary>
 public static class EngineDescriptors
@@ -37,7 +50,44 @@ public static class EngineDescriptors
         return new EngineDescriptor(p.Engine, p.DisplayName, shortName, p.Capabilities.Preview,
             DatabaseEngines.DefaultPort(p.Engine), p.Connections.BrowseDatabase, p.Dialect.DefaultSchema,
             p.Dialect.DefaultExcludedSchemas, p.Dialect.MonacoLanguage, p.Dialect.WordSeparators, p.Capabilities.Ddl,
-            p.Capabilities, auth, form, defaults);
+            p.Capabilities, auth, form, defaults, ScriptText(p));
+    }
+
+    /// <summary>PostgreSQL's sections, hints and runner; SQL Server keeps the UI's built-in wording.</summary>
+    private static EngineScriptText? ScriptText(IEngineProvider p)
+    {
+        if (p.Engine != DatabaseEngine.PostgreSql || !p.Capabilities.Features.Contains(EngineFeature.Scripts)) return null;
+        var parsed = PgParser.Available;
+        return new EngineScriptText("psql",
+            parsed
+                ? $"Parsed with the PostgreSQL parser, {PgParser.Name}; code bodies are copied from the source and not compile-checked."
+                : "Lexical check only - not validated: the PostgreSQL parser could not be loaded on this machine.",
+            parsed,
+            [
+                new(ScriptSection.NewColumns, "01", "New columns",
+                    "Adds columns the source has on tables both databases have - only a column that is nullable or has a default.", null, true),
+                new(ScriptSection.TableTypes, "02", "Table types", "Not applicable: PostgreSQL has no table types.", null, false),
+                new(ScriptSection.MissingObjects, "03", "Missing objects",
+                    "Creates the schemas, types, sequences, tables, views, functions and procedures the target lacks, in dependency order. " +
+                    "Code is copied from the source and not compile-checked; extensions are only noted.", null, true),
+                new(ScriptSection.ColumnTypes, "04", "Column types",
+                    "Makes columns bigger or lets them be empty where the source does. Never makes one smaller; held while a view reads the column.",
+                    null, true),
+                new(ScriptSection.Constraints, "05", "Constraints",
+                    "Adds missing defaults, checks, keys and foreign keys, if existing data allows it. Checks and foreign keys go in NOT VALID, then are validated.",
+                    null, true),
+                new(ScriptSection.Indexes, "06", "Indexes",
+                    "Adds the indexes the target does not have, without CONCURRENTLY: writes to a table wait while its index builds.", null, true),
+                new(ScriptSection.Triggers, "07", "Triggers",
+                    "Creates the triggers the target does not have, with their trigger functions. Never run by RUN.ps1.",
+                    "Changes what every write to the table does - needs the module owner's OK.", true),
+                new(ScriptSection.Formatting, "08-09", "Formatting",
+                    "Not applicable: PostgreSQL keeps code as written and names exactly.", null, false),
+                new(ScriptSection.DifferentModules, "10", "Different code",
+                    "Replaces functions, procedures, views and triggers whose code really differs, with CREATE OR REPLACE where the signature allows. " +
+                    "Never run by RUN.ps1.",
+                    "Overwrites the target's own code - a fix made only on the target is lost. Check 99_review first.", true),
+            ]);
     }
 
     private static (string Short, IReadOnlyList<EngineAuthOption> Auth, EngineFormText Form, EngineDefaults Defaults) Ui(DatabaseEngine engine) =>

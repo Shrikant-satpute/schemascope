@@ -91,6 +91,29 @@ export interface EngineDescriptor {
   auth: EngineAuthOption[]
   form: EngineFormText
   defaults: { auth: AuthMode; encrypt: boolean; trustServerCertificate: boolean; connectTimeoutSeconds: number }
+  /** "Create scripts" wording for this engine; absent for SQL Server, whose wording is built in (scriptSections.ts). */
+  scripts?: EngineScriptText | null
+}
+
+/** One "Create scripts" section as the dialog shows it for an engine. */
+export interface EngineScriptSection {
+  section: ScriptSection
+  folder: string
+  label: string
+  hint: string
+  warning?: string | null
+  /** False: the engine has no such thing; shown greyed out and never sent. */
+  applicable: boolean
+}
+
+export interface EngineScriptText {
+  /** The client each folder's run_all.ps1 calls ("psql"). */
+  runner: string
+  /** What the offline check does on this build, in words. */
+  validation: string
+  /** True when the check uses the engine's own parser; false: lexical only, never "passed". */
+  parsed: boolean
+  sections: EngineScriptSection[]
 }
 
 export type ObjectStatus =
@@ -571,6 +594,17 @@ export interface ScriptValidation {
   modulesExact: number
   problems: string[]
   passed: boolean
+  /** How far the check went, for engines other than SQL Server (absent: ScriptDom, as always). */
+  level?: ValidationLevel | null
+}
+
+export interface ValidationLevel {
+  /** Every statement went through the engine's own parser. */
+  parsed: boolean
+  /** Code bodies were proven to compile, not only to be the source's text. */
+  moduleTextProven: boolean
+  notValidatedReason?: string | null
+  parser?: string | null
 }
 
 export interface ScriptOutcome {

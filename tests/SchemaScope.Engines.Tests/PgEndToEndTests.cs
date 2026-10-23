@@ -92,12 +92,50 @@ public sealed class PgEndToEndTests(PgServer pg)
             var columns = detail.GetProperty("targets")[0].GetProperty("structure")[0].GetProperty("rows").EnumerateArray().ToList();
             Assert.Equal("onlyInTarget", columns.Single(c => c.GetProperty("name").GetString() == "note").GetProperty("status").GetString());
 
-            // and nothing writes: scripts are refused for this engine
+            // scripts go to a folder; with write mode on there is still no plan, since PostgreSQL has no apply yet
+            Assert.Equal(HttpStatusCode.OK, (await o.PostJson("/api/write-mode", """{ "enabled": true, "confirm": "ENABLE" }""")).StatusCode);
             var folder = JsonSerializer.Serialize(Path.Combine(o.Temp.Folder, "scripts"));
             var scripts = await o.PostJson($"/api/compare/{runId}/scripts",
-                $$"""{ "targetIndex": 0, "options": { "outputFolder": {{folder}}, "sections": ["newColumns"] } }""");
-            Assert.Equal(HttpStatusCode.BadRequest, scripts.StatusCode);
-            Assert.Contains("not available for PostgreSQL in this version", await scripts.Content.ReadAsStringAsync());
+                $$"""{ "targetIndex": 0, "options": { "outputFolder": {{folder}}, "sections": ["newColumns", "missingObjects", "columnTypes", "constraints", "indexes"] } }""");
+            Assert.Equal(HttpStatusCode.OK, scripts.StatusCode);
+            var outcome = Body(await scripts.Content.ReadAsStringAsync());
+            Assert.True(outcome.GetProperty("success").GetBoolean(), outcome.GetRawText());
+            Assert.True(outcome.GetProperty("validation").GetProperty("passed").GetBoolean(), outcome.GetRawText());
+            Assert.True(outcome.GetProperty("validation").GetProperty("level").GetProperty("parsed").GetBoolean());
+            Assert.True(!outcome.TryGetProperty("planId", out var planId) || planId.ValueKind == JsonValueKind.Null);
+            var path = outcome.GetProperty("path").GetString()!;
+            Assert.True(File.Exists(Path.Combine(path, "RUN.ps1")));
+            Assert.Contains("CREATE OR REPLACE VIEW \"app\".\"v_missing\"",
+                string.Concat(Directory.EnumerateFiles(Path.Combine(path, "03_missing", "objects")).Select(File.ReadAllText)));
+            Assert.All(Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories), f => Assert.DoesNotContain(pg.Password, File.ReadAllText(f)));
+
+            // one object: a missing view, through pg_depend and the same generator
+            var view = rows.Single(r => r.GetProperty("name").GetString() == "v_missing").GetProperty("key").GetString()!;
+            var deps = Body(await o.Http.GetStringAsync($"/api/compare/{runId}/object-script/dependencies?key={Uri.EscapeDataString(view)}&targetIndex=0"));
+            Assert.Equal("create", deps.GetProperty("plan").GetString());
+            var one = await o.Post($"/api/compare/{runId}/object-script", new { targetIndex = 0, key = view, includeDependencies = Array.Empty<string>() });
+            Assert.Equal(HttpStatusCode.OK, one.StatusCode);
+            var single = Body(await one.Content.ReadAsStringAsync());
+            Assert.True(single.GetProperty("success").GetBoolean(), single.GetRawText());
+            var script = single.GetProperty("script").GetString()!;
+            Assert.Contains("CREATE OR REPLACE VIEW \"app\".\"v_missing\"", script);
+            Assert.DoesNotContain("\nGO", script);
+            Assert.Single(single.GetProperty("parts").EnumerateArray());
+            // object scripts go to the app's own scratch folder: leave nothing of this test there
+            var written = Path.GetFullPath(single.GetProperty("path").GetString()!);
+            Assert.StartsWith(Path.GetFullPath(SchemaScope.Api.Services.ObjectScripts.ScratchRoot) + Path.DirectorySeparatorChar, written);
+            Directory.Delete(written, recursive: true);
+
+            // an object only the target has: the DROP to copy, in PostgreSQL's spelling
+            var extra = rows.Single(r => r.GetProperty("name").GetString() == "extra").GetProperty("key").GetString()!;
+            var drop = Body(await (await o.Post($"/api/compare/{runId}/object-script", new { targetIndex = 0, key = extra, includeDependencies = Array.Empty<string>() }))
+                .Content.ReadAsStringAsync());
+            Assert.Contains("DROP TABLE \"app\".\"extra\";", drop.GetProperty("dropPreview").GetString());
+
+            // and nothing is applied: there is no apply for PostgreSQL in this version
+            var apply = await o.PostJson($"/api/compare/{runId}/apply",
+                $$"""{ "planId": "nope", "targetIndex": 0, "sections": ["01_columns"], "confirmDatabase": "{{tgt}}" }""");
+            Assert.Equal(HttpStatusCode.BadRequest, apply.StatusCode);
         }
         finally
         {

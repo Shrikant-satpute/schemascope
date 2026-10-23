@@ -32,6 +32,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SchemaScope.Api\SchemaScope.Api.csproj" />
     <ProjectReference Include="..\..\src\SchemaScope.PostgreSql\SchemaScope.PostgreSql.csproj" />
+    <ProjectReference Include="..\..\src\SchemaScope.Scripting.PostgreSql\SchemaScope.Scripting.PostgreSql.csproj" />
   </ItemGroup>
 
 </Project>

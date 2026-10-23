@@ -20,11 +20,21 @@ public sealed class CompareProfile
 public sealed class SchemaScopeStore
 {
     private readonly string _connectionString;
+    private readonly IReadOnlyList<MigrationStep> _steps;
 
     public string DatabasePath { get; }
 
-    public SchemaScopeStore(string? path = null)
+    /// <summary>The copy taken before this store was upgraded, or null when no upgrade ran.</summary>
+    public string? UpgradeBackupPath { get; private set; }
+
+    /// <summary>What went wrong backing up or upgrading the store at startup, for the log; null when nothing did.</summary>
+    public string? UpgradeProblem { get; private set; }
+
+    public SchemaScopeStore(string? path = null) : this(path, DefaultSteps) { }
+
+    internal SchemaScopeStore(string? path, IReadOnlyList<MigrationStep> steps)
     {
+        _steps = steps;
         DatabasePath = path ?? DefaultPath();
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
         _connectionString = new SqliteConnectionStringBuilder
@@ -52,6 +62,8 @@ public sealed class SchemaScopeStore
     private void Initialise()
     {
         using var conn = Open();
+        // Before anything below touches an older store, so the copy is exactly what the previous build left.
+        var backedUp = BackUpBeforeUpgrade(conn);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             PRAGMA journal_mode = WAL;
@@ -150,26 +162,132 @@ public sealed class SchemaScopeStore
             """;
         cmd.ExecuteNonQuery();
 
-        Migrate(conn);
+        Migrate(conn, backedUp);
     }
 
     /// <summary>The schema version this build writes. v1 is the schema above, as every earlier build left it.</summary>
     public const int SchemaVersion = 2;
 
+    /// <summary>How many pre-upgrade copies the backups folder keeps; older ones are deleted.</summary>
+    public const int BackupsKept = 5;
+
     /// <summary>
-    /// Brings an older store up to <see cref="SchemaVersion"/>, recorded in PRAGMA user_version. Every step checks
-    /// what is already there first, so a store a crash left half-migrated is finished, never broken. A store
-    /// written by a newer build is left as it is.
+    /// One upgrade step, to <paramref name="Version"/>. <paramref name="SafeWithoutBackup"/> is true only for a step
+    /// that adds and never changes or drops anything, and checks what is already there first, so running it without
+    /// a backup cannot lose data. A step that is not safe is refused when the backup failed.
     /// </summary>
-    private static void Migrate(SqliteConnection conn)
+    internal sealed record MigrationStep(int Version, bool SafeWithoutBackup, Action<SqliteConnection, SqliteTransaction> Apply);
+
+    internal static readonly IReadOnlyList<MigrationStep> DefaultSteps =
+    [
+        new(2, SafeWithoutBackup: true, MigrateToV2),
+    ];
+
+    /// <summary>
+    /// Copies an existing store that is about to be upgraded to backups\schemascope-v&lt;from&gt;-&lt;UTC stamp&gt;.db
+    /// next to it, through the SQLite backup API, so the copy is consistent and includes what is still in the WAL.
+    /// A new or an up-to-date store is not copied. Never throws: a failure is recorded and the upgrade decides.
+    /// </summary>
+    private bool BackUpBeforeUpgrade(SqliteConnection conn)
     {
-        if (UserVersion(conn) >= SchemaVersion) return;
+        var from = UserVersion(conn);
+        if (from >= _steps[^1].Version || !HasTables(conn)) return true;   // nothing to upgrade, or nothing to keep
+        from = Math.Max(from, 1);   // a store no build has versioned yet is v1
 
+        var folder = Path.Combine(Path.GetDirectoryName(DatabasePath)!, "backups");
+        string? path = null;
+        try
+        {
+            Directory.CreateDirectory(folder);
+            var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", System.Globalization.CultureInfo.InvariantCulture);
+            path = Path.Combine(folder, $"schemascope-v{from}-{stamp}.db");
+            for (var n = 2; File.Exists(path); n++)
+                path = Path.Combine(folder, $"schemascope-v{from}-{stamp}-{n}.db");
+
+            // not pooled, so the file is closed (and its WAL folded in) the moment the copy is done
+            using (var copy = new SqliteConnection(new SqliteConnectionStringBuilder
+                   {
+                       DataSource = path,
+                       Mode = SqliteOpenMode.ReadWriteCreate,
+                       Pooling = false
+                   }.ConnectionString))
+            {
+                copy.Open();
+                conn.BackupDatabase(copy);
+            }
+            UpgradeBackupPath = path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SqliteException)
+        {
+            UpgradeProblem = $"Could not back up the store before upgrading it from v{from}: {ex.Message}";
+            if (path is not null)
+                try { File.Delete(path); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            return false;
+        }
+
+        PruneBackups(folder);
+        return true;
+    }
+
+    /// <summary>Keeps the newest <see cref="BackupsKept"/> copies, newest by the stamp in the name, whatever their version.</summary>
+    private static void PruneBackups(string folder)
+    {
+        const string prefix = "schemascope-v";
+        try
+        {
+            var old = Directory.GetFiles(folder, prefix + "*-*.db")
+                .Select(f => (File: f, Name: Path.GetFileName(f)))
+                .OrderByDescending(f => f.Name[(f.Name.IndexOf('-', prefix.Length) + 1)..], StringComparer.Ordinal)
+                .Skip(BackupsKept)
+                .ToList();
+            foreach (var f in old) File.Delete(f.File);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }   // an extra copy is harmless
+    }
+
+    private static bool HasTables(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table';";
+        return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+    }
+
+    /// <summary>
+    /// Brings an older store up to the last step's version (<see cref="SchemaVersion"/> in this build), recorded in
+    /// PRAGMA user_version. Every step checks what is already there first, so a store a crash left half-migrated is
+    /// finished, never broken. A store written by a newer build is left as it is. Without a backup, only steps that
+    /// are safe without one run: the upgrade stops before the first that is not, and says so.
+    /// </summary>
+    private void Migrate(SqliteConnection conn, bool backedUp)
+    {
+        var from = UserVersion(conn);
+        var pending = _steps.Where(s => s.Version > from).ToList();
+        if (pending.Count == 0) return;
+
+        var reached = from;
         using var tx = conn.BeginTransaction();
+        foreach (var step in pending)
+        {
+            if (!backedUp && !step.SafeWithoutBackup)
+            {
+                UpgradeProblem += $" The store was left at v{Math.Max(reached, 1)}: the upgrade to v{step.Version} is not safe without a backup.";
+                break;
+            }
+            step.Apply(conn, tx);
+            reached = step.Version;
+        }
 
-        // v2: connections to engines other than SQL Server live in their own table, which shipped builds
-        // never read - so an older SchemaScope or QueryScope can never send their credentials over SqlClient.
-        // SQL Server rows stay exactly as they are in connections.
+        if (reached > from) Exec(conn, tx, $"PRAGMA user_version = {reached};");
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// v2: connections to engines other than SQL Server live in their own table, which shipped builds never read -
+    /// so an older SchemaScope or QueryScope can never send their credentials over SqlClient. SQL Server rows stay
+    /// exactly as they are in connections.
+    /// </summary>
+    private static void MigrateToV2(SqliteConnection conn, SqliteTransaction tx)
+    {
         Exec(conn, tx, """
             CREATE TABLE IF NOT EXISTS engine_connections (
                 id                  TEXT PRIMARY KEY,
@@ -199,9 +317,6 @@ public sealed class SchemaScopeStore
             Exec(conn, tx, "ALTER TABLE apply_runs ADD COLUMN engine INTEGER NOT NULL DEFAULT 0;");
         if (!HasColumn(conn, tx, "apply_batches", "statement_index"))
             Exec(conn, tx, "ALTER TABLE apply_batches ADD COLUMN statement_index INTEGER NULL;");
-
-        Exec(conn, tx, $"PRAGMA user_version = {SchemaVersion};");
-        tx.Commit();
     }
 
     /// <summary>PRAGMA user_version: 0 for a store no build has versioned yet.</summary>

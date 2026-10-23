@@ -238,6 +238,11 @@ This is built in, not promised in a policy document:
 - Connections and passwords live in
   `%LOCALAPPDATA%\SchemaScope\schemascope.db`. Passwords are encrypted with
   Windows DPAPI under your account, so no other Windows user can read them.
+- When a new version upgrades that store's format, it first copies the old
+  file to `%LOCALAPPDATA%\SchemaScope\backups\schemascope-v<old version>-<UTC time>.db`
+  and keeps the five newest copies. A copy holds the same DPAPI-encrypted
+  passwords as the store itself. If the copy cannot be made, only upgrade steps
+  that add and never change anything go ahead; anything riskier waits.
 - The UI is served from inside the exe, under a
   `Content-Security-Policy` of `default-src 'self'`. A request to an outside
   host is not blocked by our code — the browser engine refuses to make it.

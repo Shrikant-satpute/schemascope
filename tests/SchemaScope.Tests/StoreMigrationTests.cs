@@ -204,4 +204,137 @@ public sealed class StoreMigrationTests : IDisposable
         Assert.Equal(DatabaseEngine.PostgreSql, read.Engine);
         Assert.Equal(3, Assert.Single(read.Files).StatementIndex);
     }
+
+    // ---------------- the copy taken before an upgrade ----------------
+
+    private string BackupFolder => Path.Combine(_folder, "backups");
+
+    private string[] Backups() => Directory.Exists(BackupFolder)
+        ? Directory.GetFiles(BackupFolder, "schemascope-v*.db").Select(f => Path.GetFileName(f)).Order().ToArray()
+        : [];
+
+    private static object? ScalarIn(string path, string sql)
+    {
+        using var conn = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        return cmd.ExecuteScalar();
+    }
+
+    /// <summary>A plain file where the backups folder should be, so creating it fails.</summary>
+    private void BlockBackups() => File.WriteAllText(BackupFolder, "not a folder");
+
+    [Fact]
+    public void A_v1_store_is_backed_up_whole_before_it_is_migrated()
+    {
+        // WAL mode with a connection held open, so the last rows are still in the -wal file, not the main file
+        Exec("PRAGMA journal_mode = WAL;" + V1);
+        using var holder = Raw();
+        using (var cmd = holder.CreateCommand())
+        {
+            cmd.CommandText = "INSERT INTO connections (id, label, server, sort_order) VALUES ('c2', 'Late', 'late-sql', 4);";
+            cmd.ExecuteNonQuery();
+        }
+        Assert.True(File.Exists(DbPath + "-wal"));
+
+        var store = new SchemaScopeStore(DbPath);
+
+        Assert.Null(store.UpgradeProblem);
+        var backup = Assert.Single(Backups());
+        Assert.Matches(@"^schemascope-v1-\d{8}-\d{6}-\d{3}\.db$", backup);
+        Assert.Equal(Path.Combine(BackupFolder, backup), store.UpgradeBackupPath);
+
+        var path = store.UpgradeBackupPath!;
+        Assert.Equal(0L, ScalarIn(path, "PRAGMA user_version"));   // exactly as the old build left it
+        Assert.Equal(0L, ScalarIn(path, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'engine_connections'"));
+        Assert.Equal(2L, ScalarIn(path, "SELECT COUNT(*) FROM connections"));
+        Assert.Equal("late-sql", ScalarIn(path, "SELECT server FROM connections WHERE id = 'c2'"));
+        Assert.Equal(2L, Scalar("PRAGMA user_version"));
+    }
+
+    [Fact]
+    public void A_new_or_current_store_is_not_backed_up()
+    {
+        var store = new SchemaScopeStore(DbPath);
+        Assert.Null(store.UpgradeBackupPath);
+
+        var again = new SchemaScopeStore(DbPath);
+        Assert.Null(again.UpgradeBackupPath);
+        Assert.Null(again.UpgradeProblem);
+        Assert.False(Directory.Exists(BackupFolder));
+    }
+
+    [Fact]
+    public void Only_the_newest_five_backups_are_kept()
+    {
+        Directory.CreateDirectory(BackupFolder);
+        for (var i = 0; i < 6; i++)
+            File.WriteAllText(Path.Combine(BackupFolder, $"schemascope-v1-2020010{i}-000000-000.db"), "");
+        File.WriteAllText(Path.Combine(BackupFolder, "notes.txt"), "mine");
+        Exec(V1);
+
+        var store = new SchemaScopeStore(DbPath);
+
+        var kept = Backups();
+        Assert.Equal(SchemaScopeStore.BackupsKept, kept.Length);
+        Assert.Contains(Path.GetFileName(store.UpgradeBackupPath!), kept);
+        Assert.Equal(
+            ["schemascope-v1-20200102-000000-000.db", "schemascope-v1-20200103-000000-000.db",
+             "schemascope-v1-20200104-000000-000.db", "schemascope-v1-20200105-000000-000.db"],
+            kept.Where(k => k.StartsWith("schemascope-v1-2020", StringComparison.Ordinal)));
+        Assert.True(File.Exists(Path.Combine(BackupFolder, "notes.txt")));   // nothing else in the folder is touched
+    }
+
+    [Fact]
+    public void A_failed_backup_does_not_stop_an_upgrade_that_only_adds()
+    {
+        Exec(V1);
+        var before = Dump("connections");
+        BlockBackups();
+
+        var store = new SchemaScopeStore(DbPath);
+
+        Assert.Null(store.UpgradeBackupPath);
+        Assert.Contains("Could not back up", store.UpgradeProblem);
+        Assert.Equal(2L, Scalar("PRAGMA user_version"));
+        Assert.Equal(before, Dump("connections"));
+        Assert.Single(store.GetConnections());
+    }
+
+    private static readonly SchemaScopeStore.MigrationStep UnsafeV3 = new(3, SafeWithoutBackup: false, (conn, tx) =>
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "CREATE TABLE v3_marker (id INTEGER);";
+        cmd.ExecuteNonQuery();
+    });
+
+    [Fact]
+    public void Without_a_backup_a_step_that_is_not_safe_is_refused_and_reported()
+    {
+        Exec(V1);
+        BlockBackups();
+
+        var store = new SchemaScopeStore(DbPath, [.. SchemaScopeStore.DefaultSteps, UnsafeV3]);
+
+        Assert.Equal(2L, Scalar("PRAGMA user_version"));   // the safe step ran, the unsafe one did not
+        Assert.Equal(0L, Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'v3_marker'"));
+        Assert.Contains("left at v2", store.UpgradeProblem);
+        Assert.Contains("v3", store.UpgradeProblem);
+        Assert.Single(store.GetConnections());
+    }
+
+    [Fact]
+    public void With_a_backup_every_step_runs()
+    {
+        Exec(V1);
+
+        var store = new SchemaScopeStore(DbPath, [.. SchemaScopeStore.DefaultSteps, UnsafeV3]);
+
+        Assert.Null(store.UpgradeProblem);
+        Assert.Single(Backups());
+        Assert.Equal(3L, Scalar("PRAGMA user_version"));
+        Assert.Equal(1L, Scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'v3_marker'"));
+    }
 }

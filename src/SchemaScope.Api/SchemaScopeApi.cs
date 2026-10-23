@@ -55,7 +55,14 @@ public static class SchemaScopeApi
         });
 
         builder.Services.AddSingleton(auth);
-        builder.Services.AddSingleton(_ => new SchemaScopeStore(storePath));
+        builder.Services.AddSingleton(sp =>
+        {
+            var store = new SchemaScopeStore(storePath);
+            var log = sp.GetRequiredService<ILoggerFactory>().CreateLogger<SchemaScopeStore>();
+            if (store.UpgradeBackupPath is not null) log.LogInformation("Store backed up before upgrade to {Path}", store.UpgradeBackupPath);
+            if (store.UpgradeProblem is not null) log.LogWarning("Store upgrade: {Problem}", store.UpgradeProblem);
+            return store;
+        });
         // Still registered on its own: older code and the tests take it directly.
         builder.Services.AddSingleton<SqlServerConnectionService>();
         // The engines this build can talk to. Owner app only: ViewerHost.Build registers none of these.

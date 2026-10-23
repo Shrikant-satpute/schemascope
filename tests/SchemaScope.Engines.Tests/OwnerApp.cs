@@ -8,6 +8,11 @@ using Microsoft.Extensions.DependencyInjection;
 using SchemaScope.Api;
 using SchemaScope.Core.Storage;
 
+// SchemaScopeApi's static helpers read connection strings with the engines of the app built last; two owner apps
+// started at once by two test collections (one with preview engines on, one not yet) would race on it. The desktop
+// app builds one owner app per process, so the tests run one collection at a time, as it does.
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
+
 namespace SchemaScope.Engines.Tests;
 
 /// <summary>A throwaway store, so a test never touches the user's saved connections.</summary>

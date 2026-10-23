@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -139,6 +140,93 @@ public sealed class PgApplyOfflineTests : IDisposable
         // exact database names: App and app are two targets
         Assert.NotEqual(PgApplyExecutor.KeyOf("1", null, 5432, "App"), PgApplyExecutor.KeyOf("1", null, 5432, "app"));
     }
+
+    [Fact]
+    public void One_cluster_is_its_system_identifier_whatever_database_and_else_its_address_and_port()
+    {
+        static TargetFacts F(string key, params string[] hosts) => new(key, new HashSet<string>()) { Hosts = hosts };
+        Assert.True(PgApplyExecutor.SameCluster(F("1|system:7|5432|prod", "172.17.0.2"), F("1|system:7|5432|other", "10.0.0.5")));
+        Assert.False(PgApplyExecutor.SameCluster(F("1|system:7|5432|prod", "172.17.0.2"), F("1|system:8|5432|prod", "172.17.0.2")));
+        // a login that may not read the identifier on either side: the reported address and port
+        Assert.True(PgApplyExecutor.SameCluster(F("1|address:10.0.0.5|5432|a", "10.0.0.5"), F("1|system:7|5432|b", "10.0.0.5")));
+        Assert.False(PgApplyExecutor.SameCluster(F("1|address:10.0.0.5|5432|a", "10.0.0.5"), F("1|address:10.0.0.5|5433|a", "10.0.0.5")));
+        Assert.False(PgApplyExecutor.SameCluster(F("1|address:10.0.0.5|5432|a", "10.0.0.5"), F("1|address:10.0.0.6|5432|a", "10.0.0.6")));
+    }
+
+    // ---- the Protected re-check under a second spelling: resolved names and the protected server's own answer ----
+
+    private const string Target = "Host=10.0.0.5;Port=5432;Database=app;Username=deploy;Password=pw";
+    private static readonly TargetFacts TargetFacts = new("1|system:7301|5432|app", new HashSet<string>()) { Hosts = ["10.0.0.5"] };
+
+    private static ConnectionSettings ProtectedPg(string server, string label = "Prod") =>
+        new() { Engine = DatabaseEngine.PostgreSql, Label = label, Server = server, Port = 5432, Database = "prod", ProtectedServer = true };
+
+    private static Task<IPAddress[]> Dns(string host, CancellationToken _) => host.ToLowerInvariant() switch
+    {
+        "db1.corp" or "prod-alias" or "prodsql.corp" => Task.FromResult(new[] { IPAddress.Parse("10.0.0.5") }),
+        "test.corp" => Task.FromResult(new[] { IPAddress.Parse("10.0.0.9") }),
+        _ => throw new System.Net.Sockets.SocketException(11001),
+    };
+
+    private static Task<string?> Check(IReadOnlyList<ConnectionSettings>? guarded, string target = Target, string? askedSystem = "9999") =>
+        SchemaScopeApi.ProtectedElsewhereAsync(guarded, DatabaseEngine.PostgreSql, target, TargetFacts,
+            (_, _) => Task.FromResult<TargetFacts?>(askedSystem is null ? null
+                : new TargetFacts($"1|system:{askedSystem}|5432|prod", new HashSet<string>()) { Hosts = ["10.0.0.99"] }),
+            PgApplyExecutor.SameCluster, Dns);
+
+    [Fact]
+    public async Task A_protected_name_reached_by_its_address_or_another_alias_is_refused()
+    {
+        // saved by name, the target written as that name's address, or as another name for it
+        Assert.Contains("Protected", await Check([ProtectedPg("db1.corp")]));
+        Assert.Contains("Protected", await Check([ProtectedPg("prod-alias")], "Host=db1.corp;Port=5432;Database=app"));
+        // a protected SQL Server on that machine protects PostgreSQL on it, prefix, instance and port aside
+        Assert.Contains("Protected", await Check([new ConnectionSettings { Server = "tcp:prodsql.corp\\A,1433", Database = "x", ProtectedServer = true }]));
+        // the address the target reports counts as well as the one it was reached by
+        Assert.Contains("Protected", await Check([ProtectedPg("10.0.0.5")], "Host=test.corp;Port=5432;Database=app"));
+        // localhost saved, this machine's own address or name used
+        var local = Local();
+        if (local is not null)
+            Assert.Contains("Protected", await SchemaScopeApi.ProtectedElsewhereAsync([ProtectedPg("127.0.0.1")], DatabaseEngine.PostgreSql,
+                $"Host={local};Port=5432;Database=app", TargetFacts, (_, _) => Task.FromResult<TargetFacts?>(null), PgApplyExecutor.SameCluster, Dns));
+        Assert.Contains("Protected", await SchemaScopeApi.ProtectedElsewhereAsync([ProtectedPg("localhost")], DatabaseEngine.PostgreSql,
+            $"Host={Environment.MachineName};Port=5432;Database=app", TargetFacts, (_, _) => Task.FromResult<TargetFacts?>(null), PgApplyExecutor.SameCluster, Dns));
+    }
+
+    [Fact]
+    public async Task A_protected_server_reached_through_nat_is_known_by_its_own_answer()
+    {
+        // no address in common (port forwarding, NAT), but the protected connection reports the target's cluster
+        var guarded = new[] { ProtectedPg("test.corp") };
+        Assert.Contains("Protected", await Check(guarded, askedSystem: "7301"));
+        Assert.Null(await Check(guarded, askedSystem: "9999"));
+        // a protected connection to another engine is not asked: its host alone decides
+        Assert.Null(await Check([new ConnectionSettings { Server = "test.corp", Database = "x", ProtectedServer = true }], askedSystem: null));
+    }
+
+    [Fact]
+    public async Task What_cannot_be_decided_is_refused()
+    {
+        Assert.Contains("Protected", await Check(null));                                       // the store cannot be read
+        Assert.Contains("could not be resolved", await Check([ProtectedPg("gone.example.invalid")]));
+        Assert.Contains("could not be asked", await Check([ProtectedPg("test.corp")], askedSystem: null));
+        Assert.Contains("Protected", await Check([ProtectedPg("test.corp")], "Host=gone.example.invalid;Port=5432;Database=app"));
+        Assert.Contains("Protected", await Check([new ConnectionSettings
+            { Engine = DatabaseEngine.PostgreSql, UseRawConnectionString = true, RawConnectionString = "Host=prod:1;Port=2", ProtectedServer = true }]));
+        Assert.Contains("Protected", await SchemaScopeApi.ProtectedElsewhereAsync([ProtectedPg("test.corp")], DatabaseEngine.PostgreSql, Target,
+            TargetFacts, (_, _) => throw new InvalidOperationException("boom"), PgApplyExecutor.SameCluster, Dns));
+        // nothing protected: nothing to resolve or ask
+        Assert.Null(await Check([]));
+    }
+
+    /// <summary>One of this machine's own IPv4 addresses other than loopback, or null.</summary>
+    internal static string? Local() =>
+        System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .Where(n => n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up)
+            .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+            .Select(u => u.Address)
+            .FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !IPAddress.IsLoopback(a) &&
+                                 !a.ToString().StartsWith("169.254.", StringComparison.Ordinal))?.ToString();
 
     [Fact]
     public void The_typed_name_is_exact_on_postgres_and_as_before_on_sql_server()

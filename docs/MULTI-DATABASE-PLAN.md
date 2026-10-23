@@ -353,7 +353,7 @@ New gates, checked first:
 
 ### 5.3 PostgreSQL (R3): transactional, the same promise as SQL Server
 For each file:
-1. Open an Npgsql connection, run `SET application_name='SchemaScope'`, and check `SELECT current_database()` with an exact match.
+1. Open an Npgsql connection, check `SELECT current_database()` with an exact match and that the server is the one the gates checked (the same identity key: a host list can fail over between files), then run `SET application_name='SchemaScope'`.
 2. Run `BEGIN; SET LOCAL lock_timeout = '5s'; SET LOCAL idle_in_transaction_session_timeout = …; SET LOCAL search_path = …`.
 3. Run the statements one at a time. `PgStatementSplitter` splits on `;` outside quotes, `$tag$` bodies and comments, and keeps start lines. The **same splitter** is used by `Verify` and by the validator, enforced by a parity test.
 4. `beforeCommit()` checks that write mode is still on, then COMMIT. Any error or stop leads to ROLLBACK. Cancel uses `NpgsqlCommand.Cancel` followed by a rollback.
@@ -409,6 +409,7 @@ Passwords are never written into scripts, and `PsQuote` wraps every interpolated
    - Multi-host strings are protected if any host is.
    - A string that cannot be parsed is treated as Protected. Today's fail-open fallback to the Server box is removed.
    - The server-reported re-check uses `IApplyExecutor.InspectAsync`. On non-SQL engines, null means refuse.
+   - On non-SQL engines the reported address alone is no proof (an IP for a name, a LAN address for `localhost`, a DNS alias, NAT): the target's hosts and reported address are resolved, as is every Protected connection's host (this machine's addresses count as one), and one address in common refuses. Each Protected connection to the same engine is then asked who it is (`InspectAsync` on its own saved string, read-only) and the same cluster (`system_identifier`, else address and port) refuses. A name that cannot be resolved, or a Protected connection that cannot be asked, refuses (fail closed).
    - New WriteModeTests rows: `localhost:5432` vs `localhost`, `Host=prod,localhost`, an unparseable string, and PG blocked by a protected SQL Server connection on the same host.
 5. **Engine provenance.** `SchemaSource.Engine` and `ScriptEndpoint.Engine` are set server-side from stored settings only. New DTO fields follow the existing `[JsonIgnore]` pattern.
 6. **Loopback token, Host-header check, Debug-only CORS, CSP:** unchanged. `GET /api/engines` returns capabilities only, no secrets. It requires the token, is added to `OwnerRouteTests.NewOwnerRoutes`, and is not on the viewer.

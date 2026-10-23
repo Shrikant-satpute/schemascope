@@ -371,6 +371,39 @@ public abstract class PgApplyTestsBase(PgServer pg)
         }
     }
 
+    protected async Task A_file_whose_connection_reaches_another_server_is_never_run()
+    {
+        var db = await pg.CreateDatabaseAsync("tgt");
+        using var temp = new TempStore();
+        try
+        {
+            await pg.ExecAsync(db, "CREATE SCHEMA app;");
+            var (plan, verified) = PgPlanFiles.Plan(Path.Combine(temp.Folder, "plan"),
+                ("03_missing", "001_a.sql", "CREATE TABLE app.a (id integer);\n"),
+                ("03_missing", "002_b.sql", "CREATE TABLE app.b (id integer);\n"));
+            var facts = await PgApplyExecutor.Instance.InspectAsync(pg.ConnectionString(db));
+            Assert.NotNull(facts);
+            // what a host list failing over to another cluster between files looks like: another system identifier
+            var elsewhere = facts.Key.Replace("|system:", "|system:9", StringComparison.Ordinal);
+            var mode = new WriteMode();
+            mode.Enable();
+
+            var refused = await Service(temp, mode).RunAsync(Job(db, plan, ["03_missing"]) with { TargetKey = elsewhere }, verified, null);
+            Assert.False(refused.Success);
+            Assert.Equal("The connection reached another server than the one checked before the apply, so this file was not run.",
+                Assert.Single(refused.Applied).Error);
+            Assert.Equal(DBNull.Value, await RegClassAsync(db, "app.a"));
+
+            var ok = await Service(temp, mode).RunAsync(Job(db, plan, ["03_missing"]) with { TargetKey = facts.Key }, verified, null);
+            Assert.True(ok.Success, string.Join("\n", ok.Applied.Select(a => a.Error)));
+            Assert.Equal("app.b", await RegClassAsync(db, "app.b"));
+        }
+        finally
+        {
+            await pg.DropAsync(db);
+        }
+    }
+
     protected async Task The_target_is_known_by_its_cluster_or_for_a_deploy_login_by_its_address()
     {
         var db = await pg.CreateDatabaseAsync("tgt");
@@ -559,6 +592,51 @@ public abstract class PgApplyTestsBase(PgServer pg)
         }
     }
 
+    /// <summary>
+    /// The review's reproduction: Protected saved as 127.0.0.1, the same container compared and applied as this
+    /// machine's LAN address - no spelling in common and the same reported address on both. Refused by what the names
+    /// resolve to (the protected connection's own answer would refuse it next). The LAN address with the container's
+    /// random port is still the container this run started.
+    /// </summary>
+    protected async Task A_protected_server_reached_by_another_address_of_this_machine_is_refused()
+    {
+        if (!EndpointGuard.IsThisMachine(pg.Host) || PgApplyOfflineTests.Local() is not { } lan) return;
+        var src = await pg.CreateDatabaseAsync("src");
+        var tgt = await pg.CreateDatabaseAsync("tgt");
+        await using var o = await OwnerApp.StartAsync();
+        try
+        {
+            await pg.ExecAsync(src, "CREATE SCHEMA app; CREATE TABLE app.t (id integer, extra text);");
+            await pg.ExecAsync(tgt, "CREATE SCHEMA app; CREATE TABLE app.t (id integer);");
+            await o.SetPreviewAsync(true);
+            var byLan = pg.Settings(tgt);
+            byLan.Server = lan;
+            var before = await CompareAsync(o, pg.Settings(src), byLan);
+            var runId = before.GetProperty("runId").GetString()!;
+            Assert.Equal(HttpStatusCode.OK, (await o.PostJson("/api/write-mode", """{ "enabled": true, "confirm": "ENABLE" }""")).StatusCode);
+            var planId = (await ScriptsAsync(o, runId, Path.Combine(o.Temp.Folder, "scripts"))).GetProperty("planId").GetString()!;
+            Assert.False(string.IsNullOrEmpty(planId));
+
+            var guarded = pg.Settings("postgres");
+            guarded.Label = "Prod";
+            guarded.Server = "127.0.0.1";
+            guarded.ProtectedServer = true;
+            o.Temp.Store.SaveConnection(guarded);
+
+            var r = await ApplyAsync(o, runId, planId, ["01_columns"], tgt);
+            var text = await r.Content.ReadAsStringAsync();
+            Assert.True(r.StatusCode == HttpStatusCode.Forbidden, text);
+            Assert.StartsWith($"{tgt} is on a server marked \"Protected", Body(text).GetProperty("message").GetString());
+            Assert.Empty(o.Temp.Store.GetApplyRuns());
+            Assert.Equal(0L, await ScalarAsync(tgt, "SELECT count(*) FROM pg_attribute WHERE attrelid = 'app.t'::regclass AND attname = 'extra'"));
+        }
+        finally
+        {
+            await pg.DropAsync(src);
+            await pg.DropAsync(tgt);
+        }
+    }
+
     protected async Task A_protected_host_is_refused_however_it_is_written()
     {
         var src = await pg.CreateDatabaseAsync("src");
@@ -642,6 +720,8 @@ public sealed class PgApplyTests(PgServer pg) : PgApplyTestsBase(pg)
     [PostgresFact] public Task The_target_identity_on_postgres_16() => The_target_is_known_by_its_cluster_or_for_a_deploy_login_by_its_address();
     [PostgresFact] public Task Apply_over_http_compares_again_to_a_match_on_postgres_16() => Compare_scripts_apply_with_the_typed_name_and_compare_again_to_a_match();
     [PostgresFact] public Task A_protected_host_is_refused_on_postgres_16() => A_protected_host_is_refused_however_it_is_written();
+    [PostgresFact] public Task A_protected_server_by_another_address_on_postgres_16() => A_protected_server_reached_by_another_address_of_this_machine_is_refused();
+    [PostgresFact] public Task Another_server_between_files_on_postgres_16() => A_file_whose_connection_reaches_another_server_is_never_run();
 }
 
 [Collection(Pg18Collection.Name)]
@@ -657,4 +737,6 @@ public sealed class Pg18ApplyTests(Pg18Server pg) : PgApplyTestsBase(pg)
     [PostgresFact] public Task The_target_identity_on_postgres_18() => The_target_is_known_by_its_cluster_or_for_a_deploy_login_by_its_address();
     [PostgresFact] public Task Apply_over_http_compares_again_to_a_match_on_postgres_18() => Compare_scripts_apply_with_the_typed_name_and_compare_again_to_a_match();
     [PostgresFact] public Task A_protected_host_is_refused_on_postgres_18() => A_protected_host_is_refused_however_it_is_written();
+    [PostgresFact] public Task A_protected_server_by_another_address_on_postgres_18() => A_protected_server_reached_by_another_address_of_this_machine_is_refused();
+    [PostgresFact] public Task Another_server_between_files_on_postgres_18() => A_file_whose_connection_reaches_another_server_is_never_run();
 }

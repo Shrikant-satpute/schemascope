@@ -32,9 +32,11 @@ public interface IApplyExecutor
     /// <summary>
     /// One file on its own connection, all or nothing where the engine allows it. Null when it committed, else the
     /// error; <paramref name="abort"/> cancels it (rolled back), <paramref name="beforeCommit"/> runs just before COMMIT.
+    /// <paramref name="expectedKey"/>, when given, is the <see cref="TargetFacts.Key"/> the gates checked: a file whose
+    /// connection reaches another server is not run.
     /// </summary>
     Task<string?> RunFileAsync(string connectionString, string database, VerifiedFile file, CancellationToken abort,
-        Action beforeCommit, Action<int>? statementDone = null);
+        Action beforeCommit, Action<int>? statementDone = null, string? expectedKey = null);
 
     /// <summary>A driver error, worded with where in the file it happened.</summary>
     string DescribeError(Exception ex, SqlBatch? statement);
@@ -139,10 +141,11 @@ public sealed partial class SqlServerApplyExecutor : IApplyExecutor
     /// One file on its own connection (sqlcmd opens one per file too): check the database, set sqlcmd's options,
     /// then BEGIN TRAN, every batch, COMMIT. Null when it committed, else the error; the transaction is rolled back.
     /// No command timeout, as with sqlcmd; <paramref name="abort"/> (Cancel now, or write mode turned off) cancels the
-    /// running batch, and the file is rolled back instead of committing.
+    /// running batch, and the file is rolled back instead of committing. <paramref name="expectedKey"/> is not used:
+    /// a SQL Server connection names one server (a failover partner is checked by the Protected rule).
     /// </summary>
     public async Task<string?> RunFileAsync(string connectionString, string database, VerifiedFile file, CancellationToken abort,
-        Action beforeCommit, Action<int>? statementDone = null)
+        Action beforeCommit, Action<int>? statementDone = null, string? expectedKey = null)
     {
         SqlBatch? current = null;
         try

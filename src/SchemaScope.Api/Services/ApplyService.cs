@@ -14,7 +14,11 @@ namespace SchemaScope.Api.Services;
 /// <param name="ConnectionString">The compare session's target connection string, used unmodified.</param>
 public sealed record ApplyJob(
     string CompareRunId, string ConnectionString, ApplyTarget Target,
-    IReadOnlyList<PlanFile> Files, IReadOnlyList<string> Sections, string? ProgressId);
+    IReadOnlyList<PlanFile> Files, IReadOnlyList<string> Sections, string? ProgressId)
+{
+    /// <summary>What the gates found the target to be (<see cref="TargetFacts.Key"/>); each file checks it again where the engine can.</summary>
+    public string? TargetKey { get; init; }
+}
 
 /// <summary>A plan file read back and proved unchanged since it was generated.</summary>
 public sealed record VerifiedFile(PlanFile File, IReadOnlyList<SqlBatch> Batches);
@@ -192,7 +196,7 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
 
                 var sw = Stopwatch.StartNew();
                 var error = await executor.RunFileAsync(job.ConnectionString, job.Target.Database, files[i], abort.Token,
-                    () => { if (!writeMode.Enabled) abort.Cancel(); });
+                    () => { if (!writeMode.Enabled) abort.Cancel(); }, expectedKey: job.TargetKey);
                 var record = new ApplyFileRecord
                 {
                     Folder = f.Folder,

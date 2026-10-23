@@ -1,4 +1,7 @@
 using System.Data.Common;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -1101,9 +1104,16 @@ public static class SchemaScopeApi
             // only SQL Server goes on without an answer (its files then report the unreachable server); any other engine is refused
             if (facts is null && engine != DatabaseEngine.SqlServer)
                 return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} could not be asked who it is, so nothing was applied.");
-            // the name the server reports for itself, against the protected connections: an alias or address is no way round
+            // the name the server reports for itself, against the protected connections. For SQL Server (@@SERVERNAME) an
+            // alias or address is no way round; another engine reports an address only, so the check below goes further
             if (facts is not null && OnProtectedServer(store, engine, [.. ReportedServers(engine, facts)]))
                 return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is on a server marked \"Protected - never apply scripts here\". Nothing was applied.");
+            // another engine under a second spelling (an IP for a name, a LAN address for localhost, a DNS alias, NAT):
+            // what the names resolve to, and each protected connection to the same engine asked who it is
+            if (facts is not null && engine != DatabaseEngine.SqlServer &&
+                await ProtectedElsewhereAsync(ProtectedConnections(store), engine, connection, facts,
+                    (c, ct) => AskProtectedAsync(engines, executor, c, ct), SameServer(executor)) is { } why)
+                return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} {why} Nothing was applied.");
             // another engine's source is known by what its server reports too: a second spelling of one host is no way round
             if (facts is not null && engine != DatabaseEngine.SqlServer &&
                 await executor.InspectAsync(session.SourceConnection!.ConnectionString) is { } sourceFacts &&
@@ -1129,7 +1139,10 @@ public static class SchemaScopeApi
                 try
                 {
                     // run-scoped: closing the dialog does not cut a file off half-way; POST /api/apply/{id}/stop does stop it
-                    return Results.Ok(await applier.RunAsync(new ApplyJob(runId, connection, target, files, ordered, request.ProgressId), verified, progress));
+                    // another engine's files each check they reach the server the gates checked (a host list can fail over)
+                    var job = new ApplyJob(runId, connection, target, files, ordered, request.ProgressId)
+                        { TargetKey = engine == DatabaseEngine.SqlServer ? null : facts?.Key };
+                    return Results.Ok(await applier.RunAsync(job, verified, progress));
                 }
                 catch (Exception ex)
                 {
@@ -1212,6 +1225,176 @@ public static class SchemaScopeApi
     /// </summary>
     private static IReadOnlyList<string> ReportedServers(DatabaseEngine engine, TargetFacts facts) =>
         engine == DatabaseEngine.SqlServer ? [facts.Key[..facts.Key.IndexOf('|')]] : facts.Hosts ?? [];
+
+    /// <summary>How long the second-spelling Protected check may spend resolving names and asking the protected connections.</summary>
+    internal static readonly TimeSpan ProtectedCheckTimeout = TimeSpan.FromSeconds(10);
+
+    private const string ProtectedText = "\"Protected - never apply scripts here\"";
+
+    /// <summary>The protected saved connections; null when the store cannot be read (the caller then refuses).</summary>
+    private static List<ConnectionSettings>? ProtectedConnections(SchemaScopeStore store)
+    {
+        try
+        {
+            return [.. store.GetConnections().Where(c => c.ProtectedServer)];
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A protected connection of the target's engine asked who it is, on its own saved string; null when it cannot be.</summary>
+    private static async Task<TargetFacts?> AskProtectedAsync(EngineRegistry engines, IApplyExecutor executor, ConnectionSettings c,
+        CancellationToken ct)
+    {
+        if (ConnectionRules.Problem(c) is not null || ConnectionRules.MissingPassword(c) is not null) return null;
+        if (!engines.TryGet(c.Engine, out var provider)) return null;
+        try
+        {
+            // its own password to its own destination only (the exact-destination rule), and read-only
+            return await executor.InspectAsync(provider.Connections.BuildConnectionString(c), ct);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The engine's "same server" for two inspections: PostgreSQL's cluster, else the key itself.</summary>
+    private static Func<TargetFacts, TargetFacts, bool> SameServer(IApplyExecutor executor) =>
+        executor.Engine == DatabaseEngine.PostgreSql ? PgApplyExecutor.SameCluster : (a, b) => a.Key == b.Key;
+
+    /// <summary>
+    /// For a target of another engine than SQL Server: null, or why it is on a protected server under a spelling the
+    /// text rule cannot see. The target's hosts and the address it reports are resolved, as is every protected
+    /// connection's host; one address in common refuses (this machine's addresses all count as one), as the text rule
+    /// does - a protected host protects every engine and port on it. Then each protected connection to the same engine
+    /// is asked who it is (<paramref name="ask"/>, read-only) and the same server (<paramref name="same"/>) refuses.
+    /// Fails closed: a store that cannot be read, a name that cannot be resolved or a protected connection that cannot
+    /// be asked refuses too.
+    /// </summary>
+    internal static async Task<string?> ProtectedElsewhereAsync(IReadOnlyList<ConnectionSettings>? guarded, DatabaseEngine engine,
+        string connection, TargetFacts facts, Func<ConnectionSettings, CancellationToken, Task<TargetFacts?>> ask,
+        Func<TargetFacts, TargetFacts, bool> same, Func<string, CancellationToken, Task<IPAddress[]>>? resolve = null)
+    {
+        var marked = $"is on a server marked {ProtectedText}.";
+        if (guarded is null) return marked;
+        if (guarded.Count == 0) return null;
+        resolve ??= Dns.GetHostAddressesAsync;
+        using var time = new CancellationTokenSource(ProtectedCheckTimeout);
+
+        if (ConnectionEndpoints.Parse(engine, connection)?.Hosts is not { } targetHosts) return marked;
+        if (await AddressesAsync([.. targetHosts, .. facts.Hosts ?? []], resolve, time.Token) is not { } mine)
+            return $"could not be resolved to its addresses, so it cannot be told apart from a server marked {ProtectedText}.";
+
+        foreach (var c in guarded)
+        {
+            if (ProtectedHosts(c) is not { } hosts) return marked;
+            if (await AddressesAsync(hosts, resolve, time.Token) is not { } theirs)
+                return $"cannot be told apart from {NameOf(c)}, marked {ProtectedText}: its server name could not be resolved.";
+            if (theirs.Overlaps(mine)) return marked;
+        }
+        foreach (var c in guarded.Where(c => c.Engine == engine))
+        {
+            TargetFacts? who;
+            try
+            {
+                who = await ask(c, time.Token);
+            }
+            catch (Exception)
+            {
+                who = null;
+            }
+            if (who is null)
+                return $"cannot be told apart from {NameOf(c)}, marked {ProtectedText}: that server could not be asked who it is.";
+            if (same(who, facts)) return marked;
+        }
+        return null;
+
+        static string NameOf(ConnectionSettings c) => string.IsNullOrWhiteSpace(c.Label) ? c.Server : c.Label;
+    }
+
+    /// <summary>
+    /// The hosts a protected connection reaches, as written (the resolver needs the full name): a SQL Server's servers
+    /// without prefix, port or instance, another engine's host list. Null when they cannot be read.
+    /// </summary>
+    private static List<string>? ProtectedHosts(ConnectionSettings c)
+    {
+        if (c.Engine == DatabaseEngine.SqlServer)
+            return SavedServers(c)?.Select(s =>
+            {
+                foreach (var prefix in new[] { "tcp:", "np:", "lpc:", "admin:" })
+                    if (s.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { s = s[prefix.Length..]; break; }
+                var cut = s.IndexOfAny([',', '\\']);
+                return (cut >= 0 ? s[..cut] : s).Trim();
+            }).ToList();
+        return ConnectionEndpoints.Parse(c.Engine, c.UseRawConnectionString
+            ? c.RawConnectionString
+            : string.IsNullOrWhiteSpace(c.Server) ? null : new DbConnectionStringBuilder { ["Host"] = c.Server.Trim() }.ConnectionString)?.Hosts.ToList();
+    }
+
+    /// <summary>Stands for every address of this machine: loopback, its name and each of its interfaces' addresses.</summary>
+    private static readonly IPAddress ThisMachine = IPAddress.Loopback;
+
+    /// <summary>Every address of <paramref name="hosts"/>, this machine's as <see cref="ThisMachine"/>; null when one cannot be resolved.</summary>
+    private static async Task<HashSet<IPAddress>?> AddressesAsync(IEnumerable<string> hosts,
+        Func<string, CancellationToken, Task<IPAddress[]>> resolve, CancellationToken ct)
+    {
+        var local = LocalAddresses();
+        IPAddress Plain(IPAddress ip)
+        {
+            if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+            if (ip.AddressFamily == AddressFamily.InterNetworkV6) ip = new IPAddress(ip.GetAddressBytes());   // no scope id
+            return IPAddress.IsLoopback(ip) || local.Contains(ip) ? ThisMachine : ip;
+        }
+
+        var all = new HashSet<IPAddress>();
+        foreach (var raw in hosts)
+        {
+            var h = (raw ?? "").Trim().Trim('[', ']');
+            if (h.Length == 0) continue;
+            if (h is "." or "(local)" || h.Equals("(localdb)", StringComparison.OrdinalIgnoreCase) ||
+                h.Equals("localhost", StringComparison.OrdinalIgnoreCase) || h.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase))
+            {
+                all.Add(ThisMachine);
+                continue;
+            }
+            if (IPAddress.TryParse(h, out var literal))
+            {
+                all.Add(Plain(literal));
+                continue;
+            }
+            try
+            {
+                var found = await resolve(h, ct);
+                if (found.Length == 0) return null;
+                foreach (var ip in found) all.Add(Plain(ip));
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+        return all;
+    }
+
+    /// <summary>This machine's own unicast addresses (every interface), IPv6 scope ids dropped.</summary>
+    private static HashSet<IPAddress> LocalAddresses()
+    {
+        var set = new HashSet<IPAddress>();
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            foreach (var u in nic.GetIPProperties().UnicastAddresses)
+                set.Add(u.Address.AddressFamily == AddressFamily.InterNetworkV6 ? new IPAddress(u.Address.GetAddressBytes()) : u.Address);
+        }
+        catch (NetworkInformationException)
+        {
+            // none listed: loopback and the machine name still count as this machine
+        }
+        return set;
+    }
 
     /// <summary>
     /// Protected when the connection was protected at compare time, when its saved connection is protected now, or

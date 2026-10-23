@@ -60,38 +60,60 @@ public sealed partial class PgApplyExecutor : IApplyExecutor
         try
         {
             await using var open = await PgConnectionService.OpenAsync(connectionString, ct);
-            var conn = open.Connection;
-            string database;
-            int? port;
-            string? address;
-            await using (var who = new NpgsqlCommand("SELECT current_database(), inet_server_port(), host(inet_server_addr())", conn))
-            await using (var r = await who.ExecuteReaderAsync(ct))
-            {
-                if (!await r.ReadAsync(ct)) return null;
-                database = r.GetString(0);
-                port = r.IsDBNull(1) ? null : r.GetInt32(1);
-                address = r.IsDBNull(2) ? null : r.GetString(2);
-            }
-
-            string? system = null;
-            try
-            {
-                await using var id = new NpgsqlCommand("SELECT system_identifier::text FROM pg_control_system()", conn);
-                system = await id.ExecuteScalarAsync(ct) as string;
-            }
-            catch (PostgresException)
-            {
-                // 42501 for a login without the right: the address and port below are the identity then
-            }
-
-            return KeyOf(system, address, port, database) is { } key
-                ? new TargetFacts(key, new HashSet<string>()) { Hosts = address is null ? [] : [address] }
-                : null;
+            return await IdentifyAsync(open.Connection, ct);
         }
         catch (Exception ex) when (ex is DbException or InvalidOperationException or IOException or TimeoutException or InvalidCastException)
         {
             return null;
         }
+    }
+
+    /// <summary><see cref="InspectAsync"/> on a connection already open; null when the server is not known.</summary>
+    private static async Task<TargetFacts?> IdentifyAsync(NpgsqlConnection conn, CancellationToken ct)
+    {
+        string database;
+        int? port;
+        string? address;
+        await using (var who = new NpgsqlCommand("SELECT current_database(), inet_server_port(), host(inet_server_addr())", conn))
+        await using (var r = await who.ExecuteReaderAsync(ct))
+        {
+            if (!await r.ReadAsync(ct)) return null;
+            database = r.GetString(0);
+            port = r.IsDBNull(1) ? null : r.GetInt32(1);
+            address = r.IsDBNull(2) ? null : r.GetString(2);
+        }
+
+        string? system = null;
+        try
+        {
+            await using var id = new NpgsqlCommand("SELECT system_identifier::text FROM pg_control_system()", conn);
+            system = await id.ExecuteScalarAsync(ct) as string;
+        }
+        catch (PostgresException)
+        {
+            // 42501 for a login without the right: the address and port below are the identity then
+        }
+
+        return KeyOf(system, address, port, database) is { } key
+            ? new TargetFacts(key, new HashSet<string>()) { Hosts = address is null ? [] : [address] }
+            : null;
+    }
+
+    /// <summary>
+    /// The same cluster, whatever database each opened: the same system identifier when both report one, else the same
+    /// reported address and port. A protected connection protects its whole cluster.
+    /// </summary>
+    public static bool SameCluster(TargetFacts a, TargetFacts b)
+    {
+        static (string Kind, string Who, string Port) Of(TargetFacts f)
+        {
+            var parts = f.Key.Split('|', 4);
+            var colon = parts.Length > 1 ? parts[1].IndexOf(':') : -1;
+            return parts.Length < 3 || colon < 0 ? ("", "", "") : (parts[1][..colon], parts[1][(colon + 1)..], parts[2]);
+        }
+        var (x, y) = (Of(a), Of(b));
+        if (x.Kind == "system" && y.Kind == "system") return x.Who == y.Who;
+        return x.Port == y.Port && (a.Hosts ?? []).Any(h => (b.Hosts ?? []).Contains(h, StringComparer.OrdinalIgnoreCase));
     }
 
     /// <summary>"1|system:&lt;id&gt;|port|db", else "1|address:&lt;ip&gt;|port|db"; null when the server is not known.</summary>
@@ -164,13 +186,14 @@ public sealed partial class PgApplyExecutor : IApplyExecutor
     private static partial Regex AddValueRx();
 
     /// <summary>
-    /// One file on its own connection: check the database, BEGIN, <see cref="TransactionSetup"/>, every statement,
+    /// One file on its own connection: check the database (and, with <paramref name="expectedKey"/>, that the server
+    /// is the one the gates checked - a host list may fail over to another host between files), BEGIN, <see cref="TransactionSetup"/>, every statement,
     /// <paramref name="beforeCommit"/>, COMMIT. Null when it committed, else the error; the transaction is rolled back.
     /// No command timeout, as with psql; <paramref name="abort"/> (Cancel now, or write mode turned off) cancels the
     /// running statement and the file is rolled back instead of committing.
     /// </summary>
     public async Task<string?> RunFileAsync(string connectionString, string database, VerifiedFile file, CancellationToken abort,
-        Action beforeCommit, Action<int>? statementDone = null)
+        Action beforeCommit, Action<int>? statementDone = null, string? expectedKey = null)
     {
         SqlBatch? current = null;
         int? index = null;
@@ -187,6 +210,9 @@ public sealed partial class PgApplyExecutor : IApplyExecutor
                 if (!string.Equals(opened, database, StringComparison.Ordinal))
                     return $"The connection opened database {opened}, not {database}, so this file was not run.";
             }
+            if (expectedKey is not null && (await IdentifyAsync(conn, abort))?.Key is var reached &&
+                !string.Equals(reached, expectedKey, StringComparison.Ordinal))
+                return "The connection reached another server than the one checked before the apply, so this file was not run.";
             await using (var name = new NpgsqlCommand("SET application_name = 'SchemaScope'", conn))
                 await name.ExecuteNonQueryAsync(abort);
 

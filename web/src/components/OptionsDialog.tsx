@@ -25,11 +25,12 @@ const TYPE_LABELS: Record<DbObjectType, string> = {
   extension: 'Extensions',
   rangeType: 'Range types',
   collation: 'Collations',
+  operator: 'Operators',
 }
 
 /** Kinds only SQL Server has, and only PostgreSQL has: listed only when an engine of the setup has them. */
 const SQL_SERVER_TYPES: DbObjectType[] = ['tableType', 'userDefinedType', 'synonym']
-const POSTGRES_TYPES: DbObjectType[] = ['materializedView', 'domain', 'enumType', 'compositeType', 'extension', 'rangeType', 'collation']
+const POSTGRES_TYPES: DbObjectType[] = ['materializedView', 'domain', 'enumType', 'compositeType', 'extension', 'rangeType', 'collation', 'operator']
 
 const ALL_TYPES = Object.keys(TYPE_LABELS) as DbObjectType[]
 
@@ -253,6 +254,7 @@ export function OptionsDialog({
                   'extension',
                   'rangeType',
                   'collation',
+                  'operator',
                 ])
               }
             >

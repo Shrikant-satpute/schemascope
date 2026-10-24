@@ -90,14 +90,9 @@ internal sealed partial class PgScriptRun
             altered.Add(e.Key);
             var want = EnumLabels(e);
             var have = EnumLabels(Target(e)!);
-            var at = have.Select(l => want.IndexOf(l)).ToList();
-            if (at.Any(i => i < 0) || at.Zip(at.Skip(1)).Any(p => p.Second < p.First))
+            if (EnumCannotAdd(e) is { } why)
             {
-                var gone = have.Where(l => !want.Contains(l)).ToList();
-                review.Hold(ReviewLog.NotApplied, Kind(e), Display(e), null,
-                    gone.Count > 0
-                        ? $"the target's type has label(s) {string.Join(", ", gone)} that the source's does not; PostgreSQL cannot remove a label"
-                        : $"the labels are in another order on the target ({string.Join(", ", have)}); PostgreSQL cannot reorder them", ColumnTypes.Name);
+                review.Hold(ReviewLog.NotApplied, Kind(e), Display(e), null, why, ColumnTypes.Name);
                 continue;
             }
             var present = new List<string>(have);
@@ -113,6 +108,22 @@ internal sealed partial class PgScriptRun
                 adds.Add(want[i]);
             }
         }
+    }
+
+    /// <summary>
+    /// Why adding labels cannot make the target's enum the source's: it has a label the source's lacks, or its labels
+    /// are in another order (PostgreSQL can neither remove nor reorder one). Null when adding labels is enough.
+    /// </summary>
+    private string? EnumCannotAdd(DbObject e)
+    {
+        var want = EnumLabels(e);
+        var have = EnumLabels(Target(e)!);
+        var at = have.Select(l => want.IndexOf(l)).ToList();
+        if (!at.Any(i => i < 0) && !at.Zip(at.Skip(1)).Any(p => p.Second < p.First)) return null;
+        var gone = have.Where(l => !want.Contains(l)).ToList();
+        return gone.Count > 0
+            ? $"the target's type has label(s) {string.Join(", ", gone)} that the source's does not; PostgreSQL cannot remove a label"
+            : $"the labels are in another order on the target ({string.Join(", ", have)}); PostgreSQL cannot reorder them";
     }
 
     // ------------------------------------------------------------------ 05: what a table has beyond its columns
@@ -240,8 +251,8 @@ internal sealed partial class PgScriptRun
             }
         }
 
-        // WITH (...) storage options, one by one (a partitioned table has none of its own)
-        static Dictionary<string, string> StorageOf(DbObject o) => (o.Properties.GetValueOrDefault("options") ?? "")
+        // WITH (...) storage options, one by one (a partitioned table has none of its own); fillfactor not when the compare ignores it
+        Dictionary<string, string> StorageOf(DbObject o) => PgCanonicalWriter.StorageOptions(o.Properties.GetValueOrDefault("options"), compare.IgnoreFillFactor)
             .Split(", ", StringSplitOptions.RemoveEmptyEntries).Select(x => x.Split('=', 2))
             .ToDictionary(x => x[0], x => x.Length > 1 ? x[1] : "", StringComparer.Ordinal);
         var so = StorageOf(src);
@@ -255,6 +266,29 @@ internal sealed partial class PgScriptRun
             if (reset.Count > 0) sql.Append($"ALTER TABLE {table} RESET ({string.Join(", ", reset)});\n");
             Constraints.Files.Add(new PgFile($"options_{src.Schema}.{src.Name}", Header(Constraints, "storage options", src.FullName) + sql,
                 new ObjectName(src.Schema, src.Name)));
+        }
+
+        // a typed table (CREATE TABLE ... OF type): NOT OF keeps every column and row; OF checks that the columns are the
+        // type's exactly, and the file fails, changing nothing, when they are not
+        var ofType = src.Properties.GetValueOrDefault("ofType");
+        var theirType = tgt.Properties.GetValueOrDefault("ofType");
+        if (ofType != theirType)
+        {
+            var sql = new StringBuilder();
+            if (theirType is not null) sql.Append($"-- The target's table is of type {theirType}.\nALTER TABLE {table} NOT OF;\n");
+            string? why = null;
+            if (ofType is not null)
+            {
+                why = MissingNamed(ofType, before03: false) is { } needs
+                    ? $"its type {Display(needs)} is not on the target and this run does not create it{Why(needs)}"
+                    : null;
+                if (why is null) sql.Append($"-- The columns must be the type's exactly, in its order, or this file changes nothing.\nALTER TABLE {table} OF {ofType};\n");
+            }
+            if (why is not null)
+                review.Hold(ReviewLog.NotApplied, "table option", "ofType", src.FullName, why, Constraints.Name);
+            else
+                Constraints.Files.Add(new PgFile($"oftype_{src.Schema}.{src.Name}", Header(Constraints, "typed table", src.FullName) + sql,
+                    new ObjectName(src.Schema, src.Name)));
         }
     }
 
@@ -317,10 +351,12 @@ internal sealed partial class PgScriptRun
 
     /// <summary>
     /// A domain both sides have: a default set or changed, NOT NULL relaxed, a missing check added NOT VALID and
-    /// validated by a later file, a check whose rule differs replaced the same way. A base type or collation that
-    /// differs, NOT NULL the target lacks, and what only the target has are held.
+    /// validated by a later file, a check whose rule differs replaced in one file (dropped and added validated, so a
+    /// value that breaks the new rule makes the file fail and the old rule stays). A check is written only once a probe
+    /// of the values stored in columns of the domain finds none that breaks it, as a table's check is. A base type or
+    /// collation that differs, NOT NULL the target lacks, and what only the target has are held.
     /// </summary>
-    private void PlanDomains()
+    private async Task PlanDomainsAsync()
     {
         foreach (var src in Src.Objects.Where(o => o.Type == DbObjectType.Domain && InScope(o) && !IsExcluded(o) && StatusOf(o) == Diff.Different)
                      .OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal))
@@ -370,14 +406,31 @@ internal sealed partial class PgScriptRun
                     review.Hold(ReviewLog.NotAppliedConstraints, "check", ck.Name, Display(src), why, Constraints.Name);
                     continue;
                 }
-                var sql = new StringBuilder("-- Added NOT VALID: checks new values at once; the values already stored are checked by VALIDATE in a later file.\n");
+                // the values already stored: the rule is the source's, run against each column of the domain on the target
+                if (!ck.IsNotTrusted && await DomainViolationsAsync(tgt, ck) is { } broken)
+                {
+                    review.Hold(ReviewLog.NotAppliedConstraints, "check", ck.Name, Display(src),
+                        (other is null ? "" : $"the target's check of this name is different ({other.Definition}), and ") +
+                        $"{broken}; fix the data first", Constraints.Name);
+                    continue;
+                }
+                var sql = new StringBuilder();
                 if (other is not null)
+                {
+                    // one file: if a value written since breaks the new rule, it fails and the target keeps its own
                     sql.Append($"-- The target's check of this name is different: {PgDdl.OneLine(other.Definition)}\n")
-                       .Append($"ALTER DOMAIN {name} DROP CONSTRAINT {PgDdl.Q(ck.Name)} RESTRICT;\n");
-                sql.Append($"ALTER DOMAIN {name} ADD CONSTRAINT {PgDdl.Q(ck.Name)} {ck.Definition} NOT VALID;\n");
+                       .Append(ck.IsNotTrusted
+                           ? "-- Replaced NOT VALID, as the source has it: the values already stored are not checked.\n"
+                           : "-- Replaced in one file: the values already stored are checked here, and if one breaks the new rule the file changes nothing.\n")
+                       .Append($"ALTER DOMAIN {name} DROP CONSTRAINT {PgDdl.Q(ck.Name)} RESTRICT;\n")
+                       .Append($"ALTER DOMAIN {name} ADD CONSTRAINT {PgDdl.Q(ck.Name)} {ck.Definition}{(ck.IsNotTrusted ? " NOT VALID" : "")};\n");
+                }
+                else
+                    sql.Append("-- Added NOT VALID: checks new values at once; the values already stored are checked by VALIDATE in a later file.\n")
+                       .Append($"ALTER DOMAIN {name} ADD CONSTRAINT {PgDdl.Q(ck.Name)} {ck.Definition} NOT VALID;\n");
                 Constraints.Files.Add(new PgFile($"domain_{src.Schema}.{src.Name}.{ck.Name}", Header(Constraints, "domain check", $"{Display(src)}.{ck.Name}") + sql,
                     NameOf(src)));
-                if (!ck.IsNotTrusted) ValidateDomain(src, ck.Name);
+                if (!ck.IsNotTrusted && other is null) ValidateDomain(src, ck.Name);
             }
             foreach (var other in theirs.Values.Where(c => src.Constraints.All(x => x.Kind != ConstraintKind.Check || x.Name != c.Name)))
                 review.Hold(ReviewLog.NotAppliedDestructive, "check", other.Name, Display(src),
@@ -386,11 +439,105 @@ internal sealed partial class PgScriptRun
         }
     }
 
+    /// <summary>
+    /// How the values stored in the target's columns of <paramref name="domain"/> break <paramref name="check"/> ("2
+    /// existing value(s) in t.c break it"), or null when none does - or when that could not be checked (said so in the
+    /// README, as for a table's check). A column that holds the domain inside an array or a composite type is not
+    /// checked.
+    /// </summary>
+    private async Task<string?> DomainViolationsAsync(DbObject domain, ConstraintInfo check)
+    {
+        if (CheckExpression(check.Definition) is not { } expression)
+        {
+            probes.NoteNotChecked($"values in columns of domain {Display(domain)} that check {check.Name} refuses", "its expression could not be read");
+            return null;
+        }
+        var broken = new List<string>();
+        foreach (var table in Tgt.Objects.Where(o => o.Type == DbObjectType.Table).OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal))
+            foreach (var c in table.Columns.Where(c => PgDdl.Mentions(c.DataType, domain.Schema, domain.Name)))
+            {
+                if (!IsDomainType(c.DataType, domain))
+                {
+                    probes.NoteNotChecked($"values of {table.FullName}.{c.Name} against check {check.Name} of domain {Display(domain)}",
+                        "the column holds the domain inside an array or another type; not probed");
+                    continue;
+                }
+                var bad = await probes.CheckViolationsAsync(PgDdl.Q(table), check.Name, OnValue(expression, PgDdl.Q(c.Name)), ct);
+                if (bad.Count > 0) broken.Add($"{bad.Count:N0} existing value(s) in {table.FullName}.{c.Name}");
+            }
+        return broken.Count == 0 ? null : $"{string.Join(", ", broken)} break it";
+    }
+
+    /// <summary>The column's type is the domain itself (format_type spells it schema.name, bare or quoted), not an array of it.</summary>
+    private static bool IsDomainType(string dataType, DbObject domain) =>
+        new[] { $"{PgDdl.Ident(domain.Schema)}.{PgDdl.Ident(domain.Name)}", PgDdl.Q(domain.Schema, domain.Name),
+                $"{PgDdl.Ident(domain.Schema)}.{PgDdl.Q(domain.Name)}", $"{PgDdl.Q(domain.Schema)}.{PgDdl.Ident(domain.Name)}" }
+            .Contains(dataType.Trim(), StringComparer.Ordinal);
+
+    /// <summary>A domain check's expression with each VALUE (outside literals, comments and quoted names) read from <paramref name="column"/>.</summary>
+    internal static string OnValue(string expression, string column)
+    {
+        var code = PgStatementSplitter.CodeOnly(expression);
+        var sb = new StringBuilder();
+        var last = 0;
+        for (var at = code.IndexOf("VALUE", StringComparison.OrdinalIgnoreCase); at >= 0; at = code.IndexOf("VALUE", at + 5, StringComparison.OrdinalIgnoreCase))
+        {
+            var before = at > 0 ? code[at - 1] : ' ';
+            var after = at + 5 < code.Length ? code[at + 5] : ' ';
+            if (PgStatementSplitter.IsIdentCont(before) || before == '.' || PgStatementSplitter.IsIdentCont(after)) continue;
+            sb.Append(expression, last, at - last).Append('(').Append(column).Append(')');
+            last = at + 5;
+        }
+        return sb.Append(expression, last, expression.Length - last).ToString();
+    }
+
     private void ValidateDomain(DbObject domain, string constraint) =>
         validations.Add(new PgFile($"validate_{domain.Schema}.{domain.Name}.{constraint}",
             Header(Constraints, "validate", $"{Display(domain)}.{constraint}") +
             "-- Checks the values already stored in columns of this domain; new values were checked from the moment it was added.\n" +
             $"ALTER DOMAIN {PgDdl.Q(domain)} VALIDATE CONSTRAINT {PgDdl.Q(constraint)};\n", NameOf(domain)));
+
+    /// <summary>
+    /// A composite type both sides have whose target copy lacks attributes at the end: ALTER TYPE ... ADD ATTRIBUTE for
+    /// each, in the source's order (with CASCADE when typed tables of it are on the target, which gain the column too).
+    /// Anything else - an attribute that differs, one only the target has, another order - is held.
+    /// </summary>
+    private void PlanComposites()
+    {
+        foreach (var src in Src.Objects.Where(o => o.Type == DbObjectType.CompositeType && InScope(o) && !IsExcluded(o) && StatusOf(o) == Diff.Different)
+                     .OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal))
+        {
+            altered.Add(src.Key);
+            var tgt = Target(src)!;
+            string Attr(ColumnInfo c) => $"{PgDdl.Q(c.Name)} {c.DataType}{(!compare.IgnoreCollation && !string.IsNullOrEmpty(c.Collation) ? " COLLATE " + c.Collation : "")}";
+            var want = src.Columns.OrderBy(c => c.Ordinal).ToList();
+            var have = tgt.Columns.OrderBy(c => c.Ordinal).ToList();
+            if (have.Count > want.Count || !have.Select(Attr).SequenceEqual(want.Take(have.Count).Select(Attr)))
+            {
+                review.Hold(ReviewLog.NotApplied, Kind(src), Display(src), null,
+                    $"its attributes differ by more than the ones the target lacks at the end (source: {string.Join(", ", want.Select(Attr))}; target: " +
+                    $"{string.Join(", ", have.Select(Attr))}); DROP or ALTER ATTRIBUTE can lose values, so change it by hand", Constraints.Name);
+                continue;
+            }
+            var adds = want.Skip(have.Count).ToList();
+            if (adds.Count == 0) continue;
+            var text = string.Join("\n", adds.Select(c => $"{c.DataType} {c.Collation}"));
+            if ((MissingNamed(text, before03: false) is { } needs
+                    ? $"it uses {Kind(needs)} {Display(needs)}, which the target lacks and this run does not create{Why(needs)}"
+                    : NotReady(text)) is { } why)
+            {
+                review.Hold(ReviewLog.NotApplied, Kind(src), Display(src), null, why, Constraints.Name);
+                continue;
+            }
+            var typed = Tgt.Objects.Where(o => o.Type == DbObjectType.Table && o.Properties.GetValueOrDefault("ofType") is { } of && PgDdl.Mentions(of, src.Schema, src.Name))
+                .Select(o => o.FullName).ToList();
+            var sql = new StringBuilder("-- New attributes go at the end; values already stored in this type get NULL for them.\n");
+            if (typed.Count > 0) sql.Append($"-- CASCADE: the typed table(s) {string.Join(", ", typed)} gain the column too.\n");
+            foreach (var c in adds)
+                sql.Append($"ALTER TYPE {PgDdl.Q(src)} ADD ATTRIBUTE {Attr(c)}{(typed.Count > 0 ? " CASCADE" : "")};\n");
+            Constraints.Files.Add(new PgFile($"type_{src.Schema}.{src.Name}", Header(Constraints, "composite type", Display(src)) + sql, NameOf(src)));
+        }
+    }
 
     /// <summary>A schema both sides have whose owner differs: ALTER SCHEMA ... OWNER TO when that role is on the target.</summary>
     private void PlanSchemaOwners(HashSet<string>? roles)

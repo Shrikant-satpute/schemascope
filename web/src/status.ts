@@ -139,4 +139,5 @@ export const TYPE_ORDER = [
   'extension',
   'rangeType',
   'collation',
+  'operator',
 ] as const

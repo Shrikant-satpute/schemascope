@@ -64,8 +64,28 @@ public static class PgCanonicalWriter
         DbObjectType.Extension => WriteExtension(o),
         DbObjectType.RangeType => WriteRange(o),
         DbObjectType.Collation => WriteCollation(o),
+        DbObjectType.Operator => WriteOperator(o),
         _ => o.Definition ?? ""
     };
+
+    /// <summary>
+    /// CREATE OPERATOR with its function, argument types, commutator, negator, estimators, HASHES and MERGES. The name
+    /// is written schema.op, as CREATE and DROP OPERATOR take it (an operator's own name is never quoted).
+    /// </summary>
+    public static string WriteOperator(DbObject o)
+    {
+        var p = o.Properties;
+        var options = new List<string> { $"FUNCTION = {p.GetValueOrDefault("function")}" };
+        if (p.GetValueOrDefault("leftArg") is { Length: > 0 } left) options.Add($"LEFTARG = {left}");
+        if (p.GetValueOrDefault("rightArg") is { Length: > 0 } right) options.Add($"RIGHTARG = {right}");
+        if (p.GetValueOrDefault("commutator") is { Length: > 0 } commutator) options.Add($"COMMUTATOR = {commutator}");
+        if (p.GetValueOrDefault("negator") is { Length: > 0 } negator) options.Add($"NEGATOR = {negator}");
+        if (p.GetValueOrDefault("restrict") is { Length: > 0 } restrict) options.Add($"RESTRICT = {restrict}");
+        if (p.GetValueOrDefault("join") is { Length: > 0 } join) options.Add($"JOIN = {join}");
+        if (p.ContainsKey("hashes")) options.Add("HASHES");
+        if (p.ContainsKey("merges")) options.Add("MERGES");
+        return $"CREATE OPERATOR {Q(o.Schema)}.{o.Name} ({string.Join(", ", options)});";
+    }
 
     private static string WriteSchema(DbObject o)
     {
@@ -142,7 +162,8 @@ public static class PgCanonicalWriter
         var p = o.Properties;
         var table = $"{Q(o.Schema)}.{Q(o.Name)}";
         var sb = new StringBuilder(512);
-        sb.Append(p.ContainsKey("persistence") ? "CREATE UNLOGGED TABLE " : "CREATE TABLE ").Append($"{table} (\n");
+        sb.Append(p.ContainsKey("persistence") ? "CREATE UNLOGGED TABLE " : "CREATE TABLE ").Append(table)
+          .Append(p.GetValueOrDefault("ofType") is { Length: > 0 } ofType ? $" OF {ofType}" : "").Append(" (\n");
 
         var columns = opt.IgnoreColumnOrder
             ? o.Columns.OrderBy(c => c.Name, StringComparer.Ordinal).ToList()
@@ -167,7 +188,7 @@ public static class PgCanonicalWriter
         sb.Append(string.Join(",\n", lines)).Append("\n)");
         if (p.GetValueOrDefault("inherits") is { Length: > 0 } inherits) sb.Append($" INHERITS ({inherits})");
         if (p.GetValueOrDefault("partitionBy") is { Length: > 0 } partitionBy) sb.Append($" PARTITION BY {partitionBy}");
-        if (p.GetValueOrDefault("options") is { Length: > 0 } storage) sb.Append($" WITH ({storage})");
+        if (StorageOptions(p.GetValueOrDefault("options"), opt.IgnoreFillFactor) is { Length: > 0 } storage) sb.Append($" WITH ({storage})");
         sb.Append(";\n");
 
         // a partition: where it hangs and which rows it takes
@@ -198,6 +219,14 @@ public static class PgCanonicalWriter
 
     private static bool Named(bool systemNamed, CompareOptions opt) => !(opt.IgnoreSystemNamedConstraints && systemNamed);
 
+    /// <summary>
+    /// A table's WITH (...) options as the reader keeps them ("a=1, b=2", in order), fillfactor left out when
+    /// <paramref name="ignoreFillFactor"/>: the compare does not see it then, while what 03 creates keeps it.
+    /// </summary>
+    public static string StorageOptions(string? options, bool ignoreFillFactor) =>
+        string.Join(", ", (options ?? "").Split(", ", StringSplitOptions.RemoveEmptyEntries)
+            .Where(x => !(ignoreFillFactor && x.StartsWith("fillfactor=", StringComparison.Ordinal))));
+
     private static string ColumnLine(ColumnInfo c, DbObject o, CompareOptions opt)
     {
         var sb = new StringBuilder(96);
@@ -214,7 +243,8 @@ public static class PgCanonicalWriter
 
         if (c.IsComputed) sb.Append($" GENERATED ALWAYS AS ({c.ComputedDefinition}) {(c.IsPersisted ? "STORED" : "VIRTUAL")}");
 
-        sb.Append(c.IsNullable ? " NULL" : " NOT NULL");
+        // PostgreSQL 18: a NOT NULL that is NOT VALID still lets the rows already there hold NULLs
+        sb.Append(c.NotNullNotValid ? " NOT NULL NOT VALID" : c.IsNullable ? " NULL" : " NOT NULL");
 
         var def = o.Constraints.FirstOrDefault(x => x.Kind == ConstraintKind.Default && x.ColumnName == c.Name);
         if (def is not null) sb.Append(" DEFAULT ").Append(def.Definition);

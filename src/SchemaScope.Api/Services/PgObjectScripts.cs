@@ -136,7 +136,9 @@ public static class PgObjectScripts
             DbObjectType.Trigger => $"DROP TRIGGER {PgDdl.Q(row.Name)} ON {PgDdl.Q(row.Schema, row.ParentName ?? "")};",
             DbObjectType.Sequence => $"DROP SEQUENCE {name};",
             DbObjectType.Domain => $"DROP DOMAIN {name};",
-            DbObjectType.EnumType or DbObjectType.CompositeType => $"DROP TYPE {name};",
+            DbObjectType.EnumType or DbObjectType.CompositeType or DbObjectType.RangeType => $"DROP TYPE {name};",
+            DbObjectType.Collation => $"DROP COLLATION {name};",
+            DbObjectType.Operator => $"DROP OPERATOR {PgDdl.Q(row.Schema)}.{row.Name} ({row.Signature});",
             DbObjectType.Extension => $"DROP EXTENSION {PgDdl.Q(row.Name)};",
             _ => $"DROP SCHEMA {name};",
         };
@@ -160,7 +162,10 @@ public static class PgObjectScripts
         {
             ScriptSection.NewColumns, ScriptSection.MissingObjects, ScriptSection.ColumnTypes, ScriptSection.Constraints, ScriptSection.Indexes,
         };
-        if (statuses.Any(s => s.Type == DbObjectType.Trigger && s.Status == ObjectStatus.MissingInTarget)) sections.Add(ScriptSection.Triggers);
+        // 07 also holds a table's rules (CREATE RULE), for a table that differs or that 03 creates
+        if (statuses.Any(s => (s.Type == DbObjectType.Trigger && s.Status == ObjectStatus.MissingInTarget) ||
+                              (s.Type == DbObjectType.Table && s.Status is ObjectStatus.Different or ObjectStatus.MissingInTarget)))
+            sections.Add(ScriptSection.Triggers);
         if (statuses.Any(s => s.Type.IsModule() && s.Status == ObjectStatus.Different)) sections.Add(ScriptSection.DifferentModules);
         if (statuses.Any(s => s.Type.IsModule() && s.Status == ObjectStatus.FormattingOnly)) sections.Add(ScriptSection.Formatting);
 

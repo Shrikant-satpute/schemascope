@@ -63,7 +63,7 @@ public static class StructureDiffService
         };
         // PostgreSQL: what a table is beyond its columns and keys (UNLOGGED, partitioning, row security, policies, ...)
         if (exact)
-            sections.Add(BuildNamed("Table options", TableFacts(source), TableFacts(target), names));
+            sections.Add(BuildNamed("Table options", TableFacts(source, options), TableFacts(target, options), names));
 
         return [.. sections.Where(s => s.Rows.Count > 0)];
     }
@@ -194,9 +194,16 @@ public static class StructureDiffService
         return section;
     }
 
-    private static Dictionary<string, string> TableFacts(DbObject? o) =>
+    // fillfactor is left out of a table's options when the compare ignores it, as the compare's own text leaves it out
+    private static Dictionary<string, string> TableFacts(DbObject? o, CompareOptions options) =>
         o is { Type: DbObjectType.Table }
-            ? o.Properties.Where(kv => kv.Value is not null).ToDictionary(kv => kv.Key, kv => kv.Value!, StringComparer.Ordinal)
+            ? o.Properties.Where(kv => kv.Value is not null)
+                .Select(kv => kv.Key == "options" && options.IgnoreFillFactor
+                    ? new KeyValuePair<string, string?>(kv.Key, string.Join(", ", kv.Value!.Split(", ", StringSplitOptions.RemoveEmptyEntries)
+                        .Where(x => !x.StartsWith("fillfactor=", StringComparison.Ordinal))))
+                    : kv)
+                .Where(kv => kv.Value!.Length > 0)
+                .ToDictionary(kv => kv.Key, kv => kv.Value!, StringComparer.Ordinal)
             : new Dictionary<string, string>(StringComparer.Ordinal);
 
     private static Dictionary<string, string> Render(List<IndexInfo>? indexes, CompareOptions options, StringComparer names)

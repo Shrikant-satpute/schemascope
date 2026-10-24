@@ -78,7 +78,7 @@ export function ApplyDialog({
     const id = progressIdRef.current
     if (!id) return
     setStopping(true)
-    void api.apply.stop(id).catch(() => undefined)
+    void api.apply.stop(id).catch(() => stopFailed())
   }, [])
 
   // For a file that does not finish (waiting on locks, say): cancel it now - it is rolled back.
@@ -86,8 +86,15 @@ export function ApplyDialog({
     const id = progressIdRef.current
     if (!id) return
     setCancelling(true)
-    void api.apply.stop(id, true).catch(() => undefined)
+    void api.apply.stop(id, true).catch(() => stopFailed())
   }, [])
+
+  // the server did not take the stop (the apply had already finished, or it was not reached): never pretend it did
+  function stopFailed() {
+    setStopping(false)
+    setCancelling(false)
+    setError('The stop did not reach the apply - it may already have finished. Its result shows here when it does.')
+  }
 
   const chosen = plan.planSections.filter((s) => sections.has(s.folder))
   const fileCount = chosen.reduce((n, s) => n + s.files, 0)
@@ -272,9 +279,11 @@ export function ApplyDialog({
 
         {t.protected ? (
           <Banner tone="error">
-            <span className="font-semibold">Protected server — scripts only.</span> This connection is marked
-            "Protected — never apply scripts here", so SchemaScope will not run anything on it. Run the scripts from
-            disk through your own release process instead.
+            <span className="font-semibold">Protected server — scripts only.</span>{' '}
+            {t.protectedItself === false
+              ? 'Another saved connection on the same host is marked "Protected — never apply scripts here", and that protects every database and port on the host, so SchemaScope will not run anything on this one either.'
+              : 'This connection is marked "Protected — never apply scripts here", so SchemaScope will not run anything on it.'}{' '}
+            Run the scripts from disk through your own release process instead.
           </Banner>
         ) : (
           <>

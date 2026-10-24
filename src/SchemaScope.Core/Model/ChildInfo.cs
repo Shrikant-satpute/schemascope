@@ -31,6 +31,13 @@ public sealed class ColumnInfo
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? IdentityOptions { get; set; }
+
+    /// <summary>
+    /// PostgreSQL 18: the column has a NOT NULL that is NOT VALID - new rows must have a value, rows already there may
+    /// hold NULLs, so <see cref="IsNullable"/> stays true. False for SQL Server.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool NotNullNotValid { get; set; }
 }
 
 public sealed class IndexColumnInfo

@@ -21,9 +21,10 @@ internal sealed partial class PgScriptRun
         DbObjectType.Sequence => 6,
         DbObjectType.Table => 7,
         DbObjectType.ScalarFunction or DbObjectType.TableValuedFunction or DbObjectType.StoredProcedure => 8,
-        DbObjectType.AggregateFunction => 9,
-        DbObjectType.View => 10,
-        DbObjectType.MaterializedView => 11,
+        DbObjectType.Operator => 9,
+        DbObjectType.AggregateFunction => 10,
+        DbObjectType.View => 11,
+        DbObjectType.MaterializedView => 12,
         _ => -1
     };
 
@@ -231,6 +232,9 @@ internal sealed partial class PgScriptRun
                 case DbObjectType.RangeType:
                     text.Append(PgCanonicalWriter.WriteRange(o)).Append('\n');
                     break;
+                case DbObjectType.Operator:
+                    text.Append(PgCanonicalWriter.WriteOperator(o)).Append('\n');
+                    break;
                 case DbObjectType.Domain:
                     text.Append(Domain(o));
                     break;
@@ -311,7 +315,8 @@ internal sealed partial class PgScriptRun
     /// <summary>
     /// CREATE TABLE with its columns, keys and validated checks inline (as the source names them), then what CREATE TABLE
     /// cannot say: NOT VALID checks, the sequences it owns, its policies and row level security. A partition is made
-    /// PARTITION OF its parent with its bounds (PostgreSQL gives it the parent's columns, keys, checks and indexes); an
+    /// PARTITION OF its parent with its bounds (PostgreSQL gives it the parent's columns, defaults, keys, checks and
+    /// indexes) and what is its own - a NOT NULL, a default, a key, a check - in its list; a typed table OF its type; an
     /// inheritance child lists every column with INHERITS (PostgreSQL merges those it inherits). Foreign keys come in 05,
     /// indexes in 06, triggers and rules in 07. A policy that names a role the target lacks is held, and row level
     /// security is then not switched on, since with it on and the policy missing nobody but a superuser sees a row.
@@ -322,8 +327,42 @@ internal sealed partial class PgScriptRun
         var sb = new StringBuilder();
         sb.Append(p.ContainsKey("persistence") ? "CREATE UNLOGGED TABLE " : "CREATE TABLE ").Append(PgDdl.Q(o));
         List<ConstraintInfo> checks = [];
+        var dropDefaults = new List<string>();
         if (p.GetValueOrDefault("partitionOf") is { Length: > 0 } parent)
-            sb.Append($" PARTITION OF {parent} {p.GetValueOrDefault("partitionBound")}");
+        {
+            // PostgreSQL gives a partition its parent's columns, NOT NULLs, defaults, checks and keys; what is the
+            // partition's own is written in its column and constraint list
+            var parentTable = ParentOf(o);
+            var local = Local(o, Src);
+            var lines = new List<string>();
+            foreach (var c in o.Columns.OrderBy(c => c.Ordinal))
+            {
+                var theirs = parentTable?.Columns.FirstOrDefault(x => x.Name == c.Name);
+                var def = c.IsComputed ? null : DefaultOf(o, c.Name)?.Definition;
+                var parentDef = parentTable is null ? null : DefaultOf(parentTable, c.Name)?.Definition;
+                var options = new List<string>();
+                if (!c.IsNullable && theirs is { IsNullable: true }) options.Add("NOT NULL");
+                if (def is not null && def != parentDef) options.Add($"DEFAULT {def}");
+                if (def is null && parentDef is not null && !c.IsComputed) dropDefaults.Add(c.Name);
+                if (options.Count > 0) lines.Add($"    {PgDdl.Q(c.Name)} WITH OPTIONS {string.Join(" ", options)}");
+            }
+            lines.AddRange(LocalConstraints(local, out checks));
+            sb.Append($" PARTITION OF {parent}").Append(lines.Count > 0 ? $" (\n{string.Join(",\n", lines)}\n)" : "").Append($" {p.GetValueOrDefault("partitionBound")}");
+        }
+        else if (p.GetValueOrDefault("ofType") is { Length: > 0 } ofType)
+        {
+            // a typed table's columns are its type's; its own are NOT NULL, a default, keys and checks
+            var lines = new List<string>();
+            foreach (var c in o.Columns.OrderBy(c => c.Ordinal))
+            {
+                var options = new List<string>();
+                if (!c.IsNullable) options.Add("NOT NULL");
+                if (DefaultOf(o, c.Name) is { } def) options.Add($"DEFAULT {def.Definition}");
+                if (options.Count > 0) lines.Add($"    {PgDdl.Q(c.Name)} WITH OPTIONS {string.Join(" ", options)}");
+            }
+            lines.AddRange(LocalConstraints(o, out checks));
+            sb.Append($" OF {ofType}").Append(lines.Count > 0 ? $" (\n{string.Join(",\n", lines)}\n)" : "");
+        }
         else
         {
             var lines = o.Columns.OrderBy(c => c.Ordinal).Select(c => "    " + ColumnDefinition(o, c)).ToList();
@@ -339,6 +378,12 @@ internal sealed partial class PgScriptRun
         sb.Append(";\n");
         foreach (var c in checks.Where(c => c.IsNotTrusted))
             sb.Append($"ALTER TABLE {PgDdl.Q(o)} ADD CONSTRAINT {PgDdl.Q(c.Name)} {c.Definition} NOT VALID;\n");
+        // a column whose parent has a default the partition has not
+        foreach (var c in dropDefaults) sb.Append($"ALTER TABLE {PgDdl.Q(o)} ALTER COLUMN {PgDdl.Q(c)} DROP DEFAULT;\n");
+        foreach (var c in o.Columns.Where(c => c.NotNullNotValid))
+            review.Hold(ReviewLog.NotApplied, "column", c.Name, o.FullName,
+                "its NOT NULL is NOT VALID on the source, so the table is created without it; add it by hand if you want it " +
+                "(ALTER TABLE ... ADD CONSTRAINT ... NOT NULL ... NOT VALID)", Missing.Name);
         foreach (var (seq, column) in owned)
             sb.Append($"ALTER SEQUENCE {PgDdl.Q(seq)} OWNED BY {PgDdl.Q(o)}.{PgDdl.Q(column)};\n");
 
@@ -359,6 +404,16 @@ internal sealed partial class PgScriptRun
             else sb.Append($"ALTER TABLE {PgDdl.Q(o)} {verb} ROW LEVEL SECURITY;\n");
         }
         return sb.ToString();
+    }
+
+    /// <summary>A table's keys and validated checks as CONSTRAINT lines of CREATE TABLE; <paramref name="checks"/> gets every check (NOT VALID ones are added after).</summary>
+    private static List<string> LocalConstraints(DbObject table, out List<ConstraintInfo> checks)
+    {
+        var lines = table.Indexes.Where(IsKey).OrderBy(i => i.IsPrimaryKey ? 0 : i.IsUniqueConstraint ? 1 : 2).ThenBy(i => i.Name, StringComparer.Ordinal)
+            .Select(k => $"    CONSTRAINT {PgDdl.Q(k.Name)} {k.Definition}").ToList();
+        checks = [.. table.Constraints.Where(c => c.Kind == ConstraintKind.Check).OrderBy(c => c.Name, StringComparer.Ordinal)];
+        lines.AddRange(checks.Where(c => !c.IsNotTrusted).Select(c => $"    CONSTRAINT {PgDdl.Q(c.Name)} {c.Definition}"));
+        return lines;
     }
 
     /// <summary>Lower-cased base names of the *.sql files under the quarantine folder.</summary>
@@ -575,7 +630,13 @@ internal sealed partial class PgScriptRun
                     Hold("a materialized view cannot be replaced in place: DROP and CREATE would empty it and break what uses it");
                     continue;
             }
-            planned[o.Key] = (o, text, o.Type == DbObjectType.Trigger ? null : o.Definition!.TrimEnd());
+            // the source's text the file carries exactly: an aggregate's after the CREATE that became CREATE OR REPLACE
+            planned[o.Key] = (o, text, o.Type switch
+            {
+                DbObjectType.Trigger => null,
+                DbObjectType.AggregateFunction => o.Definition!.TrimEnd()["CREATE ".Length..],
+                _ => o.Definition!.TrimEnd(),
+            });
         }
 
         // what each replacement reads must be there when it runs: on the target, created or added by this run, or replaced before it here
@@ -656,11 +717,15 @@ internal sealed partial class PgScriptRun
     {
         foreach (var o in Src.Objects.Where(o => InScope(o) && !IsExcluded(o) && StatusOf(o) == Diff.Different && !altered.Contains(o.Key) &&
                                                  o.Type is DbObjectType.Schema or DbObjectType.EnumType or DbObjectType.Domain or DbObjectType.CompositeType
-                                                     or DbObjectType.Sequence or DbObjectType.Extension or DbObjectType.RangeType or DbObjectType.Collation))
+                                                     or DbObjectType.Sequence or DbObjectType.Extension or DbObjectType.RangeType or DbObjectType.Collation
+                                                     or DbObjectType.Operator))
             review.Hold(ReviewLog.NotApplied, Kind(o), Display(o), null, o.Type switch
             {
-                DbObjectType.EnumType => "04_columntypes adds a missing enum label, and it is not selected",
-                DbObjectType.Schema or DbObjectType.Domain or DbObjectType.Sequence => $"05_constraints changes an existing {Kind(o)}, and it is not selected",
+                DbObjectType.EnumType => EnumCannotAdd(o) ?? "04_columntypes adds a missing enum label, and it is not selected",
+                DbObjectType.Schema or DbObjectType.Domain or DbObjectType.Sequence or DbObjectType.CompositeType =>
+                    $"05_constraints changes an existing {Kind(o)}, and it is not selected",
+                DbObjectType.Operator =>
+                    "an operator cannot be changed in place: it would have to be dropped and created again, with everything that uses it. Do it by hand",
                 DbObjectType.Extension =>
                     $"the extension differs (source: version {o.Properties.GetValueOrDefault("version")} in schema {o.Properties.GetValueOrDefault("schema")}; target: " +
                     $"version {Target(o)!.Properties.GetValueOrDefault("version")} in schema {Target(o)!.Properties.GetValueOrDefault("schema")}). Extensions are " +
@@ -676,12 +741,18 @@ internal sealed partial class PgScriptRun
             {
                 var a = src.Properties.GetValueOrDefault(key);
                 var b = tgt.Properties.GetValueOrDefault(key);
+                if (key == "options")
+                {
+                    // as the compare sees them: no fillfactor when it is ignored
+                    a = PgCanonicalWriter.StorageOptions(a, compare.IgnoreFillFactor) is { Length: > 0 } sa ? sa : null;
+                    b = PgCanonicalWriter.StorageOptions(b, compare.IgnoreFillFactor) is { Length: > 0 } sb ? sb : null;
+                }
                 if (a == b) continue;
                 var isPolicy = key.StartsWith(PgCanonicalWriter.PolicyPrefix, StringComparison.Ordinal);
                 var isRule = key.StartsWith(PgCanonicalWriter.RulePrefix, StringComparison.Ordinal);
                 // what 05 (policies, row level security, logging, storage options) and 07 (rules) plan or hold themselves
                 var folder = isRule ? ScriptSection.Triggers
-                    : isPolicy || key is "rowSecurity" or "forceRowSecurity" or "persistence" or "options" ? ScriptSection.Constraints
+                    : isPolicy || key is "rowSecurity" or "forceRowSecurity" or "persistence" or "options" or "ofType" ? ScriptSection.Constraints
                     : (ScriptSection?)null;
                 if (folder is { } f && Selected(f)) continue;
                 var name = isPolicy ? $"policy {key[PgCanonicalWriter.PolicyPrefix.Length..]}" : isRule ? $"rule {key[PgCanonicalWriter.RulePrefix.Length..]}" : key;

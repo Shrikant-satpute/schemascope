@@ -134,11 +134,12 @@ public sealed class PgSchemaReader : ISchemaReader
 
     private sealed record Rel(uint Oid, string Schema, string Name, char Kind, string? ViewDef, char Persistence,
         bool RowSecurity, bool ForceRowSecurity, string[] Options, string? PartitionKey, bool IsPartition,
-        string? PartitionBound, string[] Parents);
+        string? PartitionBound, string[] Parents, string? OfType);
     private sealed record Policy(uint Rel, string Name, bool Permissive, char Command, string[] Roles, string? Using,
         string? WithCheck);
     private sealed record Col(uint Rel, int Num, string Name, string Type, bool NotNull, string Identity, string Generated,
-        string? Default, string? Collation, long? SeqStart, long? SeqIncrement, long? SeqMin, long? SeqMax, long? SeqCache, bool? SeqCycle);
+        string? Default, string? Collation, long? SeqStart, long? SeqIncrement, long? SeqMin, long? SeqMax, long? SeqCache, bool? SeqCycle,
+        bool NotNullNotValid);
     private sealed record Con(uint Rel, uint TypeOid, string Name, char Kind, string Definition, bool Validated,
         string[] Columns, string? RefSchema, string? RefTable, string[] RefColumns, string DeleteAction, string UpdateAction);
     private sealed record Idx(uint Rel, string Name, string Method, bool Unique, string Definition, string? Predicate,
@@ -156,6 +157,8 @@ public sealed class PgSchemaReader : ISchemaReader
     private sealed record Coll(uint Oid, string Schema, string Name, char Provider, bool Deterministic, string? Collate, string? Ctype,
         string? Locale, string? Rules);
     private sealed record Rule(uint Rel, string Name, string Definition, char Enabled);
+    private sealed record Oper(uint Oid, string Schema, string Name, string? Left, string? Right, string Function, string? Commutator,
+        string? Negator, string? Restrict, string? Join, bool Hashes, bool Merges);
 
     private sealed class RawCatalog
     {
@@ -172,6 +175,7 @@ public sealed class PgSchemaReader : ISchemaReader
         public List<Policy> Policies { get; } = [];
         public List<Coll> Collations { get; } = [];
         public List<Rule> Rules { get; } = [];
+        public List<Oper> Operators { get; } = [];
         public List<Dep> Dependencies { get; } = [];
     }
 
@@ -192,14 +196,15 @@ public sealed class PgSchemaReader : ISchemaReader
         while (await r.ReadAsync(ct))
             raw.Relations.Add(new Rel(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), ViewText(Expr(r, 4), versionNum),
                 Ch(r, 5), r.GetBoolean(6), r.GetBoolean(7), r.GetFieldValue<string[]>(8), Expr(r, 9), r.GetBoolean(10), Expr(r, 11),
-                r.GetFieldValue<string[]>(12)));
+                r.GetFieldValue<string[]>(12), Str(r, 13)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.Columns.Add(new Col(r.GetFieldValue<uint>(0), r.GetInt16(1), r.GetString(2), r.GetString(3), r.GetBoolean(4),
                 Str(r, 5) ?? "", Str(r, 6) ?? "", Expr(r, 7), Str(r, 8),
                 r.IsDBNull(9) ? null : r.GetInt64(9), r.IsDBNull(10) ? null : r.GetInt64(10), r.IsDBNull(11) ? null : r.GetInt64(11),
-                r.IsDBNull(12) ? null : r.GetInt64(12), r.IsDBNull(13) ? null : r.GetInt64(13), r.IsDBNull(14) ? null : r.GetBoolean(14)));
+                r.IsDBNull(12) ? null : r.GetInt64(12), r.IsDBNull(13) ? null : r.GetInt64(13), r.IsDBNull(14) ? null : r.GetBoolean(14),
+                r.GetBoolean(15)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -257,6 +262,11 @@ public sealed class PgSchemaReader : ISchemaReader
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.Rules.Add(new Rule(r.GetFieldValue<uint>(0), r.GetString(1), Expr(r, 2)!, Ch(r, 3)));
+
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.Operators.Add(new Oper(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Str(r, 3), Str(r, 4), r.GetString(5),
+                Str(r, 6), Str(r, 7), Str(r, 8), Str(r, 9), r.GetBoolean(10), r.GetBoolean(11)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -451,6 +461,26 @@ public sealed class PgSchemaReader : ISchemaReader
             byType[t.Oid] = o;
         }
 
+        var byOperator = new Dictionary<uint, DbObject>();
+        foreach (var op in raw.Operators)
+        {
+            if (options.IsExcluded(DbObjectType.Operator, op.Schema, op.Name)) continue;
+            var o = New(DbObjectType.Operator, op.Schema, op.Name);
+            // operators are keyed on their argument types, NONE for the missing side of a prefix operator
+            o.Signature = $"{op.Left ?? "NONE"}, {op.Right ?? "NONE"}";
+            o.Properties["function"] = op.Function;
+            if (op.Left is not null) o.Properties["leftArg"] = op.Left;
+            if (op.Right is not null) o.Properties["rightArg"] = op.Right;
+            if (op.Commutator is not null) o.Properties["commutator"] = op.Commutator;
+            if (op.Negator is not null) o.Properties["negator"] = op.Negator;
+            if (op.Restrict is not null) o.Properties["restrict"] = op.Restrict;
+            if (op.Join is not null) o.Properties["join"] = op.Join;
+            if (op.Hashes) o.Properties["hashes"] = "1";
+            if (op.Merges) o.Properties["merges"] = "1";
+            objects.Add(o);
+            byOperator[op.Oid] = o;
+        }
+
         foreach (var (name, version, schema) in raw.Extensions)
         {
             if (options.IsExcluded(DbObjectType.Extension, name, name)) continue;
@@ -460,7 +490,7 @@ public sealed class PgSchemaReader : ISchemaReader
             objects.Add(o);
         }
 
-        AddDependencies(raw.Dependencies, byRel, byType, byProc, byTrigger, byCollation);
+        AddDependencies(raw.Dependencies, byRel, byType, byProc, byTrigger, byCollation, byOperator);
         return objects;
     }
 
@@ -491,9 +521,10 @@ public sealed class PgSchemaReader : ISchemaReader
     /// object needing itself is kept only with a column - a generated column or a trigger naming one of its own table's.
     /// </summary>
     private static void AddDependencies(List<Dep> deps, Dictionary<uint, DbObject> byRel, Dictionary<uint, DbObject> byType,
-        Dictionary<uint, DbObject> byProc, Dictionary<uint, DbObject> byTrigger, Dictionary<uint, DbObject> byCollation)
+        Dictionary<uint, DbObject> byProc, Dictionary<uint, DbObject> byTrigger, Dictionary<uint, DbObject> byCollation,
+        Dictionary<uint, DbObject> byOperator)
     {
-        // an operator class or operator is never listed itself: only the extension it belongs to is a need
+        // an operator class is never listed itself (nor an operator an extension made): only the extension it belongs to is a need
         DbObject? Find(char kind, uint oid) => kind switch
         {
             'c' => byRel.GetValueOrDefault(oid),
@@ -501,6 +532,7 @@ public sealed class PgSchemaReader : ISchemaReader
             'p' => byProc.GetValueOrDefault(oid),
             'g' => byTrigger.GetValueOrDefault(oid),
             'l' => byCollation.GetValueOrDefault(oid),
+            'r' => byOperator.GetValueOrDefault(oid),
             _ => null
         };
 
@@ -525,7 +557,7 @@ public sealed class PgSchemaReader : ISchemaReader
 
     /// <summary>
     /// What a table is beyond its columns and keys, as <see cref="PgCanonicalWriter"/> writes it: UNLOGGED, the partition
-    /// key, the parent and bounds of a partition, plain inheritance, WITH (...) options, row level security (and FORCE)
+    /// key, the parent and bounds of a partition, plain inheritance, the type of a typed table, WITH (...) options, row level security (and FORCE)
     /// and each policy. Only what is set is recorded, so a plain table carries none of these.
     /// </summary>
     private static void TableFacts(DbObject o, Rel rel, IEnumerable<Policy> policies, CompareOptions options)
@@ -541,7 +573,10 @@ public sealed class PgSchemaReader : ISchemaReader
         {
             o.Properties["inherits"] = string.Join(", ", rel.Parents);
         }
-        if (StorageOptions(rel.Options, options).ToList() is { Count: > 0 } storage) o.Properties["options"] = string.Join(", ", storage);
+        if (rel.OfType is not null) o.Properties["ofType"] = rel.OfType;
+        // every option as the table has it, fillfactor too: "Ignore fill factor" hides it from the compare
+        // (PgCanonicalWriter), never from what 03 creates
+        if (rel.Options.Order(StringComparer.Ordinal).ToList() is { Count: > 0 } storage) o.Properties["options"] = string.Join(", ", storage);
         if (rel.RowSecurity) o.Properties["rowSecurity"] = "ENABLE";
         if (rel.ForceRowSecurity) o.Properties["forceRowSecurity"] = "FORCE";
 
@@ -579,7 +614,8 @@ public sealed class PgSchemaReader : ISchemaReader
         IsComputed = c.Generated is "s" or "v",
         IsPersisted = c.Generated == "s",
         ComputedDefinition = c.Generated is "s" or "v" ? c.Default : null,
-        Collation = c.Collation
+        Collation = c.Collation,
+        NotNullNotValid = c.NotNullNotValid
     };
 
     private static IndexInfo Index(Idx i) => new()

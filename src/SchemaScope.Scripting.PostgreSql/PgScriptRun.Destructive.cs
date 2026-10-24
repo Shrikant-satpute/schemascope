@@ -213,6 +213,7 @@ internal sealed partial class PgScriptRun
                 DbObjectType.Domain => (DKind.DropType, $"DROP DOMAIN {PgDdl.Q(o)} RESTRICT", "drop_domain"),
                 DbObjectType.EnumType or DbObjectType.CompositeType or DbObjectType.RangeType => (DKind.DropType, $"DROP TYPE {PgDdl.Q(o)} RESTRICT", "drop_type"),
                 DbObjectType.Collation => (DKind.DropType, $"DROP COLLATION {PgDdl.Q(o)} RESTRICT", "drop_collation"),
+                DbObjectType.Operator => (DKind.DropType, $"DROP OPERATOR {PgDdl.Q(o.Schema)}.{o.Name} ({o.Signature}) RESTRICT", "drop_operator"),
                 _ => (DKind.DropModule, DropModule(o), "drop_" + Kind(o).Replace(' ', '_')),
             };
             var i = new DItem { Kind = kind, Name = Display(o), Word = Kind(o), Table = o, FileWord = $"{fileWord}_{Display(o)}" };
@@ -413,7 +414,8 @@ internal sealed partial class PgScriptRun
                 var tc = tgt.Columns.FirstOrDefault(x => x.Name == c.Name);
                 if (tc is null || c.IsComputed || tc.IsComputed) continue;
                 var narrowing = c.DataType != tc.DataType && Widening(tc.DataType, c.DataType) is null;
-                var tighten = !c.IsNullable && tc.IsNullable;
+                // a NOT NULL the target has NOT VALID (PostgreSQL 18) is validated by 05
+                var tighten = !c.IsNullable && tc.IsNullable && !tc.NotNullNotValid;
                 if (!narrowing && !tighten) continue;
                 var i = Part(DKind.AlterColumn, "column", tgt, c.Name, "alter_column");
                 await PlanAlterAsync(i, tgt, c, tc, narrowing, tighten, objects);
@@ -563,6 +565,11 @@ internal sealed partial class PgScriptRun
             if (tgt.Properties.GetValueOrDefault("partitionBy") is { } key && PgDdl.MentionsColumn(key, c.Name))
             {
                 i.Held = "it is part of the table's partition key, whose type PostgreSQL cannot change";
+                return;
+            }
+            if (RowTypeUsers(tgt) is { Count: > 0 } users)
+            {
+                i.Held = RowTypeReason(users, "change a column's type in");
                 return;
             }
             fit = FitPredicate(tc.DataType, c.DataType, col);

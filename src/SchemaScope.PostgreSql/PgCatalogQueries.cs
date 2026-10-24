@@ -30,8 +30,10 @@ internal static class PgCatalogQueries
         SELECT current_setting('server_version'), current_database(),
                (SELECT datcollate::text FROM pg_database WHERE datname = current_database()),
                (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relkind IN ('r', 'p', 'v', 'm') AND {UserSchema("n")})
-             + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE {UserSchema("n")});
+                WHERE c.relkind IN ('r', 'p', 'v', 'm') AND {UserSchema("n")} AND {NotExtensionMember("pg_class", "c.oid")})
+             + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE {UserSchema("n")}
+                AND {NotExtensionMember("pg_proc", "p.oid")}
+                AND NOT EXISTS (SELECT 1 FROM pg_depend id WHERE id.classid = 'pg_proc'::regclass AND id.objid = p.oid AND id.deptype = 'i'));
         """;
 
     public const string ServerInfo = """
@@ -45,7 +47,7 @@ internal static class PgCatalogQueries
     /// </summary>
     public static string Catalog(int versionNum) => string.Join("\n", Schemas, Relations, Columns(versionNum), Constraints,
         Indexes, Routines, Triggers, Sequences, Types(versionNum), Extensions, Policies, Collations(versionNum), Rules,
-        Dependencies(versionNum));
+        Operators, Dependencies(versionNum));
 
     // The public schema's owner is left out while it is the one each version gives it (the bootstrap superuser up to
     // 14, pg_database_owner from 15) or the database's owner: one schema created on two versions is the same schema.
@@ -62,7 +64,7 @@ internal static class PgCatalogQueries
     /// r table, p partitioned table, v view, m materialized view. Beside the definition, what pg_get_viewdef and the
     /// columns leave out: UNLOGGED (relpersistence), row level security and FORCE, the WITH (...) options (a view's
     /// check_option and security_barrier live there), the partition key, a partition's bounds, and the parents of a
-    /// partition or of plain inheritance.
+    /// partition or of plain inheritance, and the type a typed table (CREATE TABLE ... OF type) is of.
     /// </summary>
     private static readonly string Relations = $"""
         SELECT c.oid, n.nspname, c.relname, c.relkind::text,
@@ -74,7 +76,8 @@ internal static class PgCatalogQueries
                      FROM pg_inherits i
                      JOIN pg_class pc ON pc.oid = i.inhparent
                      JOIN pg_namespace pn ON pn.oid = pc.relnamespace
-                     WHERE i.inhrelid = c.oid ORDER BY i.inhseqno)
+                     WHERE i.inhrelid = c.oid ORDER BY i.inhseqno),
+               CASE WHEN c.reloftype <> 0 THEN format_type(c.reloftype, NULL) END
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE c.relkind IN ('r', 'p', 'v', 'm') AND {UserSchema("n")} AND {NotExtensionMember("pg_class", "c.oid")};
@@ -83,16 +86,17 @@ internal static class PgCatalogQueries
     /// <summary>
     /// Columns of tables, of standalone composite types (relkind 'c') and of views (what a view returns). attgenerated:
     /// 's' stored, and from PostgreSQL 18 'v' virtual. An identity column's sequence hangs off it with deptype 'i': its
-    /// start, step and limits are the column's.
+    /// start, step and limits are the column's. From PostgreSQL 18 a NOT NULL can be NOT VALID (attnotnull is set, its
+    /// pg_constraint row is not validated): existing rows may still hold NULLs, so the column is not read as NOT NULL.
     /// </summary>
     private static string Columns(int versionNum) => $"""
-        SELECT a.attrelid, a.attnum, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
+        SELECT a.attrelid, a.attnum, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull AND NOT {NotNullNotValid(versionNum)},
                a.attidentity::text, {(versionNum >= 120000 ? "a.attgenerated::text" : "''::text")},
                pg_get_expr(ad.adbin, ad.adrelid),
                CASE WHEN a.attcollation <> 0 AND a.attcollation <> t.typcollation THEN
                     CASE WHEN cn.nspname = 'pg_catalog' THEN quote_ident(co.collname)
                          ELSE quote_ident(cn.nspname) || '.' || quote_ident(co.collname) END END,
-               s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle
+               s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle, {NotNullNotValid(versionNum)}
         FROM pg_attribute a
         JOIN pg_class c ON c.oid = a.attrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -106,6 +110,12 @@ internal static class PgCatalogQueries
         WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'c', 'v', 'm') AND {UserSchema("n")}
         ORDER BY a.attrelid, a.attnum;
         """;
+
+    /// <summary>PostgreSQL 18: the column's NOT NULL is a pg_constraint row that is NOT VALID. Never on older versions.</summary>
+    private static string NotNullNotValid(int versionNum) => versionNum >= 180000
+        ? "(a.attnotnull AND EXISTS (SELECT 1 FROM pg_constraint nn WHERE nn.conrelid = a.attrelid AND nn.contype = 'n' " +
+          "AND nn.conkey[1] = a.attnum AND NOT nn.convalidated))"
+        : "false";
 
     // p primary key, u unique, f foreign key, c check, x exclusion; PostgreSQL 18's NOT NULL rows ('n') are columns' attnotnull.
     // A partition's copies of its parent's keys (conparentid set, on another table) are its own constraints too; the
@@ -154,17 +164,43 @@ internal static class PgCatalogQueries
                CASE WHEN p.prokind <> 'a' THEN pg_get_functiondef(p.oid)
                     ELSE 'CREATE AGGREGATE ' || quote_ident(n.nspname) || '.' || quote_ident(p.proname)
                          || '(' || pg_get_function_identity_arguments(p.oid) || ') ('
-                         || E'\n    SFUNC = ' || ag.aggtransfn::regprocedure::text
+                         || E'\n    SFUNC = ' || ag.aggtransfn::regproc::text
                          || E',\n    STYPE = ' || format_type(ag.aggtranstype, NULL)
-                         || CASE WHEN ag.aggfinalfn::oid <> 0 THEN E',\n    FINALFUNC = ' || ag.aggfinalfn::regprocedure::text ELSE '' END
-                         || CASE WHEN ag.aggcombinefn::oid <> 0 THEN E',\n    COMBINEFUNC = ' || ag.aggcombinefn::regprocedure::text ELSE '' END
+                         || CASE WHEN ag.aggtransspace <> 0 THEN E',\n    SSPACE = ' || ag.aggtransspace ELSE '' END
+                         || CASE WHEN ag.aggfinalfn::oid <> 0 THEN E',\n    FINALFUNC = ' || ag.aggfinalfn::regproc::text ELSE '' END
+                         || CASE WHEN ag.aggfinalextra THEN E',\n    FINALFUNC_EXTRA' ELSE '' END
+                         -- READ_ONLY is the default, READ_WRITE for an ordered-set or hypothetical-set aggregate
+                         || CASE WHEN ag.aggfinalfn::oid <> 0 AND ag.aggfinalmodify <> CASE WHEN ag.aggkind = 'n' THEN 'r' ELSE 'w' END
+                                 THEN E',\n    FINALFUNC_MODIFY = ' || CASE ag.aggfinalmodify WHEN 'r' THEN 'READ_ONLY' WHEN 's' THEN 'SHAREABLE' ELSE 'READ_WRITE' END
+                                 ELSE '' END
+                         || CASE WHEN ag.aggcombinefn::oid <> 0 THEN E',\n    COMBINEFUNC = ' || ag.aggcombinefn::regproc::text ELSE '' END
+                         || CASE WHEN ag.aggserialfn::oid <> 0 THEN E',\n    SERIALFUNC = ' || ag.aggserialfn::regproc::text ELSE '' END
+                         || CASE WHEN ag.aggdeserialfn::oid <> 0 THEN E',\n    DESERIALFUNC = ' || ag.aggdeserialfn::regproc::text ELSE '' END
                          || CASE WHEN ag.agginitval IS NOT NULL THEN E',\n    INITCOND = ' || quote_literal(ag.agginitval) ELSE '' END
-                         || CASE WHEN ag.aggsortop::oid <> 0 THEN E',\n    SORTOP = ' || ag.aggsortop::regoperator::text ELSE '' END
+                         -- the moving-aggregate implementation
+                         || CASE WHEN ag.aggmtransfn::oid <> 0 THEN
+                                 E',\n    MSFUNC = ' || ag.aggmtransfn::regproc::text
+                                 || E',\n    MINVFUNC = ' || ag.aggminvtransfn::regproc::text
+                                 || E',\n    MSTYPE = ' || format_type(ag.aggmtranstype, NULL)
+                                 || CASE WHEN ag.aggmtransspace <> 0 THEN E',\n    MSSPACE = ' || ag.aggmtransspace ELSE '' END
+                                 || CASE WHEN ag.aggmfinalfn::oid <> 0 THEN E',\n    MFINALFUNC = ' || ag.aggmfinalfn::regproc::text ELSE '' END
+                                 || CASE WHEN ag.aggmfinalextra THEN E',\n    MFINALFUNC_EXTRA' ELSE '' END
+                                 || CASE WHEN ag.aggmfinalfn::oid <> 0 AND ag.aggmfinalmodify <> 'r'
+                                         THEN E',\n    MFINALFUNC_MODIFY = ' || CASE ag.aggmfinalmodify WHEN 's' THEN 'SHAREABLE' ELSE 'READ_WRITE' END
+                                         ELSE '' END
+                                 || CASE WHEN ag.aggminitval IS NOT NULL THEN E',\n    MINITCOND = ' || quote_literal(ag.aggminitval) ELSE '' END
+                            ELSE '' END
+                         -- CREATE AGGREGATE takes the operator's name, OPERATOR(schema.op), not its signature
+                         || CASE WHEN ag.aggsortop::oid <> 0 THEN E',\n    SORTOP = OPERATOR(' || quote_ident(son.nspname) || '.' || so.oprname || ')' ELSE '' END
+                         || CASE WHEN p.proparallel <> 'u' THEN E',\n    PARALLEL = ' || CASE p.proparallel WHEN 's' THEN 'SAFE' ELSE 'RESTRICTED' END ELSE '' END
+                         || CASE WHEN ag.aggkind = 'h' THEN E',\n    HYPOTHETICAL' ELSE '' END
                          || E'\n);' END,
                pg_get_function_arguments(p.oid), pg_get_function_result(p.oid)
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         LEFT JOIN pg_aggregate ag ON ag.aggfnoid = p.oid
+        LEFT JOIN pg_operator so ON so.oid = ag.aggsortop
+        LEFT JOIN pg_namespace son ON son.oid = so.oprnamespace
         WHERE {UserSchema("n")} AND {NotExtensionMember("pg_proc", "p.oid")}
           AND NOT EXISTS (SELECT 1 FROM pg_depend id WHERE id.classid = 'pg_proc'::regclass AND id.objid = p.oid AND id.deptype = 'i');
         """;
@@ -276,6 +312,28 @@ internal static class PgCatalogQueries
         """;
 
     /// <summary>
+    /// User operators (CREATE OPERATOR): l prefix, b infix. An operator is told apart by its argument types, as
+    /// PostgreSQL keys it; its function, commutator, negator and estimators by name (CREATE OPERATOR resolves a
+    /// function by the operator's argument types, and names another operator as OPERATOR(schema.op)).
+    /// </summary>
+    private static readonly string Operators = $"""
+        SELECT o.oid, n.nspname, o.oprname::text,
+               CASE WHEN o.oprleft <> 0 THEN format_type(o.oprleft, NULL) END,
+               CASE WHEN o.oprright <> 0 THEN format_type(o.oprright, NULL) END,
+               o.oprcode::regproc::text,
+               CASE WHEN o.oprcom <> 0 THEN (SELECT 'OPERATOR(' || quote_ident(cn.nspname) || '.' || c.oprname || ')'
+                                             FROM pg_operator c JOIN pg_namespace cn ON cn.oid = c.oprnamespace WHERE c.oid = o.oprcom) END,
+               CASE WHEN o.oprnegate <> 0 THEN (SELECT 'OPERATOR(' || quote_ident(gn.nspname) || '.' || g.oprname || ')'
+                                                FROM pg_operator g JOIN pg_namespace gn ON gn.oid = g.oprnamespace WHERE g.oid = o.oprnegate) END,
+               CASE WHEN o.oprrest::oid <> 0 THEN o.oprrest::regproc::text END,
+               CASE WHEN o.oprjoin::oid <> 0 THEN o.oprjoin::regproc::text END,
+               o.oprcanhash, o.oprcanmerge
+        FROM pg_operator o
+        JOIN pg_namespace n ON n.oid = o.oprnamespace
+        WHERE {UserSchema("n")} AND {NotExtensionMember("pg_operator", "o.oid")};
+        """;
+
+    /// <summary>
     /// What each object needs (pg_depend, normal and automatic dependencies only), with both ends resolved to what the
     /// reader lists: a view's rule, a default or generated column, a constraint and a policy stand for their table (a
     /// domain's constraint for its domain), a row type for its table, an array type for its element type, a multirange
@@ -284,7 +342,8 @@ internal static class PgCatalogQueries
     /// of an index only what it needs beyond its table's columns is kept: an operator class, an operator, a collation,
     /// a function or a type. The needed object's extension is named when an extension made it. Built-in objects (oid
     /// below 16384) are never needed by name, so they are left out. A foreign key is marked as one: scripts add those
-    /// once every table exists.
+    /// once every table exists. A user operator needs its function and types like any object. A default's need of its
+    /// own column (it goes when the column goes) is no reading of the column, and is left out.
     /// </summary>
     private static string Dependencies(int versionNum) => $"""
         SELECT x.dep_kind, x.dep_oid, x.ref_kind, x.ref_oid, x.ref_col, x.via, e.extname, x.ix_name
@@ -292,6 +351,7 @@ internal static class PgCatalogQueries
             SELECT CASE WHEN dp.classid = 'pg_type'::regclass OR (dp.classid = 'pg_constraint'::regclass AND co.conrelid = 0) THEN 't'
                         WHEN dp.classid = 'pg_proc'::regclass THEN 'p'
                         WHEN dp.classid = 'pg_trigger'::regclass THEN 'g'
+                        WHEN dp.classid = 'pg_operator'::regclass THEN 'r'
                         ELSE 'c' END AS dep_kind,
                    CASE WHEN dp.classid = 'pg_rewrite'::regclass THEN rw.ev_class
                         WHEN dp.classid = 'pg_attrdef'::regclass THEN ad.adrelid
@@ -316,6 +376,7 @@ internal static class PgCatalogQueries
                         WHEN dp.classid = 'pg_policy'::regclass THEN 'policy'
                         WHEN dp.classid = 'pg_proc'::regclass THEN 'routine'
                         WHEN dp.classid = 'pg_type'::regclass THEN 'type'
+                        WHEN dp.classid = 'pg_operator'::regclass THEN 'operator'
                         WHEN ix.indexrelid IS NOT NULL THEN
                              CASE WHEN EXISTS (SELECT 1 FROM pg_constraint kc WHERE kc.conindid = ix.indexrelid AND kc.contype IN ('p', 'u', 'x'))
                                   THEN 'key' ELSE 'index' END
@@ -335,10 +396,13 @@ internal static class PgCatalogQueries
                                                   WHEN rt0.typcategory = 'A' AND rt0.typelem <> 0 THEN rt0.typelem ELSE rt0.oid END
             WHERE dp.deptype IN ('n', 'a') AND dp.objid >= 16384 AND dp.refobjid >= 16384
               AND dp.classid IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_rewrite'::regclass,
-                                 'pg_attrdef'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass)
+                                 'pg_attrdef'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass,
+                                 'pg_operator'::regclass)
               AND dp.refclassid IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_opclass'::regclass,
                                     'pg_operator'::regclass, 'pg_collation'::regclass)
               AND NOT (ix.indexrelid IS NOT NULL AND dp.refclassid = 'pg_class'::regclass)
+              -- a default needs its own column only to go when it goes; that is no reader of the column
+              AND NOT (ad.oid IS NOT NULL AND dp.refclassid = 'pg_class'::regclass AND dp.refobjid = ad.adrelid AND dp.refobjsubid = ad.adnum)
         ) x
         LEFT JOIN pg_depend xd ON xd.classid = CASE x.ref_kind WHEN 'c' THEN 'pg_class'::regclass WHEN 't' THEN 'pg_type'::regclass
                                                                WHEN 'o' THEN 'pg_opclass'::regclass WHEN 'r' THEN 'pg_operator'::regclass

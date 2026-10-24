@@ -1069,6 +1069,9 @@ public static class SchemaScopeApi
             if (request is null) return Refuse(StatusCodes.Status400BadRequest, "Send the plan, target, sections and database name.");
             if (request.ProgressId is { } progressId && !ScriptProgressStore.IsValidId(progressId))
                 return Refuse(StatusCodes.Status400BadRequest, "The progress id must be 8 to 64 letters, digits or dashes.");
+            // from here on POST /api/apply/{id}/stop finds this apply, while the gates below still run: a stop sent
+            // then is kept, and the run stops before its first file
+            using var reservation = applier.Reserve(request.ProgressId);
             if ((CheckRun(session) ?? CheckTarget(session, request.TargetIndex)) is { } problem)
                 return Refuse(StatusCodes.Status400BadRequest, problem);
             var index = request.TargetIndex!.Value;
@@ -1233,6 +1236,7 @@ public static class SchemaScopeApi
     {
         var source = session.TargetConnections[index];
         var ep = Endpoint(source, session.Result!.Targets[index].Label);
+        var protectedTarget = IsProtected(source, ep.Server, store);
         return new ApplyTarget
         {
             Label = ep.Label,
@@ -1243,7 +1247,9 @@ public static class SchemaScopeApi
                 : ParseEndpoint(source)?.Port ?? DatabaseEngines.DefaultPort(ep.Engine),
             Database = ep.Database,
             Login = LoginOf(source),
-            Protected = IsProtected(source, ep.Server, store),
+            Protected = protectedTarget,
+            // the dialog says which: this connection's own flag, or another Protected connection on the same host
+            ProtectedItself = protectedTarget ? MarkedItself(session, index, store) : null,
         };
     }
 

@@ -153,6 +153,7 @@ export type DbObjectType =
   | 'extension'
   | 'rangeType'
   | 'collation'
+  | 'operator'
 
 export interface ConnectionSettings {
   id: string
@@ -741,6 +742,8 @@ export interface ApplyTarget {
   /** "Windows: DOMAIN\user", "SQL login: name" or "PostgreSQL user: name". */
   login: string
   protected: boolean
+  /** When protected: true when this connection itself is marked Protected, false when another Protected connection on its host is. */
+  protectedItself?: boolean
 }
 
 export type PlanRisk = 'normal' | 'changesCode' | 'destructive'

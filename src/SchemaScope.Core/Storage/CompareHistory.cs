@@ -61,14 +61,22 @@ public sealed class CompareHistoryEntry
     /// [C, B] are recognised as the same comparison.
     /// </summary>
     public static string BuildSignature(
-        CompareHistoryDatabase source, IEnumerable<CompareHistoryDatabase> targets)
+        CompareHistoryDatabase source, IEnumerable<CompareHistoryDatabase> targets) => BuildSignature(source, targets, exactDatabases: false);
+
+    /// <summary>
+    /// As above; with <paramref name="exactDatabases"/>, another engine's database names keep their letter case (a
+    /// PostgreSQL ShopDb and shopdb are two databases, and two histories). SQL Server's signature is the same either way.
+    /// </summary>
+    public static string BuildSignature(
+        CompareHistoryDatabase source, IEnumerable<CompareHistoryDatabase> targets, bool exactDatabases)
     {
-        static string Key(CompareHistoryDatabase d)
+        string Key(CompareHistoryDatabase d)
         {
             var who = string.IsNullOrWhiteSpace(d.ConnectionId) ? d.Server : d.ConnectionId!;
             // SQL Server keeps the signature it always had, so existing history rows still match
             var engine = d.Engine == DatabaseEngine.SqlServer ? "" : $"{(int)d.Engine}:";
-            return $"{engine}{who.ToLowerInvariant()}/{d.Database.ToLowerInvariant()}";
+            var database = exactDatabases && d.Engine != DatabaseEngine.SqlServer ? d.Database : d.Database.ToLowerInvariant();
+            return $"{engine}{who.ToLowerInvariant()}/{database}";
         }
 
         var ordered = targets.Select(Key).OrderBy(k => k, StringComparer.Ordinal);

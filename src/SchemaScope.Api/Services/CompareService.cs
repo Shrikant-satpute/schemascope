@@ -82,17 +82,21 @@ public sealed class CompareService
     private static CompareHistoryEntry BuildHistory(
         CompareRequest request, SchemaSource source, List<SchemaSource> targets, CompareOptions options)
     {
-        static CompareHistoryDatabase Describe(SourceRef? reference, SchemaSource resolved) => new()
+        static CompareHistoryDatabase Describe(SourceRef? reference, SchemaSource resolved)
         {
-            ConnectionId = reference?.ConnectionId,
-            Engine = resolved.Engine,
-            Label = resolved.DisplayName,
-            Server = resolved.Server,
-            // shown with the host for engines that keep the port apart; SQL Server keeps it in the server name
-            Port = resolved.Engine == DatabaseEngine.SqlServer ? null
-                : ConnectionEndpoints.Parse(resolved.Engine, resolved.ConnectionString)?.Port ?? DatabaseEngines.DefaultPort(resolved.Engine),
-            Database = resolved.Database
-        };
+            // another engine's raw connection string leaves the form's server and database empty: read them from the string
+            var ep = resolved.Engine == DatabaseEngine.SqlServer ? null : ConnectionEndpoints.Parse(resolved.Engine, resolved.ConnectionString);
+            return new()
+            {
+                ConnectionId = reference?.ConnectionId,
+                Engine = resolved.Engine,
+                Label = resolved.DisplayName,
+                Server = string.IsNullOrWhiteSpace(resolved.Server) && ep is { Hosts.Count: > 0 } ? string.Join(",", ep.Hosts) : resolved.Server,
+                // shown with the host for engines that keep the port apart; SQL Server keeps it in the server name
+                Port = resolved.Engine == DatabaseEngine.SqlServer ? null : ep?.Port ?? DatabaseEngines.DefaultPort(resolved.Engine),
+                Database = string.IsNullOrWhiteSpace(resolved.Database) && ep is { Database.Length: > 0 } ? ep.Database : resolved.Database
+            };
+        }
 
         var entry = new CompareHistoryEntry
         {
@@ -101,7 +105,8 @@ public sealed class CompareService
             Options = options
         };
 
-        entry.Signature = CompareHistoryEntry.BuildSignature(entry.Source, entry.Targets);
+        // a PostgreSQL database name is exact: ShopDb and shopdb are two histories
+        entry.Signature = CompareHistoryEntry.BuildSignature(entry.Source, entry.Targets, exactDatabases: true);
         return entry;
     }
 

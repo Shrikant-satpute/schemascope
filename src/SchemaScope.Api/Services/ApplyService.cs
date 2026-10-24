@@ -95,6 +95,31 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
         return true;
     }
 
+    /// <summary>
+    /// Registers the apply that will report to <paramref name="progressId"/> before its gates run (on PostgreSQL they
+    /// ask servers who they are, which takes seconds), so a Stop sent meanwhile is kept: the run then stops before its
+    /// first file. Disposing it ends the registration; <see cref="RunAsync"/> uses it while it is held.
+    /// </summary>
+    public IDisposable Reserve(string? progressId)
+    {
+        if (progressId is null) return Reservation.None;
+        var run = new Run(new CancellationTokenSource(), new CancellationTokenSource());
+        running[progressId] = run;
+        return new Reservation(() =>
+        {
+            running.TryRemove(new KeyValuePair<string, Run>(progressId, run));
+            run.Stop.Dispose();
+            run.Abort.Dispose();
+        });
+    }
+
+    private sealed class Reservation(Action? release) : IDisposable
+    {
+        public static readonly Reservation None = new(null);
+        private Action? release = release;
+        public void Dispose() => Interlocked.Exchange(ref release, null)?.Invoke();
+    }
+
     /// <inheritdoc cref="SqlServerApplyExecutor.InspectAsync"/>
     public static Task<TargetFacts?> InspectAsync(string connectionString) => SqlServerApplyExecutor.Instance.InspectAsync(connectionString);
 
@@ -160,10 +185,14 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
         // no record, no apply: the log must show everything that reached a database
         store.StartApplyRun(audit);
 
-        using var stop = new CancellationTokenSource();
-        using var abort = new CancellationTokenSource();
-        var run = new Run(stop, abort);
-        if (job.ProgressId is { } pid) running[pid] = run;
+        // a run reserved before its gates (Reserve) keeps a Stop sent while they ran; otherwise it registers now
+        var reserved = job.ProgressId is { } rid && running.TryGetValue(rid, out var held) ? held : null;
+        using var ownStop = reserved is null ? new CancellationTokenSource() : null;
+        using var ownAbort = reserved is null ? new CancellationTokenSource() : null;
+        var stop = reserved?.Stop ?? ownStop!;
+        var abort = reserved?.Abort ?? ownAbort!;
+        var run = reserved ?? new Run(stop, abort);
+        if (reserved is null && job.ProgressId is { } pid) running[pid] = run;
         // Turning write mode off cancels the file that is running too (it rolls back): nothing commits once the UI says
         // read-only. While it is on, a running apply is activity, so a long file never idles it out half-way.
         using var watch = new Timer(_ =>
@@ -227,7 +256,7 @@ public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, IL
         }
         finally
         {
-            if (job.ProgressId is { } id) running.TryRemove(new KeyValuePair<string, Run>(id, run));
+            if (reserved is null && job.ProgressId is { } id) running.TryRemove(new KeyValuePair<string, Run>(id, run));
         }
 
         var ok = result.Applied.Count(a => a.Ok);

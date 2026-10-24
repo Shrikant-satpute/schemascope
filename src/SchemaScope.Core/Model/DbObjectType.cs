@@ -33,7 +33,9 @@ public enum DbObjectType
     /// <summary>PostgreSQL: a range of a subtype (CREATE TYPE ... AS RANGE); its constructors and multirange come with it.</summary>
     RangeType = 17,
     /// <summary>PostgreSQL: a collation a user made (CREATE COLLATION).</summary>
-    Collation = 18
+    Collation = 18,
+    /// <summary>PostgreSQL: an operator a user made (CREATE OPERATOR), told apart by its argument types.</summary>
+    Operator = 19
 }
 
 public static class DbObjectTypeExtensions
@@ -60,6 +62,7 @@ public static class DbObjectTypeExtensions
         DbObjectType.Extension => "Extension",
         DbObjectType.RangeType => "Range type",
         DbObjectType.Collation => "Collation",
+        DbObjectType.Operator => "Operator",
         _ => t.ToString()
     };
 

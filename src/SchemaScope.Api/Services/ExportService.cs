@@ -270,6 +270,9 @@ public sealed class ExportService
         Directory.CreateDirectory(root);
 
         var written = 0;
+        // every file once: PostgreSQL overloads (one name, other argument types) and names that differ only by letter case
+        // (two objects there, one file name on Windows) each get a file of their own
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in Filter(session.Result, request))
         {
             if (!byKey.TryGetValue(row.Key, out var obj)) continue;
@@ -278,7 +281,9 @@ public sealed class ExportService
             var folder = Path.Combine(root, Safe(row.TypeLabel));
             Directory.CreateDirectory(folder);
 
-            var file = Path.Combine(folder, Safe($"{row.Schema}.{row.Name}") + ".sql");
+            var stem = Safe(row.Signature is { Length: > 0 } sig ? $"{row.Schema}.{row.Name}({sig})" : $"{row.Schema}.{row.Name}");
+            var file = Path.Combine(folder, stem + ".sql");
+            for (var n = 2; !used.Add(file); n++) file = Path.Combine(folder, $"{stem} ({n}).sql");
             File.WriteAllText(file, obj.DisplayText, new UTF8Encoding(true));
             written++;
         }

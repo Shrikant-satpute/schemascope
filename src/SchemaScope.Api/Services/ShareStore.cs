@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using SchemaScope.Core.Comparison;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Storage;
 
 namespace SchemaScope.Api.Services;
@@ -113,7 +114,10 @@ public sealed partial class ShareStore(SchemaScopeStore store, ILogger<ShareStor
         {
             Token = token,
             SourceLabel = session.Result.Source.Label,
-            SourceDetail = $"{session.Result.Source.Server} / {session.Result.Source.Database}",
+            // another engine keeps its port apart from the host: two servers on one host are told apart by it
+            SourceDetail = session.Result.Source is { Engine: not DatabaseEngine.SqlServer, Port: { } port } s
+                ? $"{s.Server}:{port} / {s.Database}"
+                : $"{session.Result.Source.Server} / {session.Result.Source.Database}",
             TargetLabels = [.. session.Result.Targets.Select(t => t.Label)],
             ComparedUtc = session.Result.StartedUtc,
             CreatedUtc = DateTime.UtcNow,

@@ -31,6 +31,13 @@ public sealed class ApplyTarget
     /// <summary>"Windows: DOMAIN\user", "SQL login: name" or "PostgreSQL user: name".</summary>
     public string Login { get; set; } = "";
     public bool Protected { get; set; }
+
+    /// <summary>
+    /// When <see cref="Protected"/>: true when this connection itself is marked Protected, false when another
+    /// Protected connection on the same host protects it. Null when not protected.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ProtectedItself { get; set; }
 }
 
 /// <summary>A script file of a plan: what to run, and the SHA-256 it had when it was generated.</summary>

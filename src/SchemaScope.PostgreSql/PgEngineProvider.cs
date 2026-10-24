@@ -5,8 +5,8 @@ namespace SchemaScope.PostgreSql;
 
 /// <summary>
 /// PostgreSQL behind the engine seam, as a preview: read, compare, scripts written to a folder (whole database and
-/// single object), and Apply in write mode, each file in its own transaction. Changes that can lose data are not
-/// offered yet (the server refuses them from these capabilities, whatever the UI shows).
+/// single object), and Apply in write mode, each file in its own transaction. Changes that can lose data
+/// (11_destructive) are opt-in, in write mode only, between two PostgreSQL databases only.
 /// </summary>
 public sealed class PgEngineProvider(PgConnectionService connections) : IEngineProvider
 {
@@ -28,7 +28,10 @@ public sealed class PgEngineProvider(PgConnectionService connections) : IEngineP
             DbObjectType.AggregateFunction, DbObjectType.Trigger, DbObjectType.Sequence, DbObjectType.Domain,
             DbObjectType.EnumType, DbObjectType.CompositeType, DbObjectType.Extension
         },
-        Features: new HashSet<EngineFeature> { EngineFeature.Compare, EngineFeature.Scripts, EngineFeature.ObjectScripts, EngineFeature.Apply },
+        Features: new HashSet<EngineFeature>
+        {
+            EngineFeature.Compare, EngineFeature.Scripts, EngineFeature.ObjectScripts, EngineFeature.Apply, EngineFeature.Destructive
+        },
         Preview: true);
 
     public ISqlDialect Dialect { get; } = new PgDialect();

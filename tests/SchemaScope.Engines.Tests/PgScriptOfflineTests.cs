@@ -405,4 +405,79 @@ public class PgScriptOfflineTests
         var plain = Pg(DbObjectType.Table, "Sales", "t");
         Assert.Equal("CREATE INDEX t_ix ON ONLY \"Sales\".t USING btree (a)", PgScriptRun.OnEveryPartition(plain, "CREATE INDEX t_ix ON ONLY \"Sales\".t USING btree (a)"));
     }
+
+    // ------------------------------------------------------------------ R3b: 11_destructive
+
+    [Theory]
+    [InlineData("character varying(20)", "character varying(10)", "char_length(\"c\") > 10")]
+    [InlineData("text", "character varying(5)", "char_length(\"c\") > 5")]
+    [InlineData("bigint", "integer", "\"c\" NOT BETWEEN -2147483648 AND 2147483647")]
+    [InlineData("integer", "smallint", "\"c\" NOT BETWEEN -32768 AND 32767")]
+    [InlineData("numeric(10,3)", "numeric(10,2)", "\"c\" <> round(\"c\", 2) OR abs(\"c\") >= power(10::numeric, 8)")]
+    [InlineData("numeric", "numeric(5)", "\"c\" <> round(\"c\", 0) OR abs(\"c\") >= power(10::numeric, 5)")]
+    [InlineData("timestamp(6) with time zone", "timestamp(0) with time zone", "\"c\" IS DISTINCT FROM CAST(\"c\" AS timestamp(0) with time zone)")]
+    [InlineData("timestamp without time zone", "timestamp(3) without time zone", "\"c\" IS DISTINCT FROM CAST(\"c\" AS timestamp(3) without time zone)")]
+    public void A_narrowing_is_probed_with_a_predicate_built_from_the_two_types_only(string from, string to, string predicate) =>
+        Assert.Equal(predicate, PgScriptRun.FitPredicate(from, to, "\"c\""));
+
+    [Theory]
+    [InlineData("character(5)", "character varying(3)")]   // char to varchar drops trailing spaces: another family
+    [InlineData("text", "integer")]
+    [InlineData("double precision", "real")]
+    [InlineData("integer", "bigint")]                      // not a narrowing
+    [InlineData("app.mood", "text")]
+    [InlineData("timestamp(3) without time zone", "timestamp(3) with time zone")]
+    public void Anything_else_has_no_predicate_and_is_held(string from, string to) => Assert.Null(PgScriptRun.FitPredicate(from, to, "\"c\""));
+
+    [Fact]
+    public async Task Case_twins_are_held_and_nothing_is_dropped_without_the_option()
+    {
+        ColumnInfo Col(string name) => new() { Name = name, DataType = "integer", IsNullable = true };
+        DbObject Table(string schema, string name, params string[] columns)
+        {
+            var t = Pg(DbObjectType.Table, schema, name);
+            t.Columns = [.. columns.Select((c, i) => { var col = Col(c); col.Ordinal = i + 1; return col; })];
+            t.Hash = $"{name}:{string.Join(",", columns)}";
+            return t;
+        }
+        var src = new SchemaSnapshot
+        {
+            Engine = DatabaseEngine.PostgreSql, MajorVersion = 16,
+            Objects = [Pg(DbObjectType.Schema, "public", "public"), Table("public", "Users", "id", "Email")],
+        };
+        var tgt = new SchemaSnapshot
+        {
+            Engine = DatabaseEngine.PostgreSql, MajorVersion = 16,
+            Objects = [Pg(DbObjectType.Schema, "public", "public"), Table("public", "Users", "id", "Email", "email"), Table("public", "users", "id")],
+        };
+        var output = Path.Combine(Path.GetTempPath(), $"schemascope-pg-offline-{Guid.NewGuid():n}");
+        try
+        {
+            var endpoint = new ScriptEndpoint("Target", "db.example", "tgt", "Host=db.example;Database=tgt", DatabaseEngine.PostgreSql);
+            async Task<ScriptOutcome> Run(bool destructive) => await new PgScriptGenerator().GenerateAsync(new ScriptRequestContext(endpoint with { Label = "Source" },
+                endpoint, src, tgt, new CompareResult(), 0,
+                new ScriptOptions { Sections = [ScriptSection.Constraints], OutputFolder = output, IncludeDestructive = destructive, CheckExistingData = false },
+                new HashSet<string>(), new Dictionary<string, LineChange>()), default, null);
+
+            var on = await Run(destructive: true);
+            Assert.True(on.Success, on.Message);
+            Assert.DoesNotContain(on.Files, f => f.Folder == PgScriptGenerator.DestructiveFolder && f.IsObjectFile);
+            Assert.Contains(on.HeldBack, h => h.Object == "public.users" && h.Reason.Contains("Source has table public.users spelled in another letter case"));
+            Assert.Contains(on.HeldBack, h => h.Object == "public.Users.email" && h.Reason.Contains("another letter case"));
+            var folder = Assert.Single(on.Folders, f => f.Folder == PgScriptGenerator.DestructiveFolder);
+            Assert.Equal(0, folder.Files);
+            Assert.Contains(folder.Notes, n => n.Contains("2 change(s) held back"));
+
+            // without the option there is no 11 at all, and the target-only items say how they could be dropped
+            var off = await Run(destructive: false);
+            Assert.True(off.Success, off.Message);
+            Assert.DoesNotContain(off.Folders, f => f.Folder == PgScriptGenerator.DestructiveFolder);
+            Assert.DoesNotContain(off.Files, f => f.Folder == PgScriptGenerator.DestructiveFolder);
+            Assert.Contains(off.HeldBack, h => h.Object == "public.Users.email" && h.Reason.Contains("only 11_destructive drops it"));
+        }
+        finally
+        {
+            try { Directory.Delete(output, true); } catch (IOException) { }
+        }
+    }
 }

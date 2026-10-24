@@ -9,7 +9,9 @@ namespace SchemaScope.Scripting.PostgreSql;
 
 /// <summary>One file a PostgreSQL folder will hold.</summary>
 /// <param name="Module">The source's code text the file must carry exactly (a RawModule), or null.</param>
-internal sealed record PgFile(string Name, string Text, ObjectName? Object, string? Module = null);
+/// <param name="Rollback">11_destructive: the text of the file's rollback\ twin (the dropped code as the target has it), or null.</param>
+/// <param name="RollbackModule">The target's code text that rollback file must carry exactly.</param>
+internal sealed record PgFile(string Name, string Text, ObjectName? Object, string? Module = null, string? Rollback = null, string? RollbackModule = null);
 
 /// <summary>One numbered folder, filled while planning and written at the end.</summary>
 internal sealed class PgFolder(string name, string title, bool inRunAll)
@@ -62,6 +64,7 @@ internal sealed partial class PgScriptRun
     public PgFolder Indexes { get; } = new(PgScriptGenerator.IndexesFolder, "Indexes", true);
     public PgFolder Triggers { get; } = new(PgScriptGenerator.TriggersFolder, "Triggers", false);
     public PgFolder Different { get; } = new(PgScriptGenerator.DifferentFolder, "Different code", false);
+    public PgFolder Destructive { get; } = new(PgScriptGenerator.DestructiveFolder, PgScriptGenerator.DestructiveTitle, false);
 
     public PgScriptRun(ScriptRequestContext req, ReviewLog review, PgTargetProbes probes, CancellationToken ct)
     {
@@ -107,6 +110,9 @@ internal sealed partial class PgScriptRun
         if (Selected(ScriptSection.DifferentModules)) PlanDifferent();
         if (Selected(ScriptSection.Formatting)) PlanFormatting();
         PlanLeftOver();
+        ct.ThrowIfCancellationRequested();
+        report(77, "11 Changes that can lose data");
+        if (Destroys) await PlanDestructiveAsync();
     }
 
     // ------------------------------------------------------------------ status and scope
@@ -341,10 +347,12 @@ internal sealed partial class PgScriptRun
                     review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
                         $"collation differs (source: {c.Collation ?? "default"}, target: {tc.Collation ?? "default"}); changing it rebuilds its indexes and is not scripted",
                         ColumnTypes.Name);
-                if (tighten)
+                // with 11_destructive on, NOT NULL and a type change that is no widening are its to plan (or to hold, with why)
+                if (tighten && !Destroys)
                     review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
                         "the source has NOT NULL and the target allows NULL: making it NOT NULL fails on existing NULLs and is not scripted",
                         ColumnTypes.Name);
+                if (typeChanges && Destroys && Widening(tc.DataType, c.DataType) is null) typeChanges = false;
                 if (!typeChanges && !relax) continue;
 
                 // PostgreSQL refuses to change a column's type while a view, rule, generated column, policy or trigger reads it
@@ -390,24 +398,22 @@ internal sealed partial class PgScriptRun
     private static string IdentitySequence(ColumnInfo c) => $"START WITH {c.IdentitySeed} INCREMENT BY {c.IdentityIncrement} {c.IdentityOptions}".TrimEnd();
 
     /// <summary>The target objects whose definition reads <paramref name="column"/> of <paramref name="table"/> (pg_depend, column level).</summary>
-    private List<string> ReadersOf(DbObject table, string column)
+    private List<string> ReadersOf(DbObject table, string column) => [.. Readers(table, column).Select(r => r.What).Distinct()];
+
+    /// <summary>Each target object that reads the column as <see cref="ReadersOf"/> words it, with the object.</summary>
+    private IEnumerable<(DbObject By, string What)> Readers(DbObject table, string column)
     {
-        var readers = new List<string>();
         foreach (var o in Tgt.Objects)
             foreach (var d in o.DependsOn ?? [])
                 if (d.Key == table.Key && d.Column == column && d.Via is "view" or "default" or "policy" or "trigger")
-                {
-                    var what = d.Via switch
+                    yield return (o, d.Via switch
                     {
                         "view" when o.Key == table.Key => "a rule on the table",
                         "view" => $"{Kind(o)} {Display(o)}",
                         "default" => o.Key == table.Key ? "a generated column of the table" : $"a default of {Display(o)}",
                         "policy" => "a row level security policy",
                         _ => o.Type == DbObjectType.Trigger ? $"trigger {Display(o)}" : "a trigger",
-                    };
-                    if (!readers.Contains(what)) readers.Add(what);
-                }
-        return readers;
+                    });
     }
 
     /// <summary>
@@ -416,15 +422,8 @@ internal sealed partial class PgScriptRun
     /// </summary>
     internal static bool? Widening(string from, string to)
     {
-        static (string Base, int[] Args) Parse(string type)
-        {
-            var m = TypeRx().Match(type.Trim());
-            if (!m.Success) return (type.Trim(), []);
-            var args = m.Groups["args"].Success ? m.Groups["args"].Value.Split(',').Select(a => int.Parse(a.Trim())).ToArray() : [];
-            return (m.Groups["base"].Value + m.Groups["tail"].Value, args);
-        }
-        var (fb, fa) = Parse(from);
-        var (tb, ta) = Parse(to);
+        var (fb, fa) = ParseType(from);
+        var (tb, ta) = ParseType(to);
         string[] ints = ["smallint", "integer", "bigint"];
         if (Array.IndexOf(ints, fb) is >= 0 and var fi && Array.IndexOf(ints, tb) is var ti && ti > fi && fa.Length == 0 && ta.Length == 0) return true;
         if (fb == "real" && tb == "double precision") return true;
@@ -445,6 +444,15 @@ internal sealed partial class PgScriptRun
                 return ta.Length == 0 || (fa.Length == 1 && ta[0] > fa[0]) ? false : null;
         }
         return null;
+    }
+
+    /// <summary>A format_type spelling as its base type (with any time zone tail) and its modifiers: ("numeric", [10, 2]).</summary>
+    private static (string Base, int[] Args) ParseType(string type)
+    {
+        var m = TypeRx().Match(type.Trim());
+        if (!m.Success) return (type.Trim(), []);
+        var args = m.Groups["args"].Success ? m.Groups["args"].Value.Split(',').Select(a => int.Parse(a.Trim())).ToArray() : [];
+        return (m.Groups["base"].Value + m.Groups["tail"].Value, args);
     }
 
     /// <summary>format_type's spelling: "character varying(20)", "numeric(10,2)", "timestamp(3) without time zone".</summary>
@@ -483,8 +491,9 @@ internal sealed partial class PgScriptRun
                     review.Hold(ReviewLog.NotAppliedConstraints, "foreignkey", fk.Name, src.FullName,
                         "the source's copy is NOT VALID and the target's is validated; the target is stricter, so nothing is changed", Constraints.Name);
             }
-            foreach (var tfk in tgt.ForeignKeys.Where(x => src.ForeignKeys.All(f => f.Name != x.Name)))
-                review.Hold(ReviewLog.NotAppliedDestructive, "foreignkey", tfk.Name, src.FullName, TargetOnly, Constraints.Name);
+            if (!Destroys)
+                foreach (var tfk in tgt.ForeignKeys.Where(x => src.ForeignKeys.All(f => f.Name != x.Name)))
+                    review.Hold(ReviewLog.NotAppliedDestructive, "foreignkey", tfk.Name, src.FullName, TargetOnly, Constraints.Name);
         }
 
         // the foreign keys of the tables 03 creates: their tables are empty and every table exists by now
@@ -499,7 +508,8 @@ internal sealed partial class PgScriptRun
     }
 
     private const string TargetOnly =
-        "only the target has it; removing it can change what the database accepts or lose data, and 11_destructive is not available for PostgreSQL in this version";
+        "only the target has it; removing it can change what the database accepts or lose data, so only 11_destructive drops it " +
+        "(\"Include changes that can lose data\", with Read & write on)";
 
     private static string KeyText(DbObject o, bool indexes = true) => string.Join("\n",
         o.Indexes.Where(i => indexes || IsKey(i)).Select(i => i.Name + i.Definition).Concat(o.Constraints.Select(c => c.Name + c.Definition)).Concat(o.ForeignKeys.Select(f => f.Name + f.Definition)).Order(StringComparer.Ordinal));
@@ -539,7 +549,7 @@ internal sealed partial class PgScriptRun
             }
             if (sd is null)
             {
-                review.Hold(ReviewLog.NotAppliedDestructive, "default", c.Name, src.FullName, TargetOnly, Constraints.Name);
+                if (!Destroys) review.Hold(ReviewLog.NotAppliedDestructive, "default", c.Name, src.FullName, TargetOnly, Constraints.Name);
                 continue;
             }
             if (MissingNamed(sd.Definition, before03: false) is { } needs)
@@ -562,7 +572,8 @@ internal sealed partial class PgScriptRun
             var tck = tgt.Constraints.FirstOrDefault(x => x.Kind == ConstraintKind.Check && x.Name == ck.Name);
             if (tck is not null)
             {
-                if (tck.Definition != ck.Definition)
+                // with 11_destructive on, it replaces such a check once the rows are checked against the source's rule
+                if (tck.Definition != ck.Definition && !Destroys)
                     review.Hold(ReviewLog.NotAppliedConstraints, "check", ck.Name, src.FullName,
                         $"the target's check of this name is different ({tck.Definition}); replacing it is not scripted", Constraints.Name);
                 else if (!ck.IsNotTrusted && tck.IsNotTrusted) Validate(src, ck.Name);
@@ -595,8 +606,9 @@ internal sealed partial class PgScriptRun
                 $"ALTER TABLE {PgDdl.Q(src)} ADD CONSTRAINT {PgDdl.Q(ck.Name)} {ck.Definition} NOT VALID;\n", new ObjectName(src.Schema, src.Name)));
             if (!ck.IsNotTrusted) Validate(src, ck.Name);
         }
-        foreach (var tck in tgt.Constraints.Where(x => x.Kind == ConstraintKind.Check && src.Constraints.All(c => c.Kind != ConstraintKind.Check || c.Name != x.Name)))
-            review.Hold(ReviewLog.NotAppliedDestructive, "check", tck.Name, src.FullName, TargetOnly, Constraints.Name);
+        if (!Destroys)
+            foreach (var tck in tgt.Constraints.Where(x => x.Kind == ConstraintKind.Check && src.Constraints.All(c => c.Kind != ConstraintKind.Check || c.Name != x.Name)))
+                review.Hold(ReviewLog.NotAppliedDestructive, "check", tck.Name, src.FullName, TargetOnly, Constraints.Name);
     }
 
     /// <summary>The expression of "CHECK ((x > 0))" (and "... NO INHERIT"), or null.</summary>
@@ -680,8 +692,9 @@ internal sealed partial class PgScriptRun
             if (key.IsPrimaryKey || key.IsUniqueConstraint)
                 (addedKeys.TryGetValue(src.Key, out var list) ? list : addedKeys[src.Key] = []).Add(cols.ToHashSet(StringComparer.Ordinal));
         }
-        foreach (var tkey in tgt.Indexes.Where(x => IsKey(x) && src.Indexes.All(i => !IsKey(i) || i.Name != x.Name)))
-            review.Hold(ReviewLog.NotAppliedDestructive, "key", tkey.Name, src.FullName, TargetOnly, Constraints.Name);
+        if (!Destroys)
+            foreach (var tkey in tgt.Indexes.Where(x => IsKey(x) && src.Indexes.All(i => !IsKey(i) || i.Name != x.Name)))
+                review.Hold(ReviewLog.NotAppliedDestructive, "key", tkey.Name, src.FullName, TargetOnly, Constraints.Name);
     }
 
     /// <summary>Foreign keys whose referenced columns only a unique index of 06 covers: planned again at the end of 06.</summary>
@@ -829,7 +842,7 @@ internal sealed partial class PgScriptRun
                 if (ix.IsUnique && ix.FilterDefinition is null && ix.KeyColumns.All(k => src.Columns.Any(c => c.Name == k.Name)))
                     (addedUnique.TryGetValue(src.Key, out var sets) ? sets : addedUnique[src.Key] = []).Add(ix.KeyColumns.Select(k => k.Name).ToHashSet(StringComparer.Ordinal));
             }
-            if (tgt is not null)
+            if (tgt is not null && !Destroys)
                 foreach (var tix in tgt.Indexes.Where(x => !IsKey(x) && src.Indexes.All(i => IsKey(i) || i.Name != x.Name)))
                     review.Hold(ReviewLog.NotAppliedDestructive, "index", tix.Name, src.FullName, TargetOnly, Indexes.Name);
         }
@@ -891,8 +904,9 @@ internal sealed partial class PgScriptRun
             review.Note(ReviewLog.NotAppliedConstraints, "index", ix.Name, src.FullName,
                 $"built on this partition by 06's index {parent!.FullName}.{of.Name} on its parent", Indexes.Name);
         }
-        foreach (var tix in tgt.Indexes.Where(x => !IsKey(x) && src.Indexes.All(i => IsKey(i) || i.Name != x.Name)))
-            review.Hold(ReviewLog.NotAppliedDestructive, "index", tix.Name, src.FullName, TargetOnly, Indexes.Name);
+        if (!Destroys)
+            foreach (var tix in tgt.Indexes.Where(x => !IsKey(x) && src.Indexes.All(i => IsKey(i) || i.Name != x.Name)))
+                review.Hold(ReviewLog.NotAppliedDestructive, "index", tix.Name, src.FullName, TargetOnly, Indexes.Name);
     }
 
     /// <summary>The same index but for its name and table: uniqueness, then the deparse from USING on (method, columns, INCLUDE, WHERE).</summary>

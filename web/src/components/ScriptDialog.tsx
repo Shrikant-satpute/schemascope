@@ -76,7 +76,9 @@ export function ScriptDialog({
   const engines = useEngines()
   const engineText = engineOf(engines, target?.engine).scripts ?? null
   const sectionList = scriptSectionsFor(engineText)
-  const canDestroy = supports(engines, target?.engine, 'destructive')
+  // never across engines: the server refuses it as well
+  const canDestroy =
+    supports(engines, target?.engine, 'destructive') && (result.source.engine ?? 'sqlServer') === (target?.engine ?? 'sqlServer')
 
   const [sections, setSections] = useState<Set<ScriptSection>>(() => new Set(DEFAULT_SCRIPT_SECTIONS))
   const [outputFolder, setOutputFolder] = useState('')

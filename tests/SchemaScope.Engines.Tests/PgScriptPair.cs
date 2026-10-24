@@ -38,10 +38,11 @@ public sealed class PgScriptPair(PgServer pg, string src, string tgt, string out
     public Task<CompareRun> CompareAsync(CompareOptions? options = null) =>
         new CompareRunner(_ => new PgSchemaReader()).RunAsync(Pg.Source("source", Src), [Pg.Source("t0", Tgt)], options ?? new CompareOptions());
 
-    public async Task<ScriptOutcome> GenerateAsync(CompareRun before, IEnumerable<ScriptSection>? sections = null, CompareOptions? compare = null)
+    public async Task<ScriptOutcome> GenerateAsync(CompareRun before, IEnumerable<ScriptSection>? sections = null, CompareOptions? compare = null,
+        bool destructive = false)
     {
         Assert.False(before.Targets[0].Failed, before.Targets[0].Error);
-        var options = new ScriptOptions { Sections = [.. sections ?? Every], OutputFolder = output };
+        var options = new ScriptOptions { Sections = [.. sections ?? Every], OutputFolder = output, IncludeDestructive = destructive };
         var source = new ScriptEndpoint("Source", Pg.Host, Src, Pg.ConnectionString(Src), DatabaseEngine.PostgreSql);
         var target = new ScriptEndpoint("Target", Pg.Host, Tgt, Pg.ConnectionString(Tgt), DatabaseEngine.PostgreSql);
         var outcome = await new PgScriptGenerator().GenerateAsync(new ScriptRequestContext(source, target, before.Source, before.Targets[0],

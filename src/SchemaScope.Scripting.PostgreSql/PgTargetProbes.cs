@@ -95,6 +95,31 @@ public partial class PgTargetProbes(string label, string connectionString, int t
         return CountAsync($"rows of {table} without a match for its new foreign key", sql, ct);
     }
 
+    /// <summary>11_destructive: the rows a DROP TABLE would delete, <c>count(*)</c> (a partitioned table counts its partitions').</summary>
+    public Task<ProbeCount> RowCountAsync(string table, CancellationToken ct)
+    {
+        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        return CountAsync($"rows of {table}", $"SELECT count(*) FROM {table}", ct);
+    }
+
+    /// <summary>11_destructive: the rows whose value a DROP COLUMN would lose (NULLs hold none).</summary>
+    public Task<ProbeCount> ValuesAsync(string table, string column, CancellationToken ct)
+    {
+        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        return CountAsync($"values in {table}.{PgDdl.Q(column)}", $"SELECT count(*) FROM {table} WHERE {PgDdl.Q(column)} IS NOT NULL", ct);
+    }
+
+    /// <summary>
+    /// 11_destructive's data-fit test for a column change: rows matching <paramref name="misfit"/>, a predicate
+    /// SchemaScope builds from the two types and the column alone (comparisons, casts, char_length, round, abs, power -
+    /// nothing of the target's own), so running it reads rows and nothing else.
+    /// </summary>
+    public Task<ProbeCount> ColumnMisfitsAsync(string table, string column, string misfit, CancellationToken ct)
+    {
+        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        return CountAsync($"rows of {table} that {PgDdl.Q(column)} would not keep", $"SELECT count(*) FROM {table} WHERE {misfit}", ct);
+    }
+
     /// <summary>
     /// Rows a CHECK would refuse. The expression is the source's and runs once per row of the target, so it is run only
     /// when it names no user object (a function, an operator or a domain's own check could do anything, and READ ONLY

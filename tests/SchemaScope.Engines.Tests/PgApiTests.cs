@@ -53,7 +53,7 @@ public sealed class PgRouteTests : IAsyncLifetime
         Assert.True(pg.GetProperty("preview").GetBoolean());
         Assert.Equal("postgres", pg.GetProperty("browseDatabase").GetString());
         Assert.Equal("pgsql", pg.GetProperty("monacoLanguage").GetString());
-        Assert.Equal(["apply", "compare", "objectScripts", "scripts"], pg.GetProperty("capabilities").GetProperty("features").EnumerateArray().Select(f => f.GetString()).Order());
+        Assert.Equal(["apply", "compare", "destructive", "objectScripts", "scripts"], pg.GetProperty("capabilities").GetProperty("features").EnumerateArray().Select(f => f.GetString()).Order());
         // the apply dialog's promise comes from the engine's transaction semantics, and the typed name is exact
         Assert.Equal("perFileTransactional", pg.GetProperty("transactions").GetString());
         Assert.StartsWith("Each file runs in its own transaction", pg.GetProperty("apply").GetProperty("transactions").GetString());
@@ -148,6 +148,24 @@ public sealed class PgRouteTests : IAsyncLifetime
         Assert.Contains("Comparing across engines is not available", await Message(r));
     }
 
+    [Fact]
+    public async Task Changes_that_can_lose_data_are_never_scripted_across_engines()
+    {
+        await _o.SetPreviewAsync(true);
+        var run = PgRun();
+        // the session says SQL Server to PostgreSQL; the engines are the session's, never the request's
+        var session = _o.App.Services.GetRequiredService<CompareSessionStore>().Get(run)!;
+        session.Result!.Source.Engine = DatabaseEngine.SqlServer;
+        session.SourceConnection = new SchemaSource { Label = "Dev", Server = "sql", Database = "app", ConnectionString = "Server=sql;Database=app" };
+        Assert.Equal(HttpStatusCode.OK, (await _o.PostJson("/api/write-mode", """{ "enabled": true, "confirm": "ENABLE" }""")).StatusCode);
+        var folder = JsonSerializer.Serialize(Path.Combine(_o.Temp.Folder, "scripts"));
+        var r = await _o.PostJson($"/api/compare/{run}/scripts",
+            $$"""{ "targetIndex": 0, "options": { "outputFolder": {{folder}}, "sections": ["newColumns"], "includeDestructive": true } }""");
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.Equal("Changes that can lose data are never scripted across engines.", await Message(r));
+        Assert.False(Directory.Exists(Path.Combine(_o.Temp.Folder, "scripts")));
+    }
+
     /// <summary>A finished PostgreSQL-to-PostgreSQL run, as a compare would leave it.</summary>
     private string PgRun()
     {
@@ -201,12 +219,20 @@ public sealed class PgRouteTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, one.StatusCode);
         Assert.False(JsonDocument.Parse(await one.Content.ReadAsStringAsync()).RootElement.GetProperty("success").GetBoolean());
 
-        Assert.Equal(HttpStatusCode.OK, (await _o.PostJson("/api/write-mode", """{ "enabled": true, "confirm": "ENABLE" }""")).StatusCode);
-        // 11_destructive does not exist for PostgreSQL yet, whatever the dialog sends
+        // 11_destructive: never without write mode, whatever the dialog sends
         var destructive = await _o.PostJson($"/api/compare/{run}/scripts",
             $$"""{ "targetIndex": 0, "options": { "outputFolder": {{folder}}, "sections": ["newColumns"], "includeDestructive": true } }""");
         Assert.Equal(HttpStatusCode.BadRequest, destructive.StatusCode);
-        Assert.Equal("Changes that can lose data are not available for PostgreSQL in this version.", await Message(destructive));
+        Assert.Equal("Turn on write mode to include changes that can lose data", await Message(destructive));
+
+        // with it, the PostgreSQL generator takes the request (and refuses this session, which has no snapshots)
+        Assert.Equal(HttpStatusCode.OK, (await _o.PostJson("/api/write-mode", """{ "enabled": true, "confirm": "ENABLE" }""")).StatusCode);
+        destructive = await _o.PostJson($"/api/compare/{run}/scripts",
+            $$"""{ "targetIndex": 0, "options": { "outputFolder": {{folder}}, "sections": ["newColumns"], "includeDestructive": true } }""");
+        Assert.Equal(HttpStatusCode.OK, destructive.StatusCode);
+        Assert.Contains("could not be read in this comparison",
+            JsonDocument.Parse(await destructive.Content.ReadAsStringAsync()).RootElement.GetProperty("message").GetString());
+        Assert.False(Directory.Exists(Path.Combine(_o.Temp.Folder, "scripts")));
 
         var apply = await _o.PostJson($"/api/compare/{run}/apply",
             """{ "planId": "nope", "targetIndex": 0, "sections": ["01_columns"], "confirmDatabase": "app" }""");

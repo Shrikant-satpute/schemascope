@@ -450,7 +450,7 @@ public abstract class PgApplyTestsBase(PgServer pg)
 
     private static JsonElement Body(string json) => JsonDocument.Parse(json).RootElement;
 
-    private static async Task<JsonElement> CompareAsync(OwnerApp o, object source, object target)
+    internal static async Task<JsonElement> CompareAsync(OwnerApp o, object source, object target)
     {
         var started = await o.Post("/api/compare", new { source = new { inline = source }, targets = new[] { new { inline = target } } });
         var text = await started.Content.ReadAsStringAsync();
@@ -469,7 +469,7 @@ public abstract class PgApplyTestsBase(PgServer pg)
         throw new TimeoutException("The compare did not finish.");
     }
 
-    private static double MatchPercent(JsonElement run) =>
+    internal static double MatchPercent(JsonElement run) =>
         run.GetProperty("result").GetProperty("targets")[0].GetProperty("matchPercent").GetDouble();
 
     private static async Task<JsonElement> ScriptsAsync(OwnerApp o, string runId, string folder)

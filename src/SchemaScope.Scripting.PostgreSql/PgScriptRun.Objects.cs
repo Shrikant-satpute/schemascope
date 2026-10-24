@@ -521,8 +521,9 @@ internal sealed partial class PgScriptRun
                 review.Hold(ReviewLog.NotApplied, "table option", name, src.FullName,
                     $"differs (source: {a ?? "not set"}; target: {b ?? "not set"}); changing it is not scripted in this version");
             }
-            foreach (var c in tgt.Columns.Where(c => src.Columns.All(x => x.Name != c.Name)))
-                review.Hold(ReviewLog.NotAppliedDestructive, "column", c.Name, src.FullName, TargetOnly);
+            if (!Destroys)
+                foreach (var c in tgt.Columns.Where(c => src.Columns.All(x => x.Name != c.Name)))
+                    review.Hold(ReviewLog.NotAppliedDestructive, "column", c.Name, src.FullName, TargetOnly);
 
             // PostgreSQL cannot move a column: the order the target ends with, against the source's
             if (compare.IgnoreColumnOrder) continue;

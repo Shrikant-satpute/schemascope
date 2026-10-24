@@ -276,13 +276,15 @@ public class EngineCatalogTests
     }
 
     [Fact]
-    public void Postgres_offers_compare_scripts_and_apply_but_not_changes_that_lose_data()
+    public void Postgres_offers_compare_scripts_apply_and_changes_that_lose_data_but_nothing_across_engines()
     {
         var p = new PgEngineProvider();
         Assert.True(p.Capabilities.Preview);
-        Assert.Equal([EngineFeature.Compare, EngineFeature.Scripts, EngineFeature.ObjectScripts, EngineFeature.Apply], p.Capabilities.Features.Order());
+        Assert.Equal([EngineFeature.Compare, EngineFeature.Scripts, EngineFeature.ObjectScripts, EngineFeature.Apply, EngineFeature.Destructive],
+            p.Capabilities.Features.Order());
         Assert.Equal(TransactionSemantics.PerFileTransactional, p.Capabilities.Ddl);
-        Assert.DoesNotContain(EngineFeature.Destructive, p.Capabilities.Features);
+        Assert.DoesNotContain(EngineFeature.CrossCompare, p.Capabilities.Features);
+        Assert.DoesNotContain(EngineFeature.CrossScripts, p.Capabilities.Features);
         Assert.Equal("postgres", p.Connections.BrowseDatabase);
         Assert.IsType<PgSchemaReader>(p.CreateReader());
         Assert.Equal(63, p.Capabilities.MaxIdentifierBytes);

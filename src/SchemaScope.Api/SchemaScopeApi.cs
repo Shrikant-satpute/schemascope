@@ -810,6 +810,9 @@ public static class SchemaScopeApi
             var source = Endpoint(session.SourceConnection!, result.Source.Label);
             var target = Endpoint(session.TargetConnections[index], result.Targets[index].Label);
             var options = Normalise(request.Options);
+            // the engines are the session's: changes that can lose data are never scripted from one engine to another
+            if (options.IncludeDestructive && source.Engine != target.Engine)
+                return Results.BadRequest(new { message = "Changes that can lose data are never scripted across engines." });
             if (generators.For(source.Engine, target.Engine) is not { } generator)
                 return Results.BadRequest(new
                 {

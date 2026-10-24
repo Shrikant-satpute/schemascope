@@ -23,7 +23,9 @@ namespace SchemaScope.Scripting.PostgreSql;
 ///   06 indexes: without CONCURRENTLY (it cannot run inside the file's transaction)
 ///   07 triggers: each with its trigger function when the target lacks it
 ///   10 different code: CREATE OR REPLACE when the signature and the return type are unchanged, otherwise held
-///   02, 08, 09: not applicable on PostgreSQL; 11 is not available for PostgreSQL in this version
+///   11 destructive: only with "Include changes that can lose data" - drops of what only the target has and column
+///      changes that can lose data, each after a read-only probe, every DROP RESTRICT; never run by RUN.ps1
+///   02, 08, 09: not applicable on PostgreSQL
 /// </summary>
 public sealed class PgScriptGenerator : IScriptGenerator
 {
@@ -37,6 +39,8 @@ public sealed class PgScriptGenerator : IScriptGenerator
     public const string FormattingModulesFolder = "08_formatting_modules";
     public const string FormattingTablesFolder = "09_formatting_tables";
     public const string DifferentFolder = "10_different_modules";
+    public const string DestructiveFolder = DestructiveGenerator.Folder;
+    public const string DestructiveTitle = DestructiveGenerator.Title;
 
     /// <summary>The folders RUN.ps1 runs, in order: 04 first (it only changes what the target has), 01 before 03 (new code reads new columns), then 05 and 06.</summary>
     public static IReadOnlyList<string> RunAllFolders { get; } = [ColumnTypesFolder, ColumnsFolder, MissingFolder, ConstraintsFolder, IndexesFolder];
@@ -98,6 +102,7 @@ public sealed class PgScriptGenerator : IScriptGenerator
                 folders.Add(NotApplicable(FormattingTablesFolder, "Formatting (names)", "PostgreSQL names are exact; nothing differs only by letter case."));
             }
             Add(run.Different, ScriptSection.DifferentModules);
+            if (options.IncludeDestructive) folders.Add(Write(writer, run.Destructive, runner, [.. run.Destructive.Notes]));
             folders = [.. folders.OrderBy(f => f.Folder, StringComparer.Ordinal)];
             ct.ThrowIfCancellationRequested();
 
@@ -167,7 +172,6 @@ public sealed class PgScriptGenerator : IScriptGenerator
         if (o.Sections.Count == 0) return "Tick at least one section.";
         if (!string.IsNullOrWhiteSpace(o.QuarantineFolder) && !Directory.Exists(o.QuarantineFolder))
             return $"The quarantine folder does not exist: {o.QuarantineFolder}";
-        if (o.IncludeDestructive) return "Changes that can lose data (11_destructive) are not available for PostgreSQL in this version.";
         if (req.Source.Engine != DatabaseEngine.PostgreSql || req.Target.Engine != DatabaseEngine.PostgreSql)
             return "PostgreSQL scripts need a PostgreSQL source and target.";
         if (req.SourceSnap is not { Failed: false } || req.TargetSnap is not { Failed: false })
@@ -182,21 +186,36 @@ public sealed class PgScriptGenerator : IScriptGenerator
         if (folder.Files.Count == 0)
         {
             result.Notes.Add(ScriptGenerator.NothingToDoNote);
+            result.Notes.AddRange(notes);
             return result;
         }
         var all = new StringBuilder($"-- {folder.Name}: every file of objects\\ in order, for one manual run:\n" +
                                     "--   psql -X -v ON_ERROR_STOP=1 --single-transaction -f _ALL.sql\n");
         var n = 0;
+        var rollbacks = new List<string>();
         foreach (var f in folder.Files)
         {
             var name = ScriptText.Safe(f.Name);
             if (name.Length > 100) name = name[..100];
-            var file = $"objects\\{++n:000}_{name}.sql";
-            writer.WriteSql(folder.Name, file, f.Text, f.Module is null ? WrittenFileKind.Statements : WrittenFileKind.RawModule, f.Object,
+            var file = $"{++n:000}_{name}.sql";
+            writer.WriteSql(folder.Name, "objects\\" + file, f.Text, f.Module is null ? WrittenFileKind.Statements : WrittenFileKind.RawModule, f.Object,
                 expectedModuleText: f.Module);
             all.Append('\n').Append(f.Text);
+            // 11_destructive: the dropped code as the target has it, under the same file name; never part of a plan
+            if (f.Rollback is null) continue;
+            writer.WriteSql(folder.Name, "rollback\\" + file, f.Rollback, WrittenFileKind.RawModule, f.Object, expectedModuleText: f.RollbackModule);
+            rollbacks.Add(f.Rollback);
         }
         writer.WriteSql(folder.Name, "_ALL.sql", all.ToString());
+        if (rollbacks.Count > 0)
+        {
+            // undo in reverse: what was dropped last (what the others used) comes back first
+            var back = new StringBuilder("-- rollback\\: every file in reverse order, for one manual run:\n" +
+                                         "--   psql -X -v ON_ERROR_STOP=1 --single-transaction -f _ALL.sql\n");
+            foreach (var r in Enumerable.Reverse(rollbacks)) back.Append('\n').Append(r);
+            writer.WriteSql(folder.Name, "rollback\\_ALL.sql", back.ToString());
+            result.HasRollback = true;
+        }
         writer.WriteRunnerText(folder.Name, PgRunners.Folder(runner));
         result.Files = writer.ObjectFileCount(folder.Name);
         result.Notes.AddRange(notes);
@@ -220,6 +239,7 @@ public sealed class PgScriptGenerator : IScriptGenerator
         [FormattingModulesFolder] = "Not applicable: PostgreSQL keeps each body as written.",
         [FormattingTablesFolder] = "Not applicable: PostgreSQL names are exact.",
         [DifferentFolder] = "Replaces functions, procedures, aggregates, views and triggers whose code really differs with CREATE OR REPLACE, when the signature, the return type (and a view's columns) allow it; anything else is held. Replaces the target's own code - read 99_review\\different_modules.md first.",
+        [DestructiveFolder] = "**CAN LOSE DATA.** Drops what only the target has (tables with their rows, columns with their values, views, materialized views, functions, procedures, aggregates, triggers, sequences, domains and types, and defaults, checks, foreign keys, unique keys and indexes), narrows columns, turns NULL into NOT NULL, and replaces checks whose rule differs. Each change was checked against the data when generated; what could not be proven safe is held back in 99_review\\not_applied_destructive.md. Every DROP is RESTRICT. Never run by RUN.ps1 - see the caution below.",
     };
 
     private static string Readme(ScriptRequestContext req, PgScriptRun run, List<FolderResult> folders, List<string> runAll, ScriptOutcome outcome,
@@ -264,10 +284,33 @@ public sealed class PgScriptGenerator : IScriptGenerator
         sb.Append("- **04 first**: it only changes columns the target already has, before anything new can read them.\n");
         sb.Append("- **01 before 03**: new code and views read the new columns.\n");
         sb.Append("- **05 after 03**: foreign keys of new tables need every table to exist; a VALIDATE file comes after the file that adds its constraint.\n");
-        sb.Append("- **07 and 10 are never run by RUN.ps1.** Run each folder's `run_all.ps1` on its own when you have decided to, after RUN.ps1.\n\n");
+        sb.Append("- **07 and 10 are never run by RUN.ps1.** Run each folder's `run_all.ps1` on its own when you have decided to, after RUN.ps1.\n");
+        var destructive = folders.Any(f => f.Folder == DestructiveFolder && f.Files > 0);
+        if (destructive) sb.Append("- **11 is never run by RUN.ps1**, and comes last: after every other folder, and only once you have read the caution below.\n");
+        sb.Append('\n');
 
-        sb.Append("## Undo\n\n- Nothing in these scripts drops anything. 01, 03, 05, 06 and 07 only add; to undo them, drop what was added or restore the backup. ");
-        sb.Append("04 widens columns; narrowing back can lose data, so restore the backup. 10 replaces code: the target's text before is in the compare.\n\n");
+        if (destructive)
+        {
+            sb.Append("## 11_destructive - changes that can lose data\n\n");
+            sb.Append($"> **11_destructive deletes things from {tgt.Label}.** Its files drop tables (with every row), columns (with every value) and ");
+            sb.Append("code, narrow columns and make them NOT NULL. Back up the target and check the backup restores before running any of them. ");
+            sb.Append("Each file says in its header what it drops and how many rows or values it held when this script was generated.\n\n");
+            sb.Append("- Every change was checked against the target's data when generated (read-only); a narrowing is checked again inside its file, ");
+            sb.Append("which stops and changes nothing if a row written since no longer fits.\n");
+            sb.Append("- Every DROP is RESTRICT: if anything SchemaScope did not see depends on what it drops, that file fails and its transaction changes nothing.\n");
+            sb.Append("- `rollback\\` recreates the views, materialized views, functions, procedures, aggregates and triggers 11 drops, as the target had them. ");
+            sb.Append("Nothing brings back a dropped table, column or sequence value except the backup.\n");
+            sb.Append("- In SchemaScope it is applied only in Read & write mode, with \"I understand this can lose data\" ticked.\n\n");
+        }
+
+        sb.Append(destructive
+            ? "## Undo\n\n- 01, 03, 05, 06 and 07 only add; to undo them, drop what was added or restore the backup. "
+            : "## Undo\n\n- Nothing in these scripts drops anything. 01, 03, 05, 06 and 07 only add; to undo them, drop what was added or restore the backup. ");
+        sb.Append("04 widens columns; narrowing back can lose data, so restore the backup. 10 replaces code: the target's text before is in the compare.\n");
+        if (destructive)
+            sb.Append("- 11 drops tables, columns and code that only the target has and changes column types: only the backup brings their data back; " +
+                      "`11_destructive\\rollback\\` recreates the dropped code.\n");
+        sb.Append('\n');
 
         sb.Append("## Held back\n\n");
         if (outcome.HeldBack.Count == 0) sb.Append("Nothing was held back.\n\n");

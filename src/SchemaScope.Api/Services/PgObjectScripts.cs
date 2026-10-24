@@ -22,10 +22,8 @@ public static class PgObjectScripts
         PgScriptGenerator.ConstraintsFolder, PgScriptGenerator.IndexesFolder, PgScriptGenerator.TriggersFolder, PgScriptGenerator.DifferentFolder,
     ];
 
-    /// <summary>The warning with a DROP to copy: PostgreSQL has no 11_destructive in this version, so nothing in SchemaScope runs it.</summary>
-    public const string DropWarning =
-        "Generate script does not run this, and changes that can lose data are not available for PostgreSQL in this version. " +
-        "Dropping can break apps and lose data.";
+    /// <summary>The warning with a DROP to copy: Generate script never runs it; Create scripts can put it in 11_destructive.</summary>
+    public const string DropWarning = ObjectScripts.DropWarning;
 
     private static ObjectStatus StatusOf(CompareRow row, int index) =>
         index < row.Cells.Count ? row.Cells[index].Status : ObjectStatus.Unavailable;

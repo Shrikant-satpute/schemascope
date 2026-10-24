@@ -278,6 +278,164 @@ public abstract class PgDestructiveTestsBase(PgServer pg)
         }
     }
 
+    // ---------------- R3b review ----------------
+
+    /// <summary>Generates as <paramref name="user"/> (the probes' login) instead of the container's superuser.</summary>
+    private async Task<ScriptOutcome> GenerateAsAsync(PgScriptPair pair, string user, string password)
+    {
+        var before = await pair.CompareAsync();
+        var source = new ScriptEndpoint("Source", pg.Host, pair.Src, pg.ConnectionString(pair.Src), Core.Engines.DatabaseEngine.PostgreSql);
+        var target = new ScriptEndpoint("Target", pg.Host, pair.Tgt, pg.ConnectionString(pair.Tgt, user, password), Core.Engines.DatabaseEngine.PostgreSql);
+        var outcome = await new PgScriptGenerator().GenerateAsync(new ScriptRequestContext(source, target, before.Source, before.Targets[0], before.Result, 0,
+            new ScriptOptions { Sections = [.. PgScriptPair.Every], OutputFolder = Path.Combine(Path.GetTempPath(), $"schemascope-pg-destructive-{Guid.NewGuid():n}"),
+                IncludeDestructive = true },
+            new HashSet<string>(), new Dictionary<string, Scripting.LineChange>(), new CompareOptions()), default, null);
+        Assert.True(outcome.Success, outcome.Message);
+        return outcome;
+    }
+
+    protected async Task Row_level_security_never_hides_rows_from_a_narrowing_or_a_count()
+    {
+        var role = await pg.CreateRoleAsync();
+        try
+        {
+            await using var pair = await PgScriptPair.CreateAsync(pg, """
+                CREATE TABLE m (id integer PRIMARY KEY, amount numeric(10,2));
+                CREATE TABLE n (id integer PRIMARY KEY, amount numeric(10,2));
+                """, """
+                CREATE TABLE m (id integer PRIMARY KEY, amount numeric(10,3));
+                INSERT INTO m VALUES (1, 1.25), (2, 2.345);
+                CREATE TABLE n (id integer PRIMARY KEY, amount numeric(10,3));
+                INSERT INTO n VALUES (1, 1.25);
+                CREATE TABLE gone (id integer);
+                INSERT INTO gone VALUES (1), (2);
+                """);
+            // the owner is subject to its own policies under FORCE; each policy shows it row 1 only (gone: nothing)
+            foreach (var (table, rule) in new[] { ("m", "id = 1"), ("n", "id = 1"), ("gone", "false") })
+                await pg.ExecAsync(pair.Tgt, $"""
+                    ALTER TABLE {table} OWNER TO "{role.Name}";
+                    ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;
+                    ALTER TABLE {table} FORCE ROW LEVEL SECURITY;
+                    CREATE POLICY p ON {table} USING ({rule});
+                    """);
+
+            // probing as the owner: PostgreSQL refuses the filtered read, so nothing is taken as fitting and nothing is counted short
+            var asOwner = await GenerateAsAsync(pair, role.Name, role.Password);
+            try
+            {
+                Assert.DoesNotContain(Names(asOwner), n => n.StartsWith("alter_column_", StringComparison.Ordinal));
+                foreach (var column in new[] { "public.m.amount", "public.n.amount" })
+                    Assert.Contains(asOwner.HeldBack, h => h.Object == column && h.Reason.Contains("could not be checked") && h.Reason.Contains("row-level security"));
+                var gone = Text(asOwner, "drop_table_public.gone");
+                Assert.Contains("Rows not counted", gone);
+                Assert.Contains("row-level security", gone);
+                Assert.DoesNotContain("its 0 row(s)", gone);
+            }
+            finally
+            {
+                try { Directory.Delete(asOwner.Path!, true); } catch (IOException) { }
+            }
+
+            // probing as the superuser sees every row: m's hidden 2.345 holds it; n fits and is written
+            var asSuper = await pair.GenerateAsync(await pair.CompareAsync(), destructive: true);
+            Assert.Contains(asSuper.HeldBack, h => h.Object == "public.m.amount" && h.Reason.Contains("1 row(s) in Target would not survive"));
+            var file = Text(asSuper, "alter_column_public.n.amount");
+            Assert.Contains("SET LOCAL row_security = off;", file);
+
+            // a row written since, hidden from the owner who runs the file: the check inside it fails instead of rounding it
+            await pg.ExecAsync(pair.Tgt, "INSERT INTO n VALUES (2, 2.345);");
+            await using (var conn = new NpgsqlConnection(pg.ConnectionString(pair.Tgt, role.Name, role.Password)))
+            {
+                await conn.OpenAsync();
+                await using var tx = await conn.BeginTransactionAsync();
+                await using var cmd = new NpgsqlCommand(file, conn, tx);
+                var error = await Assert.ThrowsAsync<PostgresException>(() => cmd.ExecuteNonQueryAsync());
+                Assert.Contains("row-level security", error.MessageText);
+            }
+            Assert.Equal(2.345m, await pair.ScalarAsync("SELECT amount FROM n WHERE id = 2"));
+            Assert.Equal("numeric(10,3)", await pair.ScalarAsync("SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'n'::regclass AND attname = 'amount'"));
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await pg.DropRoleAsync(role.Name);
+        }
+    }
+
+    protected async Task A_check_whose_rule_differs_is_replaced_or_held_never_validated_in_05()
+    {
+        // t: a row breaks the target's old rule and the source's (held); u: the source's rule fits (replaced)
+        await using var pair = await PgScriptPair.CreateAsync(pg, """
+            CREATE TABLE t (id integer PRIMARY KEY, v integer, CONSTRAINT v_ck CHECK (v > 10));
+            CREATE TABLE u (id integer PRIMARY KEY, v integer, CONSTRAINT u_ck CHECK (v > 1));
+            """, """
+            CREATE TABLE t (id integer PRIMARY KEY, v integer);
+            INSERT INTO t VALUES (1, 0);
+            ALTER TABLE t ADD CONSTRAINT v_ck CHECK (v > 5) NOT VALID;
+            CREATE TABLE u (id integer PRIMARY KEY, v integer);
+            INSERT INTO u VALUES (1, 3);
+            ALTER TABLE u ADD CONSTRAINT u_ck CHECK (v > 5) NOT VALID;
+            """);
+        var off = await pair.GenerateAsync(await pair.CompareAsync());
+        var outcome = await pair.GenerateAsync(await pair.CompareAsync(), destructive: true);
+        foreach (var o in new[] { off, outcome })
+            Assert.DoesNotContain(PgScriptPair.FilesOf(o, PgScriptGenerator.ConstraintsFolder), f => f.RelativePath.Contains("validate_", StringComparison.Ordinal));
+        Assert.Equal(["replace_check_public.u.u_ck"], Names(outcome));
+        Assert.Contains(outcome.HeldBack, h => h.Object == "public.t.v_ck" && h.Section == Folder && h.Reason.Contains("1 row(s)"));
+
+        Assert.Empty(await pair.RunAsync(outcome, [.. PgScriptPair.RunOrder, Folder]));
+        Assert.Equal(["Table public.t: Different"], PgScriptPair.NotSame(await pair.CompareAsync()));
+        Assert.Equal(false, await pair.ScalarAsync("SELECT convalidated FROM pg_constraint WHERE conname = 'v_ck'"));
+    }
+
+    protected async Task A_sequence_owned_by_a_dropped_column_or_table_is_never_dropped_unlisted()
+    {
+        await using var pair = await PgScriptPair.CreateAsync(pg, """
+            CREATE SEQUENCE s;
+            CREATE SEQUENCE s2 START 100;
+            CREATE SEQUENCE s3;
+            CREATE TABLE t (id integer PRIMARY KEY);
+            """, """
+            CREATE TABLE t (id integer PRIMARY KEY, x integer);
+            CREATE SEQUENCE s OWNED BY t.x;
+            CREATE TABLE extra (id integer, x integer);
+            CREATE SEQUENCE s2 START 100 OWNED BY extra.x;
+            CREATE TABLE "order" (id integer, x integer);
+            CREATE SEQUENCE s3 OWNED BY "order".x;
+            CREATE TABLE gone (id serial PRIMARY KEY);
+            """);
+        var outcome = await pair.GenerateAsync(await pair.CompareAsync(), destructive: true);
+        // a drop that would take a sequence the source has along is held, naming it; a target-only serial goes with its table
+        foreach (var (held, sequence) in new[] { ("public.t.x", "public.s"), ("public.extra", "public.s2"), ("public.order", "public.s3") })
+            Assert.Contains(outcome.HeldBack, h => h.Object == held && h.Reason.Contains($"sequence {sequence}, which Source also has, is OWNED BY it"));
+        Assert.Equal(["drop_table_public.gone", "drop_sequence_public.gone_id_seq"], Names(outcome));
+
+        Assert.Empty(await pair.RunAsync(outcome, [.. PgScriptPair.RunOrder, Folder]));
+        foreach (var sequence in new[] { "s", "s2", "s3" })
+            Assert.Equal(sequence, await pair.ScalarAsync($"SELECT to_regclass('{sequence}')::text"));
+        Assert.Equal(DBNull.Value, await pair.ScalarAsync("SELECT to_regclass('gone')::text"));
+        // they still differ only by OWNED BY, which is held; none went missing
+        Assert.Equal(["Sequence public.s2: Different", "Sequence public.s3: Different", "Sequence public.s: Different", "Table public.t: Different"],
+            PgScriptPair.NotSame(await pair.CompareAsync()));
+    }
+
+    protected async Task A_generated_column_change_is_held_by_04_with_or_without_destructive()
+    {
+        await using var pair = await PgScriptPair.CreateAsync(pg, """
+            CREATE TABLE g (id integer PRIMARY KEY, a smallint GENERATED ALWAYS AS (id * 2) STORED, h integer GENERATED ALWAYS AS (id * 3) STORED NOT NULL);
+            """, """
+            CREATE TABLE g (id integer PRIMARY KEY, a integer GENERATED ALWAYS AS (id * 2) STORED, h integer GENERATED ALWAYS AS (id * 3) STORED);
+            INSERT INTO g (id) VALUES (1);
+            """);
+        static List<string> Held(ScriptOutcome o) => [.. o.HeldBack.Select(h => $"{h.Section} {h.Object}: {h.Reason}").Order(StringComparer.Ordinal)];
+        var off = await pair.GenerateAsync(await pair.CompareAsync());
+        var on = await pair.GenerateAsync(await pair.CompareAsync(), destructive: true);
+        Assert.Contains(off.HeldBack, h => h.Object == "public.g.a");
+        Assert.Contains(off.HeldBack, h => h.Object == "public.g.h");
+        Assert.Equal(Held(off), Held(on));
+        Assert.Empty(Names(on));
+    }
+
     // ---------------- over HTTP, as the UI drives it ----------------
 
     private static JsonElement Body(string json) => JsonDocument.Parse(json).RootElement;
@@ -388,6 +546,10 @@ public abstract class PgDestructiveTestsBase(PgServer pg)
 [Collection(PgCollection.Name)]
 public sealed class PgDestructiveTests(PgServer pg) : PgDestructiveTestsBase(pg)
 {
+    [PostgresFact] public Task Row_level_security_fails_closed_on_16() => Row_level_security_never_hides_rows_from_a_narrowing_or_a_count();
+    [PostgresFact] public Task A_differing_check_is_never_validated_on_16() => A_check_whose_rule_differs_is_replaced_or_held_never_validated_in_05();
+    [PostgresFact] public Task Owned_sequences_hold_the_drop_on_16() => A_sequence_owned_by_a_dropped_column_or_table_is_never_dropped_unlisted();
+    [PostgresFact] public Task Generated_columns_stay_held_on_16() => A_generated_column_change_is_held_by_04_with_or_without_destructive();
     [PostgresFact] public Task Drops_in_order_and_runs_on_16() => Drops_extras_in_dependency_order_holds_what_would_break_and_the_files_run();
     [PostgresFact] public Task Case_twins_are_never_dropped_on_16() => A_name_the_source_has_in_another_letter_case_is_never_dropped();
     [PostgresFact] public Task Restrict_is_the_backstop_on_16() => Restrict_stops_a_drop_of_what_something_unseen_depends_on();
@@ -399,6 +561,10 @@ public sealed class PgDestructiveTests(PgServer pg) : PgDestructiveTestsBase(pg)
 [Collection(Pg13Collection.Name)]
 public sealed class Pg13DestructiveTests(Pg13Server pg) : PgDestructiveTestsBase(pg)
 {
+    [PostgresFact] public Task Row_level_security_fails_closed_on_13() => Row_level_security_never_hides_rows_from_a_narrowing_or_a_count();
+    [PostgresFact] public Task A_differing_check_is_never_validated_on_13() => A_check_whose_rule_differs_is_replaced_or_held_never_validated_in_05();
+    [PostgresFact] public Task Owned_sequences_hold_the_drop_on_13() => A_sequence_owned_by_a_dropped_column_or_table_is_never_dropped_unlisted();
+    [PostgresFact] public Task Generated_columns_stay_held_on_13() => A_generated_column_change_is_held_by_04_with_or_without_destructive();
     [PostgresFact] public Task Drops_in_order_and_runs_on_13() => Drops_extras_in_dependency_order_holds_what_would_break_and_the_files_run();
     [PostgresFact] public Task Case_twins_are_never_dropped_on_13() => A_name_the_source_has_in_another_letter_case_is_never_dropped();
     [PostgresFact] public Task Restrict_is_the_backstop_on_13() => Restrict_stops_a_drop_of_what_something_unseen_depends_on();
@@ -408,6 +574,10 @@ public sealed class Pg13DestructiveTests(Pg13Server pg) : PgDestructiveTestsBase
 [Collection(Pg18Collection.Name)]
 public sealed class Pg18DestructiveTests(Pg18Server pg) : PgDestructiveTestsBase(pg)
 {
+    [PostgresFact] public Task Row_level_security_fails_closed_on_18() => Row_level_security_never_hides_rows_from_a_narrowing_or_a_count();
+    [PostgresFact] public Task A_differing_check_is_never_validated_on_18() => A_check_whose_rule_differs_is_replaced_or_held_never_validated_in_05();
+    [PostgresFact] public Task Owned_sequences_hold_the_drop_on_18() => A_sequence_owned_by_a_dropped_column_or_table_is_never_dropped_unlisted();
+    [PostgresFact] public Task Generated_columns_stay_held_on_18() => A_generated_column_change_is_held_by_04_with_or_without_destructive();
     [PostgresFact] public Task Drops_in_order_and_runs_on_18() => Drops_extras_in_dependency_order_holds_what_would_break_and_the_files_run();
     [PostgresFact] public Task Case_twins_are_never_dropped_on_18() => A_name_the_source_has_in_another_letter_case_is_never_dropped();
     [PostgresFact] public Task Restrict_is_the_backstop_on_18() => Restrict_stops_a_drop_of_what_something_unseen_depends_on();

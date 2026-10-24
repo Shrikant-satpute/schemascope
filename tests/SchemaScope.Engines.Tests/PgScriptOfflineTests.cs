@@ -480,4 +480,40 @@ public class PgScriptOfflineTests
             try { Directory.Delete(output, true); } catch (IOException) { }
         }
     }
+
+    [Fact]
+    public async Task A_check_whose_rule_differs_is_never_validated_in_05_with_or_without_destructive()
+    {
+        // R3b review: the target's NOT VALID copy of a differently-ruled check must not be validated - its old rule is not the source's
+        DbObject Table(string rule, bool notValid)
+        {
+            var t = Pg(DbObjectType.Table, "public", "t");
+            t.Columns = [new ColumnInfo { Name = "id", DataType = "integer", Ordinal = 1 }, new ColumnInfo { Name = "v", DataType = "integer", IsNullable = true, Ordinal = 2 }];
+            t.Constraints = [new ConstraintInfo { Name = "v_ck", Kind = ConstraintKind.Check, Definition = rule, IsNotTrusted = notValid }];
+            t.Hash = rule;
+            return t;
+        }
+        var src = new SchemaSnapshot { Engine = DatabaseEngine.PostgreSql, MajorVersion = 16, Objects = [Pg(DbObjectType.Schema, "public", "public"), Table("CHECK (v > 10)", false)] };
+        var tgt = new SchemaSnapshot { Engine = DatabaseEngine.PostgreSql, MajorVersion = 16, Objects = [Pg(DbObjectType.Schema, "public", "public"), Table("CHECK (v > 5)", true)] };
+        var output = Path.Combine(Path.GetTempPath(), $"schemascope-pg-offline-{Guid.NewGuid():n}");
+        try
+        {
+            var endpoint = new ScriptEndpoint("Target", "db.example", "tgt", "Host=db.example;Database=tgt", DatabaseEngine.PostgreSql);
+            async Task<ScriptOutcome> Run(bool destructive) => await new PgScriptGenerator().GenerateAsync(new ScriptRequestContext(endpoint with { Label = "Source" },
+                endpoint, src, tgt, new CompareResult(), 0,
+                new ScriptOptions { Sections = [ScriptSection.Constraints], OutputFolder = output, IncludeDestructive = destructive, CheckExistingData = false },
+                new HashSet<string>(), new Dictionary<string, LineChange>()), default, null);
+            foreach (var destructive in new[] { false, true })
+            {
+                var outcome = await Run(destructive);
+                Assert.True(outcome.Success, outcome.Message);
+                Assert.DoesNotContain(outcome.Files, f => f.Folder == PgScriptGenerator.ConstraintsFolder && f.RelativePath.Contains("validate_", StringComparison.Ordinal));
+                Assert.Contains(outcome.HeldBack, h => h.Object == "public.t.v_ck");
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(output, true); } catch (IOException) { }
+        }
+    }
 }

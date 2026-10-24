@@ -39,8 +39,11 @@ internal sealed partial class PgScriptRun
         DropSequence, DropType
     }
 
-    /// <summary>Something that must be gone before an item can go: <see cref="By"/> is the item that drops it, or null when it stays.</summary>
-    private sealed record DDep(string What, DItem? By, bool Unknown = false);
+    /// <summary>
+    /// Something that must be gone before an item can go: <see cref="By"/> is the item that drops it, or null when it stays.
+    /// <see cref="Orders"/> false: the item is only held when <see cref="By"/> is, and need not run after it.
+    /// </summary>
+    private sealed record DDep(string What, DItem? By, bool Unknown = false, bool Orders = true);
 
     private sealed class DItem
     {
@@ -346,6 +349,21 @@ internal sealed partial class PgScriptRun
                     ColumnDependents(i);
                     break;
             }
+            if (i.Kind is DKind.DropTable or DKind.DropColumn) OwnedSequences(i);
+        }
+
+        // a sequence OWNED BY a dropped table or column goes with it, whatever RESTRICT says (an auto dependency): only one
+        // this folder drops anyway may go along; one the source also has, or that is not dropped, holds the drop back
+        void OwnedSequences(DItem i)
+        {
+            foreach (var seq in Tgt.Objects.Where(o => o.Type == DbObjectType.Sequence && OwnedBy(o, i.Table, i.Kind == DKind.DropColumn ? i.Sub : null)))
+            {
+                if (objects.TryGetValue(seq.Key, out var dropped) && dropped.Kind == DKind.DropSequence)
+                    i.Deps.Add(new DDep($"sequence {Display(seq)} is OWNED BY it", dropped, Orders: false));
+                else
+                    i.Deps.Add(new DDep($"sequence {Display(seq)}{(s.ContainsKey(seq.Key) ? $", which {srcLabel} also has," : "")} is OWNED BY it and would be " +
+                                        "dropped with it (RESTRICT does not stop that) - set it OWNED BY NONE by hand first if it should stay", null, Unknown: true));
+            }
         }
 
         // PostgreSQL drops a table's own keys, checks and indexes on a dropped column without asking: each must go by a file of its own first
@@ -423,7 +441,7 @@ internal sealed partial class PgScriptRun
                 .ThenBy(i => i.Table.Signature ?? "", StringComparer.Ordinal)
                 .ThenBy(i => i.Sub ?? "", StringComparer.Ordinal)];
             var index = kept.Select((i, n) => (i, n)).ToDictionary(x => x.i, x => x.n);
-            var edges = kept.SelectMany(i => i.Deps.Where(d => d.By is not null && index.ContainsKey(d.By)).Select(d => (index[d.By!], index[i]))).ToList();
+            var edges = kept.SelectMany(i => i.Deps.Where(d => d.By is not null && d.Orders && index.ContainsKey(d.By)).Select(d => (index[d.By!], index[i]))).ToList();
             var forced = new List<int>();
             var order = PlanOrder.StableOrder(kept.Count, edges, forced);
             var stuck = forced.Select(n => kept[n]).Where(i => i.Kind != DKind.DropModule).ToList();
@@ -472,8 +490,7 @@ internal sealed partial class PgScriptRun
                     : $"Its values were not counted ({probe.NotCheckedReason}).");
             }
             else if (i.Kind == DKind.DropSequence && i.Table.Properties.GetValueOrDefault("ownedBy") is { Length: > 0 } owner &&
-                     kept.Any(k => (k.Kind == DKind.DropTable && owner.StartsWith($"{PgDdl.Ident(k.Table.Schema)}.{PgDdl.Ident(k.Table.Name)}.", StringComparison.Ordinal)) ||
-                                   (k.Kind == DKind.DropColumn && owner == $"{PgDdl.Ident(k.Table.Schema)}.{PgDdl.Ident(k.Table.Name)}.{PgDdl.Ident(k.Sub!)}")))
+                     kept.Any(k => (k.Kind == DKind.DropTable && OwnedBy(i.Table, k.Table, null)) || (k.Kind == DKind.DropColumn && OwnedBy(i.Table, k.Table, k.Sub))))
             {
                 // OWNED BY: the table or column an earlier file drops takes it along (tables and columns go before sequences)
                 i.Statements[0] = $"DROP SEQUENCE IF EXISTS {PgDdl.Q(i.Table)} RESTRICT";
@@ -585,6 +602,9 @@ internal sealed partial class PgScriptRun
             // PostgreSQL rounds some values without an error (numeric scale, time precision): the same check runs again inside
             // the file, with the table locked, and stops it - changing nothing - if a row written since no longer fits
             i.Header.Add("Checked again when this file runs: it stops, changing nothing, if a row no longer fits.");
+            // the type change rewrites every row: a row level security policy that would hide some from the check makes it
+            // fail instead (row_security = off), so the file stops rather than rounding rows it could not see
+            i.Statements.Add("SET LOCAL row_security = off");
             i.Statements.Add($"LOCK TABLE {q} IN ACCESS EXCLUSIVE MODE");
             var message = PgDdl.Lit($"Rows of {tgt.FullName}.{c.Name} no longer fit {c.DataType}; nothing was changed. Generate the scripts again.");
             var check = $"BEGIN IF EXISTS (SELECT 1 FROM {q} WHERE {fit}) THEN RAISE EXCEPTION USING MESSAGE = {message}; END IF; END";
@@ -678,6 +698,24 @@ internal sealed partial class PgScriptRun
                 review.Note(ReviewLog.NotAppliedDestructive, "column", c.Sub!, c.Table.FullName,
                     $"dropped by 11_destructive, but {Kind(m)} {Display(m)} names {c.Table.Name} and {c.Sub} - it fails when it runs if it reads this column", Destructive.Name);
         }
+    }
+
+    /// <summary>
+    /// True when <paramref name="sequence"/> is OWNED BY a column of <paramref name="table"/> (by <paramref name="column"/>
+    /// when given). The reader spells the owner with quote_ident, which also quotes a reserved word, so each part may be
+    /// bare or quoted.
+    /// </summary>
+    private static bool OwnedBy(DbObject sequence, DbObject table, string? column)
+    {
+        if (sequence.Properties.GetValueOrDefault("ownedBy") is not { Length: > 0 } owner) return false;
+        static string[] Forms(string name) => [.. new[] { PgDdl.Ident(name), PgDdl.Q(name) }.Distinct()];
+        foreach (var schema in Forms(table.Schema))
+            foreach (var name in Forms(table.Name))
+            {
+                var prefix = $"{schema}.{name}.";
+                if (column is null ? owner.StartsWith(prefix, StringComparison.Ordinal) : Forms(column).Any(c => owner == prefix + c)) return true;
+            }
+        return false;
     }
 
     private static string N(long v) => v.ToString("N0", CultureInfo.InvariantCulture);

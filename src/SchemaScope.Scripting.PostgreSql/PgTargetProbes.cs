@@ -20,6 +20,13 @@ public partial class PgTargetProbes(string label, string connectionString, int t
 {
     private const string DataOff = "existing-data checks are switched off";
 
+    /// <summary>
+    /// Data probes count every row or none: a row level security policy that would hide rows from this login makes
+    /// PostgreSQL raise an error instead of filtering them (so the probe is not checked, never short), and no policy
+    /// expression of the target's runs.
+    /// </summary>
+    internal const string RowSecurityOff = " SET LOCAL row_security = off;";
+
     private readonly List<PgProbeNote> notes = [];
     private PgOpenConnection? open;
     private string? connectFailure;
@@ -250,7 +257,8 @@ public partial class PgTargetProbes(string label, string connectionString, int t
         try
         {
             await using var tx = await conn.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
-            await using (var setup = new NpgsqlCommand(PgSchemaReader.SessionSetup(timeoutSeconds), conn, tx)) await setup.ExecuteNonQueryAsync(ct);
+            await using (var setup = new NpgsqlCommand(PgSchemaReader.SessionSetup(timeoutSeconds) + (data ? RowSecurityOff : ""), conn, tx))
+                await setup.ExecuteNonQueryAsync(ct);
             await using var cmd = new NpgsqlCommand(sql, conn, tx) { CommandTimeout = timeoutSeconds + 5 };
             foreach (var a in args) cmd.Parameters.AddWithValue(a);
             var value = await cmd.ExecuteScalarAsync(ct);

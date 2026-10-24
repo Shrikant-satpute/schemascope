@@ -347,12 +347,14 @@ internal sealed partial class PgScriptRun
                     review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
                         $"collation differs (source: {c.Collation ?? "default"}, target: {tc.Collation ?? "default"}); changing it rebuilds its indexes and is not scripted",
                         ColumnTypes.Name);
-                // with 11_destructive on, NOT NULL and a type change that is no widening are its to plan (or to hold, with why)
-                if (tighten && !Destroys)
+                // with 11_destructive on, NOT NULL and a type change that is no widening are its to plan (or to hold, with why);
+                // a generated column is not, so 04 keeps holding it
+                var toDestructive = Destroys && !c.IsComputed && !tc.IsComputed;
+                if (tighten && !toDestructive)
                     review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
                         "the source has NOT NULL and the target allows NULL: making it NOT NULL fails on existing NULLs and is not scripted",
                         ColumnTypes.Name);
-                if (typeChanges && Destroys && Widening(tc.DataType, c.DataType) is null) typeChanges = false;
+                if (typeChanges && toDestructive && Widening(tc.DataType, c.DataType) is null) typeChanges = false;
                 if (!typeChanges && !relax) continue;
 
                 // PostgreSQL refuses to change a column's type while a view, rule, generated column, policy or trigger reads it
@@ -572,10 +574,14 @@ internal sealed partial class PgScriptRun
             var tck = tgt.Constraints.FirstOrDefault(x => x.Kind == ConstraintKind.Check && x.Name == ck.Name);
             if (tck is not null)
             {
-                // with 11_destructive on, it replaces such a check once the rows are checked against the source's rule
-                if (tck.Definition != ck.Definition && !Destroys)
-                    review.Hold(ReviewLog.NotAppliedConstraints, "check", ck.Name, src.FullName,
-                        $"the target's check of this name is different ({tck.Definition}); replacing it is not scripted", Constraints.Name);
+                // with 11_destructive on, it replaces such a check once the rows are checked against the source's rule;
+                // the target's own rule is never validated here, it is about to go or stays held
+                if (tck.Definition != ck.Definition)
+                {
+                    if (!Destroys)
+                        review.Hold(ReviewLog.NotAppliedConstraints, "check", ck.Name, src.FullName,
+                            $"the target's check of this name is different ({tck.Definition}); replacing it is not scripted", Constraints.Name);
+                }
                 else if (!ck.IsNotTrusted && tck.IsNotTrusted) Validate(src, ck.Name);
                 continue;
             }

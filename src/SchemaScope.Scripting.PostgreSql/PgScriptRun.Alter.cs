@@ -290,15 +290,34 @@ internal sealed partial class PgScriptRun
                 Constraints.Files.Add(new PgFile($"oftype_{src.Schema}.{src.Name}", Header(Constraints, "typed table", src.FullName) + sql,
                     new ObjectName(src.Schema, src.Name)));
         }
+
+        // replica identity (what logical replication sends of an updated or deleted row). USING INDEX names an index that
+        // must be there as the source has it: one 06 builds or rebuilds gets it in its own file
+        var identity = src.Properties.GetValueOrDefault("replicaIdentity");
+        if (identity != tgt.Properties.GetValueOrDefault("replicaIdentity"))
+        {
+            var index = ReplicaIndex(src);
+            var ready = index is null || (tgt.Indexes.FirstOrDefault(i => i.Name == index) is { } tix &&
+                                          src.Indexes.FirstOrDefault(i => i.Name == index) is { } six && SameIndex(tix, six));
+            if (ready)
+                Constraints.Files.Add(new PgFile($"replica_{src.Schema}.{src.Name}", Header(Constraints, "replica identity", src.FullName) +
+                    $"ALTER TABLE {table} REPLICA IDENTITY {identity ?? "DEFAULT"};\n", new ObjectName(src.Schema, src.Name)));
+            else if (!(Selected(ScriptSection.Indexes) && src.Indexes.Any(i => i.Name == index && !IsKey(i))))
+                review.Hold(ReviewLog.NotApplied, "table option", "replicaIdentity", src.FullName,
+                    $"the source's is {identity}, and the target's index {index} is not the source's (06_indexes builds it only when it is not a key and the " +
+                    "folder is selected). Set it by hand once the index is there", Constraints.Name);
+        }
     }
 
     // ------------------------------------------------------------------ 05: sequences, domains, schemas
 
     /// <summary>
     /// A sequence both sides have, as the source has it: one ALTER SEQUENCE for its type, start, step, limits, cache and
-    /// cycle, and OWNED BY once the column it belongs to is there (on the target, or added or created by this run).
+    /// cycle, and OWNED BY once the column it belongs to is there (on the target, or added or created by this run). A new
+    /// MINVALUE, MAXVALUE or type is written only once the target's current value is known to fit it (ALTER SEQUENCE
+    /// refuses the change otherwise).
     /// </summary>
-    private void PlanSequences()
+    private async Task PlanSequencesAsync()
     {
         foreach (var src in Src.Objects.Where(o => o.Type == DbObjectType.Sequence && InScope(o) && !IsExcluded(o) && StatusOf(o) == Diff.Different)
                      .OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal))
@@ -319,6 +338,24 @@ internal sealed partial class PgScriptRun
             Part("startValue", v => $"START WITH {v}");
             Part("cacheSize", v => $"CACHE {v}");
             Part("isCycling", v => v == "1" ? "CYCLE" : "NO CYCLE");
+
+            // the current value must lie in the new range: one outside it makes ALTER SEQUENCE fail on every run
+            if (new[] { "type", "minValue", "maxValue" }.Any(k => p.GetValueOrDefault(k) != q.GetValueOrDefault(k)) &&
+                long.TryParse(p.GetValueOrDefault("minValue"), out var min) && long.TryParse(p.GetValueOrDefault("maxValue"), out var max))
+            {
+                var current = await probes.SequenceValueAsync(PgDdl.Q(src), ct);
+                if (current.Count is { } value && (value < min || value > max))
+                {
+                    review.Hold(ReviewLog.NotApplied, "sequence", Display(src), null,
+                        $"the target's sequence is at {N(value)} (its current value), outside the source's range {N(min)} to {N(max)}, so ALTER SEQUENCE " +
+                        "would fail. Move it into that range (setval) or change the range by hand", Constraints.Name);
+                    parts.Clear();
+                }
+                else if (current.Count is null)
+                    review.Note(ReviewLog.NotApplied, "sequence", Display(src), null,
+                        $"whether the target's current value lies in the source's range {N(min)} to {N(max)} could not be checked ({current.NotCheckedReason}); " +
+                        "if it does not, its file fails and changes nothing", Constraints.Name);
+            }
 
             string? owned = null;
             var ownedBy = p.GetValueOrDefault("ownedBy");
@@ -539,11 +576,18 @@ internal sealed partial class PgScriptRun
         }
     }
 
-    /// <summary>A schema both sides have whose owner differs: ALTER SCHEMA ... OWNER TO when that role is on the target.</summary>
-    private void PlanSchemaOwners(HashSet<string>? roles)
+    /// <summary>
+    /// A schema both sides have whose owner differs: ALTER SCHEMA ... OWNER TO when that role is on the target and the
+    /// login may SET ROLE to it (PostgreSQL refuses anyone else).
+    /// </summary>
+    private async Task PlanSchemaOwnersAsync(HashSet<string>? roles)
     {
-        foreach (var src in Src.Objects.Where(o => o.Type == DbObjectType.Schema && InScope(o) && !IsExcluded(o) && StatusOf(o) == Diff.Different)
-                     .OrderBy(o => o.Name, StringComparer.Ordinal))
+        var schemas = Src.Objects.Where(o => o.Type == DbObjectType.Schema && InScope(o) && !IsExcluded(o) && StatusOf(o) == Diff.Different)
+            .OrderBy(o => o.Name, StringComparer.Ordinal).ToList();
+        var owning = schemas.Select(o => o.Properties.GetValueOrDefault("owner")).OfType<string>().Where(r => roles?.Contains(r) == true)
+            .Distinct(StringComparer.Ordinal).ToList();
+        var assumable = owning.Count > 0 ? await probes.AssumableRolesAsync(owning, ct) : [];
+        foreach (var src in schemas)
         {
             altered.Add(src.Key);
             if (src.Properties.GetValueOrDefault("owner") is not { Length: > 0 } owner)
@@ -556,6 +600,14 @@ internal sealed partial class PgScriptRun
             {
                 review.Hold(ReviewLog.NotApplied, "schema", src.Name, null,
                     $"its owner is {owner} on the source, and that role {(roles is null ? "could not be looked up" : "does not exist")} on the target", Constraints.Name);
+                continue;
+            }
+            if (assumable?.Contains(owner) != true)
+            {
+                review.Hold(ReviewLog.NotApplied, "schema", src.Name, null,
+                    $"its owner is {owner} on the source (the target's is {Target(src)!.Properties.GetValueOrDefault("owner") ?? "the default one"}), but " +
+                    $"{CannotBecome(owner, assumable)}. Change it by hand as a user allowed to: ALTER SCHEMA {PgDdl.Q(src.Name)} OWNER TO {PgDdl.Q(owner)}",
+                    Constraints.Name);
                 continue;
             }
             Constraints.Files.Add(new PgFile($"schema_{src.Name}", Header(Constraints, "schema owner", src.Name) +

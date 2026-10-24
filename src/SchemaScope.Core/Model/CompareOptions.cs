@@ -11,8 +11,8 @@ namespace SchemaScope.Core.Model;
 public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
 {
     /// <summary>The object types a set of options knows about: 1 for SQL Server's own (Schema..Synonym), 2 with
-    /// PostgreSQL's (MaterializedView..Extension), 3 with PostgreSQL's range types and collations, 4 with its operators.</summary>
-    public const int CurrentTypeSet = 4;
+    /// PostgreSQL's (MaterializedView..Extension), 3 with PostgreSQL's range types and collations, 4 with its operators, 5 with its foreign tables.</summary>
+    public const int CurrentTypeSet = 5;
 
     private static readonly DbObjectType[] AddedInTypeSet2 =
         [DbObjectType.MaterializedView, DbObjectType.Domain, DbObjectType.EnumType, DbObjectType.CompositeType, DbObjectType.Extension];
@@ -20,6 +20,8 @@ public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
     private static readonly DbObjectType[] AddedInTypeSet3 = [DbObjectType.RangeType, DbObjectType.Collation];
 
     private static readonly DbObjectType[] AddedInTypeSet4 = [DbObjectType.Operator];
+
+    private static readonly DbObjectType[] AddedInTypeSet5 = [DbObjectType.ForeignTable];
 
     /// <summary>
     /// Which object types existed when these options were written (<see cref="CurrentTypeSet"/>). Options saved
@@ -36,6 +38,7 @@ public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
         if (TypeSet < 2) IncludedTypes.UnionWith(AddedInTypeSet2);
         if (TypeSet < 3) IncludedTypes.UnionWith(AddedInTypeSet3);
         if (TypeSet < 4) IncludedTypes.UnionWith(AddedInTypeSet4);
+        if (TypeSet < 5) IncludedTypes.UnionWith(AddedInTypeSet5);
         TypeSet = Math.Max(TypeSet, CurrentTypeSet);
     }
 

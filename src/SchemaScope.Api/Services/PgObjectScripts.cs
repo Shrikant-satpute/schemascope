@@ -140,6 +140,7 @@ public static class PgObjectScripts
             DbObjectType.Collation => $"DROP COLLATION {name};",
             DbObjectType.Operator => $"DROP OPERATOR {PgDdl.Q(row.Schema)}.{row.Name} ({row.Signature});",
             DbObjectType.Extension => $"DROP EXTENSION {PgDdl.Q(row.Name)};",
+            DbObjectType.ForeignTable => $"DROP FOREIGN TABLE {name};",
             _ => $"DROP SCHEMA {name};",
         };
         return $"-- {DropWarning}\n-- {row.TypeLabel} {row.FullName.ReplaceLineEndings(" ")} exists only in {targetLabel.ReplaceLineEndings(" ")}.\n{statement}\n";

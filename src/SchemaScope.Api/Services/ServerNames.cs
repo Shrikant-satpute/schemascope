@@ -15,4 +15,7 @@ public static class ServerNames
 
     /// <summary>The machine alone, instance and port dropped: what the Protected rule matches across engines.</summary>
     public static string Host(string? server) => SqlServerIdentity.Host(server);
+
+    /// <inheritdoc cref="SqlServerIdentity.InstanceUnknown"/>
+    public static bool InstanceUnknown(string? server) => SqlServerIdentity.InstanceUnknown(server);
 }

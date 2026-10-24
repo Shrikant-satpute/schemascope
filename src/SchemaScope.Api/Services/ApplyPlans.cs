@@ -119,7 +119,8 @@ public static class ApplyPlans
 
         var files = runnable.Select(f => new PlanFile(
             RunOrder[Order(f.Folder)], f.RelativePath, f.FullPath,
-            f.Object?.ToString() ?? Path.GetFileNameWithoutExtension(f.RelativePath),
+            // a schema's file names the schema alone (its object is schema.""), not "name."
+            f.Object is { } o ? (o.Name.Length == 0 ? o.Schema : o.ToString()) : Path.GetFileNameWithoutExtension(f.RelativePath),
             TrustedHash(f))).ToList();
 
         var sections = files.GroupBy(f => f.Folder).Select(g =>

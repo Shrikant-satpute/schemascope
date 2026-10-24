@@ -109,10 +109,10 @@ public abstract class PgDestructiveTestsBase(PgServer pg)
         var usesMood = names.Single(n => n.Contains("app.uses_mood", StringComparison.Ordinal));
         Assert.True(names.IndexOf(usesMood) < At("drop_type_app.mood_extra"));
 
-        // a table code that stays reads is held, never dropped
-        Assert.Contains(outcome.HeldBack, h => h.Object == "app.kept" && h.Reason.Contains("view app.v_common uses it"));
-        Assert.DoesNotContain(names, n => n.Contains("kept", StringComparison.Ordinal));
-        Assert.Equal(2, outcome.HeldBack.Count(h => h.Section == Folder));
+        // a table only a view reads that 10 replaces with the source's version (which does not read it) goes after 10
+        Assert.Contains("Needs 10_different_modules first", Text(outcome, "drop_table_app.kept"));
+        Assert.DoesNotContain(outcome.HeldBack, h => h.Object == "app.kept");
+        Assert.Equal(1, outcome.HeldBack.Count(h => h.Section == Folder));
 
         // every DROP is RESTRICT; the headers count what goes
         Assert.All(PgScriptPair.FilesOf(outcome, Folder), f =>
@@ -136,7 +136,7 @@ public abstract class PgDestructiveTestsBase(PgServer pg)
         Assert.Equal(DBNull.Value, await pair.ScalarAsync("SELECT to_regprocedure('app.f_extra(integer)')::text"));
         Assert.Equal(DBNull.Value, await pair.ScalarAsync("SELECT to_regtype('app.mood_extra')::text"));
         Assert.Equal(0L, await pair.ScalarAsync("SELECT count(*) FROM pg_attribute WHERE attrelid = 'app.parent'::regclass AND attname = 'extra_col'"));
-        Assert.Equal("app.kept", await pair.ScalarAsync("SELECT to_regclass('app.kept')::text"));
+        Assert.Equal(DBNull.Value, await pair.ScalarAsync("SELECT to_regclass('app.kept')::text"));
         Assert.Equal("character varying(10)", await pair.ScalarAsync("SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'app.parent'::regclass AND attname = 'code'"));
         Assert.Equal("numeric(10,3)", await pair.ScalarAsync("SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'app.parent'::regclass AND attname = 'amount'"));
         Assert.Equal(true, await pair.ScalarAsync("SELECT attnotnull FROM pg_attribute WHERE attrelid = 'app.child'::regclass AND attname = 'qty'"));

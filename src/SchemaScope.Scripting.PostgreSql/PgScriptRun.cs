@@ -96,7 +96,7 @@ internal sealed partial class PgScriptRun
         PlanRenames();
         if (Selected(ScriptSection.ColumnTypes)) PlanEnums();
         report(10, "01 New columns");
-        if (Selected(ScriptSection.NewColumns)) PlanColumns();
+        if (Selected(ScriptSection.NewColumns)) await PlanColumnsAsync();
         ct.ThrowIfCancellationRequested();
         report(20, "03 Missing objects");
         if (Selected(ScriptSection.MissingObjects)) await PlanMissingAsync();
@@ -191,7 +191,7 @@ internal sealed partial class PgScriptRun
     /// </summary>
     private void Take(DbObject o, bool created = false)
     {
-        if (o.Type is DbObjectType.Table or DbObjectType.View or DbObjectType.MaterializedView or DbObjectType.Sequence or DbObjectType.CompositeType)
+        if (o.Type is DbObjectType.Table or DbObjectType.View or DbObjectType.MaterializedView or DbObjectType.Sequence or DbObjectType.CompositeType or DbObjectType.ForeignTable)
             Names(o.Schema).Add(o.Name);
         foreach (var ix in o.Indexes.Where(i => !created || o.Type != DbObjectType.Table || IsKey(i))) Names(o.Schema).Add(ix.Name);
     }
@@ -242,7 +242,7 @@ internal sealed partial class PgScriptRun
 
     // ------------------------------------------------------------------ 01_columns
 
-    private void PlanColumns()
+    private async Task PlanColumnsAsync()
     {
         // a child after the tables it hangs under: a column its parent's file adds reaches it from there
         foreach (var (src, tgt) in ChangedTables().OrderBy(p => IsChild(p.Src) ? 1 + Depth(p.Src) : 0))
@@ -310,12 +310,20 @@ internal sealed partial class PgScriptRun
                     continue;
                 }
                 var def = DefaultOf(src, c.Name);
+                // NOT NULL with no default fills nothing in: PostgreSQL adds it only to a table without rows
+                var empty = false;
                 if (!c.IsNullable && def is null && !c.IsIdentity && !c.IsComputed)
                 {
-                    review.Hold(ReviewLog.NotApplied, "column", c.Name, src.FullName,
-                        "NOT NULL with no default: PostgreSQL cannot add it to a table that has rows. Give it a default in the source, or add it by hand.",
-                        Columns.Name);
-                    continue;
+                    var rows = await probes.RowCountAsync(PgDdl.Q(src), ct);
+                    if (rows.Count != 0)
+                    {
+                        review.Hold(ReviewLog.NotApplied, "column", c.Name, src.FullName,
+                            "NOT NULL with no default: PostgreSQL cannot add it to a table that has rows" +
+                            (rows.Checked ? $", and {N(rows.Count!.Value)} row(s) are there" : $" (whether this one has any could not be checked: {rows.NotCheckedReason})") +
+                            ". Give it a default in the source, or add it by hand.", Columns.Name);
+                        continue;
+                    }
+                    empty = true;
                 }
                 if (Needs03(src, c) is { } needs)
                 {
@@ -350,7 +358,8 @@ internal sealed partial class PgScriptRun
                     continue;
                 }
 
-                var sql = $"ALTER TABLE {PgDdl.Q(src)} ADD COLUMN {ColumnDefinition(src, c)};\n";
+                var sql = (empty ? "-- NOT NULL with no default: the table had no rows when this was generated. If rows have arrived since, this file fails and changes nothing.\n" : "") +
+                          $"ALTER TABLE {PgDdl.Q(src)} ADD COLUMN {ColumnDefinition(src, c)};\n";
                 Columns.Files.Add(new PgFile($"column_{src.Schema}.{src.Name}.{c.Name}", Header(Columns, "column", $"{src.FullName}.{c.Name}") + sql,
                     new ObjectName(src.Schema, src.Name)));
                 (added.TryGetValue(src.Key, out var set) ? set : added[src.Key] = new HashSet<string>(StringComparer.Ordinal)).Add(c.Name);
@@ -492,12 +501,19 @@ internal sealed partial class PgScriptRun
                 if (typeChanges && toDestructive && Widening(tc.DataType, c.DataType) is null) typeChanges = false;
                 if (!typeChanges && !relax && identityKind is null) continue;
 
-                // PostgreSQL refuses to change a column's type while a view, rule, generated column, policy or trigger reads it
+                // PostgreSQL refuses to change a column's type while a view, rule, generated column, policy, trigger or SQL-standard routine reads it
                 if (typeChanges && ReadersOf(tgt, c.Name) is { Count: > 0 } readers)
                 {
-                    review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
-                        $"{string.Join(", ", readers)} {(readers.Count == 1 ? "reads" : "read")} this column on the target, and PostgreSQL cannot change " +
-                        $"its type ({tc.DataType} to {c.DataType}) while {(readers.Count == 1 ? "it does" : "they do")}", ColumnTypes.Name);
+                    // read by views alone: 11_destructive (when it is on) drops and creates them again around the change
+                    var viewsOnly = Readers(tgt, c.Name).All(r => r.By.Key != tgt.Key && r.By.Type is DbObjectType.View or DbObjectType.MaterializedView);
+                    if (viewsOnly && Destroys && Widening(tc.DataType, c.DataType) is not null && PartitionKeyOf(tgt, c.Name) is null && rowTypeUsers.Count == 0)
+                        widenUnderViews.Add((src, tgt, c, tc));
+                    else
+                        review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
+                            $"{string.Join(", ", readers)} {(readers.Count == 1 ? "reads" : "read")} this column on the target, and PostgreSQL cannot change " +
+                            $"its type ({tc.DataType} to {c.DataType}) while {(readers.Count == 1 ? "it does" : "they do")}" +
+                            (viewsOnly && !Destroys ? ". With changes that can lose data included, 11_destructive drops and creates them again around the change" : ""),
+                            ColumnTypes.Name);
                     typeChanges = false;
                 }
                 else if (typeChanges && PartitionKeyOf(tgt, c.Name) is { } keyed)
@@ -572,17 +588,20 @@ internal sealed partial class PgScriptRun
     /// <summary>The target objects whose definition reads <paramref name="column"/> of <paramref name="table"/> (pg_depend, column level).</summary>
     private List<string> ReadersOf(DbObject table, string column) => [.. Readers(table, column).Select(r => r.What).Distinct()];
 
-    /// <summary>Each target object that reads the column as <see cref="ReadersOf"/> words it, with the object.</summary>
+    /// <summary>
+    /// Each target object that reads the column as <see cref="ReadersOf"/> words it, with the object. A routine reads a
+    /// column when its body is SQL-standard (BEGIN ATOMIC or RETURN): PostgreSQL records what such a body reads.
+    /// </summary>
     private IEnumerable<(DbObject By, string What)> Readers(DbObject table, string column)
     {
         foreach (var o in Tgt.Objects)
             foreach (var d in o.DependsOn ?? [])
-                if (d.Key == table.Key && d.Column == column && d.Via is "view" or "rule" or "default" or "policy" or "trigger")
+                if (d.Key == table.Key && d.Column == column && d.Via is "view" or "rule" or "default" or "policy" or "trigger" or "routine")
                     yield return (o, d.Via switch
                     {
                         "view" or "rule" when o.Key == table.Key => "a rule on the table",
                         "rule" => $"a rule on {Display(o)}",
-                        "view" => $"{Kind(o)} {Display(o)}",
+                        "view" or "routine" => $"{Kind(o)} {Display(o)}",
                         "default" => o.Key == table.Key ? "a generated column of the table" : $"a default of {Display(o)}",
                         "policy" => "a row level security policy",
                         _ => o.Type == DbObjectType.Trigger ? $"trigger {Display(o)}" : "a trigger",
@@ -591,10 +610,14 @@ internal sealed partial class PgScriptRun
 
     /// <summary>
     /// Null when <paramref name="to"/> is not a widening of <paramref name="from"/>; otherwise whether PostgreSQL rewrites
-    /// the table for it (a longer varchar or numeric does not; int to bigint does).
+    /// the table for it (a longer varchar or numeric does not; int to bigint does). An array widens as its element type
+    /// does, and is taken to rewrite the table.
     /// </summary>
     internal static bool? Widening(string from, string to)
     {
+        if (from.TrimEnd().EndsWith("[]", StringComparison.Ordinal) || to.TrimEnd().EndsWith("[]", StringComparison.Ordinal))
+            return from.TrimEnd().EndsWith("[]", StringComparison.Ordinal) && to.TrimEnd().EndsWith("[]", StringComparison.Ordinal) &&
+                   Widening(from.TrimEnd()[..^2], to.TrimEnd()[..^2]) is not null ? true : null;
         var (fb, fa) = ParseType(from);
         var (tb, ta) = ParseType(to);
         string[] ints = ["smallint", "integer", "bigint"];
@@ -708,10 +731,10 @@ internal sealed partial class PgScriptRun
 
         foreach (var (src, fk, isNew) in fks) await PlanForeignKeyAsync(src, fk, isNew);
 
-        PlanSequences();
+        await PlanSequencesAsync();
         await PlanDomainsAsync();
         PlanComposites();
-        PlanSchemaOwners(roles);
+        await PlanSchemaOwnersAsync(roles);
 
         Constraints.Files.AddRange(validations);
     }
@@ -1115,6 +1138,14 @@ internal sealed partial class PgScriptRun
         // a parent partition before the partitions under it: what 06 builds on it comes down to them
         foreach (var (src, tgt) in partitions.OrderBy(p => Depth(p.Src)))
             await PlanPartitionIndexesAsync(src, tgt);
+        // a materialized view whose query is the same and whose indexes differ: its indexes, as a table's
+        foreach (var (src, tgt) in ChangedMatviewIndexes())
+        {
+            foreach (var ix in src.Indexes.OrderBy(i => i.Name, StringComparer.Ordinal)) await PlanIndexAsync(src, tgt, ix);
+            if (!Destroys)
+                foreach (var tix in tgt.Indexes.Where(x => src.Indexes.All(i => i.Name != x.Name)))
+                    review.Hold(ReviewLog.NotAppliedDestructive, "index", tix.Name, src.FullName, TargetOnly, Indexes.Name);
+        }
 
         // the foreign keys whose referenced columns only a unique index of this folder covers, then their VALIDATE
         foreach (var (src, fk, isNew) in afterIndexes) await PlanForeignKeyAsync(src, fk, isNew, after06: true);
@@ -1128,7 +1159,7 @@ internal sealed partial class PgScriptRun
     private async Task PlanIndexAsync(DbObject src, DbObject? tgt, IndexInfo ix)
     {
         var tix = tgt?.Indexes.FirstOrDefault(x => !IsKey(x) && x.Name == ix.Name);
-        if (tix is not null && tix.Definition == ix.Definition) return;
+        if (tix is not null && SameIndex(tix, ix)) return;
         if (tix is null && Names(src.Schema).Contains(ix.Name))
         {
             review.Hold(ReviewLog.NotAppliedConstraints, "index", ix.Name, src.FullName,
@@ -1149,9 +1180,22 @@ internal sealed partial class PgScriptRun
                 review.Hold(ReviewLog.NotAppliedConstraints, "index", ix.Name, src.FullName, $"it uses {col}, which the target will not have", Indexes.Name);
                 return;
             }
+            if (tix is not null && StandingOn(tgt, tix) is { Count: > 0 } standing &&
+                (!(ix.IsUnique && ix.FilterDefinition is null && SameKeyColumns(ix, tix)) ||
+                 standing.FirstOrDefault(s => s.Fk.IsNotTrusted && PartitionedBefore18(s.Table)) is { Table: not null }))
+            {
+                review.Hold(ReviewLog.NotAppliedConstraints, "index", ix.Name, src.FullName,
+                    $"foreign key {string.Join(", ", standing.Select(s => $"{s.Table.FullName}.{s.Fk.Name}"))} on the target stands on its index of this name, " +
+                    (ix.IsUnique && ix.FilterDefinition is null && SameKeyColumns(ix, tix)
+                        ? $"and PostgreSQL {Tgt.MajorVersion} cannot add a NOT VALID foreign key to a partitioned table again"
+                        : "and the source's index cannot stand in for it (it is not unique on the same columns, or it is partial)") +
+                    ", so it cannot be dropped and built again here; change it by hand", Indexes.Name);
+                return;
+            }
             if (ix.IsUnique)
             {
-                var plain = ix.KeyColumns.Select(k => k.Name).Where(n => tgt.Columns.Any(c => c.Name == n)).ToList();
+                var have = ColumnNames(tgt);
+                var plain = ix.KeyColumns.Select(k => k.Name).Where(have.Contains).ToList();
                 var dups = plain.Count == ix.KeyColumns.Count
                     ? await probes.DuplicateGroupsAsync(PgDdl.Q(src), plain, ix.FilterDefinition, ct)
                     : new ProbeCount(null, "an index on an expression or a new column is not probed");
@@ -1170,12 +1214,32 @@ internal sealed partial class PgScriptRun
                     Indexes.Name);
         }
         // the same name and another definition: dropped and built again in one file, so the table is without it only
-        // inside that file's transaction (a foreign key that needs the old one makes the DROP fail, changing nothing)
-        var replace = tix is null ? ""
-            : $"-- The target's index of this name is different: {PgDdl.OneLine(tix.Definition ?? "")}\nDROP INDEX {PgDdl.Q(src.Schema, ix.Name)} RESTRICT;\n";
+        // inside that file's transaction. A foreign key that stands on the old one is dropped first and added back on
+        // the new one (the same unique columns, so every row that met it still does); a table whose replica identity
+        // is this index gets it back as the source has it
+        var sql = new StringBuilder();
+        var after = new StringBuilder();
+        if (tix is not null)
+        {
+            sql.Append($"-- The target's index of this name is different: {PgDdl.OneLine(tix.Definition ?? "")}\n");
+            var standing = StandingOn(tgt!, tix);
+            if (standing.Count > 0)
+                sql.Append($"-- Foreign key(s) {PgDdl.OneLine(string.Join(", ", standing.Select(s => $"{s.Table.FullName}.{s.Fk.Name}")))} stand on it: dropped " +
+                           "first and added back on the new index in this file, which checks their rows again.\n");
+            foreach (var (table, fk) in standing)
+            {
+                sql.Append($"ALTER TABLE {PgDdl.Q(table)} DROP CONSTRAINT {PgDdl.Q(fk.Name)} RESTRICT;\n");
+                after.Append($"ALTER TABLE {PgDdl.Q(table)} ADD CONSTRAINT {PgDdl.Q(fk.Name)} {Strip(fk.Definition)}{(fk.IsNotTrusted ? " NOT VALID" : "")};\n");
+            }
+            sql.Append($"DROP INDEX {PgDdl.Q(src.Schema, ix.Name)} RESTRICT;\n");
+        }
+        // the source's replica identity is this index: set once it is built (05 sets every other kind, before 06 runs)
+        if (ReplicaIndex(src) == ix.Name)
+            after.Append($"ALTER TABLE {PgDdl.Q(src)} REPLICA IDENTITY USING INDEX {PgDdl.Q(ix.Name)};\n");
         Indexes.Files.Add(new PgFile($"index_{src.Schema}.{src.Name}.{ix.Name}", Header(Indexes, "index", $"{src.FullName}.{ix.Name}") +
-            replace + PgDdl.Statement(OnEveryPartition(src, ix.Definition ?? "")), new ObjectName(src.Schema, src.Name)));
+            sql + PgDdl.Statement(OnEveryPartition(src, ix.Definition ?? "")) + after, new ObjectName(src.Schema, src.Name)));
         Names(src.Schema).Add(ix.Name);
+        built06.Add(HeldKey(src, ix.Name));
         if (src.Properties.ContainsKey("partitionBy")) (onPartitions.TryGetValue(src.Key, out var built) ? built : onPartitions[src.Key] = []).Add(ix);
         if (ix.IsUnique && ix.FilterDefinition is null && ix.KeyColumns.All(k => src.Columns.Any(c => c.Name == k.Name)))
             (addedUnique.TryGetValue(src.Key, out var sets) ? sets : addedUnique[src.Key] = []).Add(ix.KeyColumns.Select(k => k.Name).ToHashSet(StringComparer.Ordinal));
@@ -1224,7 +1288,7 @@ internal sealed partial class PgScriptRun
             var of = fromParent.FirstOrDefault(p => SameShape(p, ix));
             if (tix is not null)
             {
-                if (tix.Definition == ix.Definition) continue;
+                if (SameIndex(tix, ix)) continue;
                 if (of is null && theirParent?.Indexes.Any(i => !IsKey(i) && SameShape(i, tix)) != true) await PlanIndexAsync(src, tgt, ix);
                 else review.Hold(ReviewLog.NotAppliedConstraints, "index", ix.Name, src.FullName, ChildReason, Indexes.Name);
                 continue;
@@ -1308,11 +1372,49 @@ internal sealed partial class PgScriptRun
     }
 
     /// <summary>The same index but for its name and table: uniqueness, then the deparse from USING on (method, columns, INCLUDE, WHERE).</summary>
-    private static bool SameShape(IndexInfo a, IndexInfo b)
+    private bool SameShape(IndexInfo a, IndexInfo b)
     {
-        static string? Tail(string? def) => def?.IndexOf(" USING ", StringComparison.Ordinal) is int at and >= 0 ? def[at..] : null;
+        string? Tail(string? def) => PgCanonicalWriter.IndexText(def, compare.IgnoreCollation) is var text &&
+                                     text.IndexOf(" USING ", StringComparison.Ordinal) is int at and >= 0 ? text[at..] : null;
         return a.IsUnique == b.IsUnique && Tail(a.Definition) is { } tail && tail == Tail(b.Definition);
     }
+
+    /// <summary>The same index as the compare sees it: its definition, without COLLATE when collations are ignored.</summary>
+    private bool SameIndex(IndexInfo a, IndexInfo b) =>
+        PgCanonicalWriter.IndexText(a.Definition, compare.IgnoreCollation) == PgCanonicalWriter.IndexText(b.Definition, compare.IgnoreCollation);
+
+    /// <summary>Indexes (table key, name) 06 builds in this run.</summary>
+    private readonly HashSet<string> built06 = new(StringComparer.Ordinal);
+
+    /// <summary>The same key columns, in any order (what a foreign key needs of the unique index it stands on).</summary>
+    private static bool SameKeyColumns(IndexInfo a, IndexInfo b) =>
+        a.KeyColumns.Select(k => k.Name).ToHashSet(StringComparer.Ordinal).SetEquals(b.KeyColumns.Select(k => k.Name));
+
+    /// <summary>
+    /// The target's foreign keys that can stand on <paramref name="index"/> of <paramref name="table"/>: those that
+    /// reference exactly its key columns, when it is unique and not partial. PostgreSQL makes such a foreign key depend
+    /// on the unique index it found, so DROP INDEX ... RESTRICT fails while it is there.
+    /// </summary>
+    private List<(DbObject Table, ForeignKeyInfo Fk)> StandingOn(DbObject table, IndexInfo index)
+    {
+        if (!index.IsUnique || index.FilterDefinition is not null) return [];
+        var columns = index.KeyColumns.Select(k => k.Name).ToHashSet(StringComparer.Ordinal);
+        return [.. Tgt.Objects.Where(o => o.Type == DbObjectType.Table).OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal)
+            .SelectMany(o => o.ForeignKeys.Where(f => f.ReferencedSchema == table.Schema && f.ReferencedTable == table.Name &&
+                                                      f.ReferencedColumns.ToHashSet(StringComparer.Ordinal).SetEquals(columns))
+                .OrderBy(f => f.Name, StringComparer.Ordinal).Select(f => (o, f)))];
+    }
+
+    /// <summary>A table's column names; a materialized view's are those it returns.</summary>
+    private static HashSet<string> ColumnNames(DbObject relation) => relation.Type == DbObjectType.MaterializedView
+        ? [.. Lines(relation.Properties.GetValueOrDefault("columns")).Select(l => PgDdl.UnquoteFirst(l)).OfType<string>()]
+        : [.. relation.Columns.Select(c => c.Name)];
+
+    /// <summary>The index a table's replica identity names (REPLICA IDENTITY USING INDEX), or null.</summary>
+    private static string? ReplicaIndex(DbObject table) =>
+        table.Properties.GetValueOrDefault("replicaIdentity") is { } ri && ri.StartsWith("USING INDEX ", StringComparison.Ordinal)
+            ? PgDdl.UnquoteFirst(ri["USING INDEX ".Length..])
+            : null;
 
     /// <summary>
     /// The name PostgreSQL gives a partition's copy of its parent's index (ChooseIndexName: table_columns_idx), when it

@@ -88,7 +88,7 @@ public class PgScriptOfflineTests
     [InlineData("bigint", "integer")]
     [InlineData("integer", "text")]
     [InlineData("timestamp without time zone", "timestamp with time zone")]
-    [InlineData("integer[]", "bigint[]")]
+    [InlineData("bigint[]", "integer[]")]
     public void Anything_else_is_not_a_widening(string from, string to) => Assert.Null(PgScriptRun.Widening(from, to));
 
     [Fact]

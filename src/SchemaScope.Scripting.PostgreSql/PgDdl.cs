@@ -85,6 +85,26 @@ public static partial class PgDdl
         return (t.EndsWith(';') ? t : t + ";") + "\n";
     }
 
+    /// <summary>The name a text starts with, as written there ("Name" unquoted, a bare word as it is); null when it starts with neither.</summary>
+    public static string? UnquoteFirst(string? text)
+    {
+        var t = (text ?? "").TrimStart();
+        if (t.StartsWith('"'))
+        {
+            var sb = new System.Text.StringBuilder();
+            for (var i = 1; i < t.Length; i++)
+            {
+                if (t[i] != '"') { sb.Append(t[i]); continue; }
+                if (i + 1 < t.Length && t[i + 1] == '"') { sb.Append('"'); i++; continue; }
+                return sb.ToString();
+            }
+            return null;
+        }
+        var end = 0;
+        while (end < t.Length && PgStatementSplitter.IsIdentCont(t[end])) end++;
+        return end > 0 ? t[..end] : null;
+    }
+
     /// <summary>For a -- comment: one line.</summary>
     public static string OneLine(string s) => (s ?? "").ReplaceLineEndings(" ");
 

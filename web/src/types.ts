@@ -154,6 +154,7 @@ export type DbObjectType =
   | 'rangeType'
   | 'collation'
   | 'operator'
+  | 'foreignTable'
 
 export interface ConnectionSettings {
   id: string

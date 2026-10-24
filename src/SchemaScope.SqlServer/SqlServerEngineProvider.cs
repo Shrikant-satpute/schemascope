@@ -64,7 +64,15 @@ public sealed class SqlServerIdentity : IServerIdentity
     {
         var s = (server ?? "").Trim();
         foreach (var prefix in new[] { "tcp:", "np:", "lpc:", "admin:" })
-            if (s.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { s = s[prefix.Length..]; break; }
+            if (s.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { s = s[prefix.Length..].Trim(); break; }
+        // a named pipe, \\host\pipe\path: the machine, and the instance its path names
+        if (s.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            var pipeHost = HostNames.Normalise(s[2..].Split('\\')[0]);
+            if (pipeHost.Length == 0) return "";
+            var pipe = PipeInstance(s);
+            return (pipe is { Length: > 0 } named ? $"{pipeHost}\\{named}" : pipeHost).ToUpperInvariant();
+        }
         if (s.IndexOf(',') is var comma and >= 0) s = s[..comma];
 
         var slash = s.IndexOf('\\');
@@ -73,6 +81,37 @@ public sealed class SqlServerIdentity : IServerIdentity
 
         if (instance.Equals("MSSQLSERVER", StringComparison.OrdinalIgnoreCase)) instance = "";
         return (instance.Length > 0 ? $"{host}\\{instance}" : host).ToUpperInvariant();
+    }
+
+    /// <summary>
+    /// The instance a named pipe (\\host\pipe\path) names: "" for the default instance's sql\query, NAME for
+    /// MSSQL$NAME\sql\query, and a LocalDB pipe's own LOCALDB#... (as that server names itself). Null when the path has
+    /// none of those shapes, so which instance it reaches cannot be told.
+    /// </summary>
+    private static string? PipeInstance(string pipe)
+    {
+        var parts = pipe.TrimStart('\\').Split('\\');
+        if (parts.Length < 3 || !parts[1].Equals("pipe", StringComparison.OrdinalIgnoreCase)) return null;
+        var path = parts[2..];
+        static bool SqlQuery(string[] rest) => rest.Length == 2 && rest[0].Equals("sql", StringComparison.OrdinalIgnoreCase) &&
+                                               rest[1].Equals("query", StringComparison.OrdinalIgnoreCase);
+        if (SqlQuery(path)) return "";
+        if (path.Length == 3 && path[0].StartsWith("MSSQL$", StringComparison.OrdinalIgnoreCase) && path[0].Length > 6 && SqlQuery(path[1..]))
+            return path[0][6..].Equals("MSSQLSERVER", StringComparison.OrdinalIgnoreCase) ? "" : path[0][6..];
+        if (path.Length >= 1 && path[0].StartsWith("LOCALDB#", StringComparison.OrdinalIgnoreCase) && path[0].Length > 8) return path[0];
+        return null;
+    }
+
+    /// <summary>
+    /// True when <paramref name="server"/> cannot be pinned to one instance: no machine can be read from it, or it is a
+    /// named pipe whose path names no instance SchemaScope knows. A protected one covers its whole machine (fail closed).
+    /// </summary>
+    public static bool InstanceUnknown(string? server)
+    {
+        var s = (server ?? "").Trim();
+        foreach (var prefix in new[] { "tcp:", "np:", "lpc:", "admin:" })
+            if (s.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { s = s[prefix.Length..].Trim(); break; }
+        return Host(server).Length == 0 || (s.StartsWith(@"\\", StringComparison.Ordinal) && PipeInstance(s) is null);
     }
 
     public static bool Same(string? a, string? b) => Normalise(a) == Normalise(b);

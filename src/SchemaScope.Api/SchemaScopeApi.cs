@@ -1356,13 +1356,11 @@ public static class SchemaScopeApi
     private static List<string>? ProtectedHosts(ConnectionSettings c)
     {
         if (c.Engine == DatabaseEngine.SqlServer)
-            return SavedServers(c)?.Select(s =>
-            {
-                foreach (var prefix in new[] { "tcp:", "np:", "lpc:", "admin:" })
-                    if (s.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { s = s[prefix.Length..]; break; }
-                var cut = s.IndexOfAny([',', '\\']);
-                return (cut >= 0 ? s[..cut] : s).Trim();
-            }).ToList();
+        {
+            // \\host\pipe\... is host; a server no host can be read from cannot be resolved, and null refuses
+            var hosts = SavedServers(c)?.Select(s => ConnectionEndpoints.SqlServerHost(s)?.Host).ToList();
+            return hosts is null || hosts.Any(h => h is null) ? null : [.. hosts.OfType<string>()];
+        }
         return ConnectionEndpoints.Parse(c.Engine, c.UseRawConnectionString
             ? c.RawConnectionString
             : string.IsNullOrWhiteSpace(c.Server) ? null : new DbConnectionStringBuilder { ["Host"] = c.Server.Trim() }.ConnectionString)?.Hosts.ToList();
@@ -1496,9 +1494,10 @@ public static class SchemaScopeApi
         var targets = servers.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
         if (c.Engine == DatabaseEngine.SqlServer)
         {
-            if (SavedServers(c) is not { } saved) return true;
+            // no machine read from it covers everything; a named pipe of no known instance, its whole machine
+            if (SavedServers(c) is not { } saved || saved.Any(p => ServerNames.Host(p).Length == 0)) return true;
             return engine == DatabaseEngine.SqlServer
-                ? saved.Any(p => targets.Any(s => ServerNames.Same(p, s)))
+                ? saved.Any(p => targets.Any(s => ServerNames.Same(p, s) || (ServerNames.InstanceUnknown(p) && ServerNames.Host(p) == ServerNames.Host(s))))
                 : saved.Any(p => targets.Any(s => ServerNames.Host(p) == ServerNames.Host(s)));
         }
 

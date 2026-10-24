@@ -27,7 +27,7 @@ public sealed class PgEngineProvider(PgConnectionService connections) : IEngineP
             DbObjectType.StoredProcedure, DbObjectType.ScalarFunction, DbObjectType.TableValuedFunction,
             DbObjectType.AggregateFunction, DbObjectType.Trigger, DbObjectType.Sequence, DbObjectType.Domain,
             DbObjectType.EnumType, DbObjectType.CompositeType, DbObjectType.Extension, DbObjectType.RangeType, DbObjectType.Collation,
-            DbObjectType.Operator
+            DbObjectType.Operator, DbObjectType.ForeignTable
         },
         Features: new HashSet<EngineFeature>
         {

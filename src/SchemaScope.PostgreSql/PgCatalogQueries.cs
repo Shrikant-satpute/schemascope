@@ -30,7 +30,7 @@ internal static class PgCatalogQueries
         SELECT current_setting('server_version'), current_database(),
                (SELECT datcollate::text FROM pg_database WHERE datname = current_database()),
                (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relkind IN ('r', 'p', 'v', 'm') AND {UserSchema("n")} AND {NotExtensionMember("pg_class", "c.oid")})
+                WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND {UserSchema("n")} AND {NotExtensionMember("pg_class", "c.oid")})
              + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE {UserSchema("n")}
                 AND {NotExtensionMember("pg_proc", "p.oid")}
                 AND NOT EXISTS (SELECT 1 FROM pg_depend id WHERE id.classid = 'pg_proc'::regclass AND id.objid = p.oid AND id.deptype = 'i'));
@@ -61,10 +61,11 @@ internal static class PgCatalogQueries
         """;
 
     /// <summary>
-    /// r table, p partitioned table, v view, m materialized view. Beside the definition, what pg_get_viewdef and the
-    /// columns leave out: UNLOGGED (relpersistence), row level security and FORCE, the WITH (...) options (a view's
-    /// check_option and security_barrier live there), the partition key, a partition's bounds, and the parents of a
-    /// partition or of plain inheritance, and the type a typed table (CREATE TABLE ... OF type) is of.
+    /// r table, p partitioned table, v view, m materialized view, f foreign table. Beside the definition, what
+    /// pg_get_viewdef and the columns leave out: UNLOGGED (relpersistence), row level security and FORCE, the WITH (...)
+    /// options (a view's check_option and security_barrier live there), the partition key, a partition's bounds, and the
+    /// parents of a partition or of plain inheritance, the type a typed table (CREATE TABLE ... OF type) is of, the
+    /// replica identity (relreplident, and the index USING INDEX names), and a foreign table's server and options.
     /// </summary>
     private static readonly string Relations = $"""
         SELECT c.oid, n.nspname, c.relname, c.relkind::text,
@@ -77,14 +78,20 @@ internal static class PgCatalogQueries
                      JOIN pg_class pc ON pc.oid = i.inhparent
                      JOIN pg_namespace pn ON pn.oid = pc.relnamespace
                      WHERE i.inhrelid = c.oid ORDER BY i.inhseqno),
-               CASE WHEN c.reloftype <> 0 THEN format_type(c.reloftype, NULL) END
+               CASE WHEN c.reloftype <> 0 THEN format_type(c.reloftype, NULL) END,
+               c.relreplident::text,
+               (SELECT quote_ident(ri.relname) FROM pg_index rx JOIN pg_class ri ON ri.oid = rx.indexrelid
+                WHERE rx.indrelid = c.oid AND rx.indisreplident LIMIT 1),
+               (SELECT quote_ident(fs.srvname) FROM pg_foreign_table ft JOIN pg_foreign_server fs ON fs.oid = ft.ftserver WHERE ft.ftrelid = c.oid),
+               COALESCE((SELECT ft.ftoptions FROM pg_foreign_table ft WHERE ft.ftrelid = c.oid), ARRAY[]::text[])
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE c.relkind IN ('r', 'p', 'v', 'm') AND {UserSchema("n")} AND {NotExtensionMember("pg_class", "c.oid")};
+        WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND {UserSchema("n")} AND {NotExtensionMember("pg_class", "c.oid")};
         """;
 
     /// <summary>
-    /// Columns of tables, of standalone composite types (relkind 'c') and of views (what a view returns). attgenerated:
+    /// Columns of tables, of standalone composite types (relkind 'c'), of views (what a view returns) and of foreign
+    /// tables (with their per-column options). attgenerated:
     /// 's' stored, and from PostgreSQL 18 'v' virtual. An identity column's sequence hangs off it with deptype 'i': its
     /// start, step and limits are the column's. From PostgreSQL 18 a NOT NULL can be NOT VALID (attnotnull is set, its
     /// pg_constraint row is not validated): existing rows may still hold NULLs, so the column is not read as NOT NULL.
@@ -96,7 +103,8 @@ internal static class PgCatalogQueries
                CASE WHEN a.attcollation <> 0 AND a.attcollation <> t.typcollation THEN
                     CASE WHEN cn.nspname = 'pg_catalog' THEN quote_ident(co.collname)
                          ELSE quote_ident(cn.nspname) || '.' || quote_ident(co.collname) END END,
-               s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle, {NotNullNotValid(versionNum)}
+               s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcache, s.seqcycle, {NotNullNotValid(versionNum)},
+               COALESCE(a.attfdwoptions, ARRAY[]::text[])
         FROM pg_attribute a
         JOIN pg_class c ON c.oid = a.attrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -107,7 +115,7 @@ internal static class PgCatalogQueries
         LEFT JOIN pg_depend sd ON sd.refclassid = 'pg_class'::regclass AND sd.refobjid = a.attrelid
              AND sd.refobjsubid = a.attnum AND sd.classid = 'pg_class'::regclass AND sd.deptype = 'i' AND a.attidentity <> ''
         LEFT JOIN pg_sequence s ON s.seqrelid = sd.objid
-        WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'c', 'v', 'm') AND {UserSchema("n")}
+        WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'c', 'v', 'm', 'f') AND {UserSchema("n")}
         ORDER BY a.attrelid, a.attnum;
         """;
 

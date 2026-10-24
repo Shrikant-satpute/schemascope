@@ -15,6 +15,9 @@ namespace SchemaScope.Scripting.PostgreSql;
 /// <item>column changes no other folder makes - a type that is no widening, NULL to NOT NULL - each after a read-only
 /// probe that every row fits, checked again inside the file before the change;</item>
 /// <item>checks whose name both sides use for a different rule: DROP and ADD, after a probe of the rows;</item>
+/// <item>views whose columns change (CREATE OR REPLACE VIEW cannot), and widenings 04 cannot make while views read the
+/// column: the views (with the views that read them) dropped and created again as the source has them, around the
+/// column changes, in one file;</item>
 /// <item>drops of the target's own defaults, foreign keys, checks, unique keys and indexes on tables both sides have;</item>
 /// <item>drops of the target's own views, materialized views, functions, procedures, aggregates and triggers (each with
 /// a <c>rollback\</c> file holding its current text);</item>
@@ -35,7 +38,7 @@ internal sealed partial class PgScriptRun
     /// <summary>File order: the folder runs the kinds in this order, then dependencies move an item only as far as they must.</summary>
     private enum DKind
     {
-        AlterColumn, ReplaceCheck, DropDefault, DropForeignKey, DropCheck, DropUnique, DropIndex, DropModule, DropColumn, DropTable,
+        AlterColumn, ReplaceCheck, RebuildViews, DropDefault, DropForeignKey, DropCheck, DropUnique, DropIndex, DropModule, DropColumn, DropTable,
         DropSequence, DropType
     }
 
@@ -105,7 +108,9 @@ internal sealed partial class PgScriptRun
         // tables both sides have, by exact name
         var common = Tgt.Objects.Where(o => o.Type == DbObjectType.Table && s.TryGetValue(o.Key, out var so) && InScope(so))
             .OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal)
-            .Select(o => (Src: s[o.Key], Tgt: o)).ToList();
+            .Select(o => (Src: s[o.Key], Tgt: o))
+            // a materialized view whose query is the same: its own indexes go as a table's do
+            .Concat(ChangedMatviewIndexes().Select(p => (p.Src, p.Tgt))).ToList();
 
         // ---- defaults, checks, foreign keys, keys and indexes on tables both sides have (matched by name, as 05 and 06 match them)
         foreach (var (src, tgt) in common)
@@ -200,6 +205,12 @@ internal sealed partial class PgScriptRun
                     $"11_destructive does not drop schemas: drop it by hand once it is empty (DROP SCHEMA {PgDdl.Q(o.Name)} RESTRICT)", folder);
                 continue;
             }
+            if (o.Type == DbObjectType.ForeignTable)
+            {
+                review.Hold(ReviewLog.NotAppliedDestructive, "foreign table", Display(o), null,
+                    $"11_destructive does not drop foreign tables: drop it by hand if you are sure (DROP FOREIGN TABLE {PgDdl.Q(o)} RESTRICT)", folder);
+                continue;
+            }
             if (o.Type == DbObjectType.Extension)
             {
                 review.Hold(ReviewLog.NotAppliedDestructive, "extension", o.Name, null,
@@ -260,6 +271,8 @@ internal sealed partial class PgScriptRun
         DItem? FindColumn(DbObject table, string column) => Find(DKind.DropColumn, table, column);
         DItem? TableItem(DbObject table) => objects.TryGetValue(table.Key, out var i) && i.Kind == DKind.DropTable ? i : null;
         var tables = Tgt.Objects.Where(o => o.Type == DbObjectType.Table).ToList();
+        // the views a file of this folder drops and creates again as the source has them (planned below)
+        var rebuilt = new Dictionary<string, (DItem Item, DbObject Src)>(StringComparer.Ordinal);
         // who needs what, from pg_depend
         var needing = new Dictionary<string, List<(DbObject By, DbDependency Dep)>>(StringComparer.Ordinal);
         foreach (var o in Tgt.Objects)
@@ -283,6 +296,9 @@ internal sealed partial class PgScriptRun
             if (d.Via == "constraint")
                 foreach (var ck in table.Constraints.Where(ck => ck.Kind == ConstraintKind.Check && Names(ck.Definition)))
                     into.Add(new DDep($"check {ck.Name} on {table.FullName} uses it", FindCheck(table, ck.Name)));
+            // an index (or the index behind a key) that uses it goes with the file that drops that index
+            if (d.Via is "key" or "index" && d.Index is { } index)
+                into.Add(new DDep($"index {index} of {table.FullName} uses it", Find(DKind.DropIndex, table, index) ?? Find(DKind.DropUnique, table, index)));
             var what = d.Via switch
             {
                 "default" => $"a default or generated column of {table.FullName} uses it",
@@ -307,6 +323,12 @@ internal sealed partial class PgScriptRun
             {
                 if (by.Key == self.Key || d.Via == "foreignkey") continue;
                 if (objects.TryGetValue(by.Key, out var o)) { i.Deps.Add(new DDep($"{Kind(by)} {Display(by)} uses it", o)); continue; }
+                if (ReplacedWithout(by, self.Key, null) is { } replaced) { if (!i.Header.Contains(replaced)) i.Header.Add(replaced); continue; }
+                if (rebuilt.TryGetValue(by.Key, out var again) && (again.Src.DependsOn ?? []).All(x => x.Key != self.Key))
+                {
+                    i.Deps.Add(new DDep($"{Kind(by)} {Display(by)} uses it until an earlier file of this folder creates it again without it", again.Item));
+                    continue;
+                }
                 if (by.Type == DbObjectType.Table)
                 {
                     var found = new List<DDep>();
@@ -328,6 +350,8 @@ internal sealed partial class PgScriptRun
                 }
         }
         static HashSet<string> Columns(IndexInfo x) => x.KeyColumns.Select(k => k.Name).ToHashSet(StringComparer.Ordinal);
+
+        rebuilt = PlanRebuilds(items, objects, needing);
 
         foreach (var i in items.ToList())
         {
@@ -402,6 +426,12 @@ internal sealed partial class PgScriptRun
                     if (d.Via is "view" or "rule" or "policy") i.Deps.Add(new DDep(d.Via == "policy" ? "a row level security policy reads it" : $"a rule on {k.FullName} reads it", null));
                     continue;
                 }
+                if (!objects.ContainsKey(by.Key) && ReplacedWithout(by, k.Key, col) is { } replaced) { if (!i.Header.Contains(replaced)) i.Header.Add(replaced); continue; }
+                if (rebuilt.TryGetValue(by.Key, out var again) && (again.Src.DependsOn ?? []).All(x => x.Key != k.Key || x.Column != col))
+                {
+                    i.Deps.Add(new DDep($"{Kind(by)} {Display(by)} reads it until an earlier file of this folder creates it again without it", again.Item));
+                    continue;
+                }
                 i.Deps.Add(new DDep($"{Kind(by)} {Display(by)} reads it", objects.GetValueOrDefault(by.Key)));
             }
         }
@@ -461,7 +491,8 @@ internal sealed partial class PgScriptRun
 
         // ---- holds, scripted-with-a-note rows
         foreach (var i in items.Where(i => i.Held is not null))
-            review.Hold(ReviewLog.NotAppliedDestructive, i.Word, i.IsObject ? i.Name : i.Sub ?? i.Name, i.IsObject ? null : i.Table.FullName, i.Held!, folder);
+            review.Hold(ReviewLog.NotAppliedDestructive, i.Word, i.IsObject ? i.Name : i.Sub ?? i.Name,
+                i.IsObject || i.Kind == DKind.RebuildViews ? null : i.Table.FullName, i.Held!, folder);
         foreach (var i in kept)
             foreach (var (kind, name, reason) in i.Notes)
                 review.Note(ReviewLog.NotAppliedDestructive, kind, name, i.Table.FullName, reason, folder);
@@ -525,6 +556,7 @@ internal sealed partial class PgScriptRun
             {
                 DKind.AlterColumn => "column change",
                 DKind.ReplaceCheck => "replaced check",
+                DKind.RebuildViews => "rebuilt view set",
                 DKind.DropColumn => "dropped column",
                 DKind.DropDefault => "dropped default",
                 _ => "dropped " + i.Word,
@@ -536,6 +568,139 @@ internal sealed partial class PgScriptRun
         Destructive.Notes.Add("Every DROP is RESTRICT: anything else that depends on what it drops makes that file fail and change nothing.");
         if (heldCount > 0) Destructive.Notes.Add($"{heldCount} held back (99_review\\{ReviewLog.NotAppliedDestructive}).");
         review.Warn($"11_destructive: {kept.Count} file(s) drop or change things in {tgtLabel} that can lose data - read the README before running any of them.");
+    }
+
+    /// <summary>
+    /// The views 10 cannot replace in place (their columns change) and the widenings 04 cannot make while views read the
+    /// column: each set that hangs together - those views, every view of the target that reads one of them, the columns -
+    /// becomes one file that drops the views (RESTRICT, readers first), changes the columns and creates the views again
+    /// as the source has them. A view the source does not have is not created again: the file waits for the file of this
+    /// folder that drops it. Anything else that uses one of the views (a routine, a rule, a default, a policy) holds the
+    /// set back, as does a source view that needs what the target will not have. Key -> the file and the source's view.
+    /// </summary>
+    private Dictionary<string, (DItem Item, DbObject Src)> PlanRebuilds(List<DItem> items, Dictionary<string, DItem> objects,
+        Dictionary<string, List<(DbObject By, DbDependency Dep)>> needing)
+    {
+        var rebuilt = new Dictionary<string, (DItem Item, DbObject Src)>(StringComparer.Ordinal);
+        if (viewColumnsChange.Count == 0 && widenUnderViews.Count == 0) return rebuilt;
+        static bool IsView(DbObject o) => o.Type is DbObjectType.View or DbObjectType.MaterializedView;
+
+        // each seed with every view of the target that reads it, and what it must wait for or cannot do without
+        var groups = new List<(HashSet<string> Views, List<(DbObject Src, DbObject Tgt, ColumnInfo Column, ColumnInfo Theirs)> Columns, List<DDep> Deps)>();
+        void Seed(IEnumerable<DbObject> views, List<(DbObject, DbObject, ColumnInfo, ColumnInfo)> columns)
+        {
+            var group = (Views: new HashSet<string>(StringComparer.Ordinal), Columns: columns, Deps: new List<DDep>());
+            var queue = new Queue<DbObject>();
+            void Add(DbObject v)
+            {
+                if (objects.TryGetValue(v.Key, out var drop)) group.Deps.Add(new DDep($"{Kind(v)} {Display(v)} uses it", drop));
+                else if (!s.ContainsKey(v.Key)) group.Deps.Add(new DDep($"{Kind(v)} {Display(v)} uses it", null));
+                else if (group.Views.Add(v.Key)) queue.Enqueue(v);
+            }
+            foreach (var v in views) Add(v);
+            while (queue.Count > 0)
+            {
+                var v = queue.Dequeue();
+                foreach (var (by, _) in needing.GetValueOrDefault(v.Key) ?? [])
+                {
+                    if (by.Key == v.Key) continue;
+                    if (IsView(by)) Add(by);
+                    else group.Deps.Add(new DDep($"{Kind(by)} {Display(by)} uses {Kind(v)} {Display(v)}", objects.GetValueOrDefault(by.Key)));
+                }
+            }
+            groups.Add(group);
+        }
+        foreach (var v in viewColumnsChange.Values.OrderBy(v => v.Schema, StringComparer.Ordinal).ThenBy(v => v.Name, StringComparer.Ordinal))
+            Seed([Target(v)!], []);
+        foreach (var w in widenUnderViews)
+            Seed(Readers(w.Tgt, w.Column.Name).Select(r => r.By).DistinctBy(o => o.Key), [w]);
+
+        // sets that share a view are one file
+        for (var merged = true; merged;)
+        {
+            merged = false;
+            for (var a = 0; a < groups.Count && !merged; a++)
+                for (var b = a + 1; b < groups.Count; b++)
+                {
+                    if (!groups[a].Views.Overlaps(groups[b].Views)) continue;
+                    groups[a].Views.UnionWith(groups[b].Views);
+                    groups[a].Columns.AddRange(groups[b].Columns);
+                    groups[a].Deps.AddRange(groups[b].Deps);
+                    groups.RemoveAt(b);
+                    merged = true;
+                    break;
+                }
+        }
+
+        var srcLabel = req.Source.Label;
+        foreach (var (views, columns, deps) in groups)
+        {
+            var mine = views.Select(k => s[k]).OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal).ToList();
+            var theirs = mine.Select(o => t[o.Key]).ToList();
+            var first = mine[0];
+            var i = new DItem
+            {
+                Kind = DKind.RebuildViews, Word = columns.Count > 0 ? "column" : Kind(first),
+                Name = columns.Count > 0 ? $"{columns[0].Src.FullName}.{columns[0].Column.Name}" : Display(first),
+                Table = t[first.Key], FileWord = $"rebuild_{Display(first)}",
+            };
+            items.Add(i);
+            i.Deps.AddRange(deps);
+            foreach (var o in mine) rebuilt[o.Key] = (i, o);
+
+            // created again in pg_depend order (the source's), dropped the other way round (the target's)
+            int[] Order(List<DbObject> list)
+            {
+                var at = list.Select((o, n) => (o.Key, n)).ToDictionary(p => p.Key, p => p.n, StringComparer.Ordinal);
+                var edges = list.SelectMany((o, n) => (o.DependsOn ?? []).Where(d => d.Key != o.Key && at.ContainsKey(d.Key)).Select(d => (at[d.Key], n))).Distinct();
+                return [.. PlanOrder.StableOrder(list.Count, edges, [])];
+            }
+            var names = string.Join(", ", mine.Select(o => $"{Kind(o)} {Display(o)}"));
+            i.Header.Add(columns.Count > 0
+                ? $"Drops {names}, changes {string.Join(", ", columns.Select(c => $"{c.Src.FullName}.{c.Column.Name} from {c.Theirs.DataType} to {c.Column.DataType} (a widening)"))}, " +
+                  $"then creates them again as {srcLabel} has them: PostgreSQL cannot change the type of a column a view reads."
+                : $"Drops {names} and creates {(mine.Count == 1 ? "it" : "them")} again as {srcLabel} has {(mine.Count == 1 ? "it" : "them")}: " +
+                  "CREATE OR REPLACE VIEW cannot change a view's columns.");
+            i.Header.Add("No rows are lost (a view holds none; a materialized view is filled again by its query), but grants and comments on these views " +
+                         "are dropped with them: grant them again. Every statement runs in this file's transaction, so a failure changes nothing.");
+
+            // what the source's views read must be on the target when this file runs
+            foreach (var o in mine)
+            {
+                if (i.Held is not null) break;
+                if (o.DefinitionUnavailable || string.IsNullOrWhiteSpace(o.Definition)) { i.Held = $"the text of {Kind(o)} {Display(o)} could not be read on the source"; break; }
+                foreach (var d in o.DependsOn ?? [])
+                {
+                    if (d.Via == "foreignkey" || d.Key == o.Key || views.Contains(d.Key) || created.Contains(d.Key) || replacedIn10.ContainsKey(d.Key)) continue;
+                    if (t.TryGetValue(d.Key, out var have))
+                    {
+                        if (d.Column is { } col && have.Type == DbObjectType.Table && !HasColumn(d.Key, col))
+                            i.Held = $"{Kind(o)} {Display(o)} reads column {have.FullName}.{col}, which the target does not have and 01 does not add";
+                        if (objects.TryGetValue(d.Key, out var gone) && gone.Kind != DKind.RebuildViews)
+                            i.Held = $"{Kind(o)} {Display(o)} needs {Kind(have)} {Display(have)}, which this folder drops";
+                        if (i.Held is not null) break;
+                        continue;
+                    }
+                    if (s.TryGetValue(d.Key, out var need))
+                    {
+                        i.Held = $"{Kind(o)} {Display(o)} needs {Kind(need)} {Display(need)}, which the target does not have and this run does not create{Why(need)}";
+                        break;
+                    }
+                }
+                if (i.Held is null && NotReady(o.Definition) is { } notReady) i.Held = notReady;
+            }
+
+            foreach (var n in Order(theirs).AsEnumerable().Reverse())
+                i.Statements.Add($"DROP {(theirs[n].Type == DbObjectType.View ? "VIEW" : "MATERIALIZED VIEW")} {PgDdl.Q(theirs[n])} RESTRICT");
+            foreach (var (src, tgt, c, tc) in columns)
+            {
+                var collate = !string.IsNullOrEmpty(tc.Collation) && ParseType(c.DataType).Base is "character varying" or "text" ? $" COLLATE {tc.Collation}" : "";
+                i.Statements.Add($"ALTER TABLE {PgDdl.Q(tgt)} ALTER COLUMN {PgDdl.Q(c.Name)} TYPE {c.DataType}{collate}");
+            }
+            foreach (var n in Order(mine))
+                i.Statements.Add(mine[n].Type == DbObjectType.View ? CreateOnly(mine[n].Definition!.TrimEnd()).Text : mine[n].Definition!.TrimEnd());
+        }
+        return rebuilt;
     }
 
     /// <summary>
@@ -661,6 +826,20 @@ internal sealed partial class PgScriptRun
         if (tb == fb && ta.Length == 1 && tb is "timestamp without time zone" or "timestamp with time zone" or "time without time zone" or "time with time zone")
             return $"{column} IS DISTINCT FROM CAST({column} AS {to})";
         return null;
+    }
+
+    /// <summary>
+    /// When 10_different_modules replaces <paramref name="by"/> (it runs before this folder) with the source's version,
+    /// and that version no longer needs <paramref name="key"/> (its column <paramref name="column"/>, when given): the
+    /// line the file's header says so with. Null otherwise. Run without 10 first, the DROP ... RESTRICT fails and the
+    /// file changes nothing.
+    /// </summary>
+    private string? ReplacedWithout(DbObject by, string key, string? column)
+    {
+        if (!replacedIn10.TryGetValue(by.Key, out var theirs)) return null;
+        if ((theirs.DependsOn ?? []).Any(d => d.Key == key && (column is null || d.Column == column))) return null;
+        return $"Needs 10_different_modules first: it replaces {Kind(by)} {Display(by)} with the {req.Source.Label} version, which no longer " +
+               $"reads {(column is null ? "it" : $"column {column}")}. Run alone, this file fails and changes nothing.";
     }
 
     /// <summary>The DROP for a code object only the target has, or null when it cannot be named from what was read.</summary>

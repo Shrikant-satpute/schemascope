@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using SchemaScope.Core.Model;
 using SchemaScope.PostgreSql;
 using SchemaScope.Scripting.Planning;
@@ -95,6 +96,13 @@ internal sealed partial class PgScriptRun
                     $"{PgDdl.Q(schema)} VERSION {PgDdl.Lit(o.Properties.GetValueOrDefault("version") ?? "")}; (its files must be on the server)");
                 continue;
             }
+            if (o.Type == DbObjectType.ForeignTable)
+            {
+                Hold(ReviewLog.NotApplied,
+                    "foreign tables are not created by these scripts: the target needs its server and user mapping first. Create it by hand as a user " +
+                    $"allowed to: {PgDdl.OneLine(PgCanonicalWriter.WriteForeignTable(o, new CompareOptions { IgnoreCollation = false }))}");
+                continue;
+            }
             if (Rank(o) < 0) continue;   // triggers: 07
             if (IsExcluded(o)) { Hold(ReviewLog.QuarantinedNotApplied, "it matches an exclude pattern"); continue; }
             if (quarantine.Contains(o.Name.ToLowerInvariant())) { Hold(ReviewLog.QuarantinedNotApplied, "a .sql file of this name is in the quarantine folder"); continue; }
@@ -166,6 +174,17 @@ internal sealed partial class PgScriptRun
             return true;
         }
 
+        // a new partition of a table the target has: PostgreSQL refuses it while the target's default partition holds
+        // a row that belongs in it
+        foreach (var o in set.Values.Where(o => o.Type == DbObjectType.Table && IsPartition(o)).OrderBy(o => o.Schema, StringComparer.Ordinal)
+                     .ThenBy(o => o.Name, StringComparer.Ordinal).ToList())
+            if (await DefaultPartitionHoldsAsync(o) is { } why)
+            {
+                set.Remove(o.Key);
+                notCreated[o.Key] = why;
+                review.Hold(ReviewLog.NotApplied, Kind(o), Display(o), null, why, Missing.Name);
+            }
+
         List<DbObject> items;
         while (true)
         {
@@ -196,6 +215,17 @@ internal sealed partial class PgScriptRun
         foreach (var o in items)
         {
             created.Add(o.Key);
+            // a key CREATE TABLE names whose name the target already uses for another relation or index: the table is
+            // created without it, and 05 adds it in a later run once the name is free
+            if (o.Type == DbObjectType.Table)
+                foreach (var key in WrittenKeys(o).Where(k => Names(o.Schema).Contains(k.Name)))
+                {
+                    heldKeys.Add(HeldKey(o, key.Name));
+                    review.Hold(ReviewLog.NotAppliedConstraints, "key", key.Name, o.FullName,
+                        $"its index would be called {key.Name}, a name another table, view, sequence or index of schema {o.Schema} already has on the target, " +
+                        "so the table is created without it. Free that name (11_destructive drops what only the target has), run the scripts, then create " +
+                        "them again: 05_constraints adds it then", Missing.Name);
+                }
             Take(o, created: true);
         }
 
@@ -203,6 +233,9 @@ internal sealed partial class PgScriptRun
         var owners = items.Where(o => o.Type == DbObjectType.Schema).Select(o => o.Properties.GetValueOrDefault("owner")).OfType<string>();
         var wanted = owners.Concat(RolesOf(items.Where(o => o.Type == DbObjectType.Table))).Distinct(StringComparer.Ordinal).ToList();
         var roles = wanted.Count > 0 ? await probes.ExistingRolesAsync(wanted, ct) : [];
+        // AUTHORIZATION needs a login that may SET ROLE to the owner; anyone else's CREATE SCHEMA fails on it
+        var owning = owners.Where(r => roles?.Contains(r) == true).Distinct(StringComparer.Ordinal).ToList();
+        var assumable = owning.Count > 0 ? await probes.AssumableRolesAsync(owning, ct) : [];
 
         var ownedBy = OwnedByColumns(items);
         foreach (var o in items)
@@ -213,13 +246,16 @@ internal sealed partial class PgScriptRun
             {
                 case DbObjectType.Schema:
                     var owner = o.Properties.GetValueOrDefault("owner");
-                    if (owner is not null && roles is not null && roles.Contains(owner)) text.Append($"CREATE SCHEMA {PgDdl.Q(o.Name)} AUTHORIZATION {PgDdl.Q(owner)};\n");
+                    if (owner is not null && roles is not null && roles.Contains(owner) && assumable?.Contains(owner) == true)
+                        text.Append($"CREATE SCHEMA {PgDdl.Q(o.Name)} AUTHORIZATION {PgDdl.Q(owner)};\n");
                     else
                     {
                         text.Append($"CREATE SCHEMA {PgDdl.Q(o.Name)};\n");
                         if (owner is not null)
-                            review.Note(ReviewLog.NotApplied, "schema", o.Name, null,
-                                $"its owner {owner} {(roles is null ? "could not be looked up" : "does not exist")} on the target, so whoever runs the script owns it",
+                            review.Note(ReviewLog.NotApplied, "schema", o.Name, null, roles is null || !roles.Contains(owner)
+                                ? $"its owner {owner} {(roles is null ? "could not be looked up" : "does not exist")} on the target, so whoever runs the script owns it"
+                                : $"its owner {owner} is on the target, but {CannotBecome(owner, assumable)}, so whoever runs the script owns it. " +
+                                  $"Give it to {owner} as a user allowed to: ALTER SCHEMA {PgDdl.Q(o.Name)} OWNER TO {PgDdl.Q(owner)}",
                                 Missing.Name);
                     }
                     break;
@@ -366,7 +402,8 @@ internal sealed partial class PgScriptRun
         else
         {
             var lines = o.Columns.OrderBy(c => c.Ordinal).Select(c => "    " + ColumnDefinition(o, c)).ToList();
-            foreach (var k in o.Indexes.Where(IsKey).OrderBy(i => i.IsPrimaryKey ? 0 : i.IsUniqueConstraint ? 1 : 2).ThenBy(i => i.Name, StringComparer.Ordinal))
+            foreach (var k in o.Indexes.Where(i => IsKey(i) && !heldKeys.Contains(HeldKey(o, i.Name)))
+                         .OrderBy(i => i.IsPrimaryKey ? 0 : i.IsUniqueConstraint ? 1 : 2).ThenBy(i => i.Name, StringComparer.Ordinal))
                 lines.Add($"    CONSTRAINT {PgDdl.Q(k.Name)} {k.Definition}");
             checks = [.. o.Constraints.Where(c => c.Kind == ConstraintKind.Check).OrderBy(c => c.Name, StringComparer.Ordinal)];
             foreach (var c in checks.Where(c => !c.IsNotTrusted)) lines.Add($"    CONSTRAINT {PgDdl.Q(c.Name)} {c.Definition}");
@@ -386,6 +423,10 @@ internal sealed partial class PgScriptRun
                 "(ALTER TABLE ... ADD CONSTRAINT ... NOT NULL ... NOT VALID)", Missing.Name);
         foreach (var (seq, column) in owned)
             sb.Append($"ALTER SEQUENCE {PgDdl.Q(seq)} OWNED BY {PgDdl.Q(o)}.{PgDdl.Q(column)};\n");
+        // replica identity: FULL, NOTHING, or a key this CREATE TABLE writes (06 sets it on an index it builds)
+        if (p.GetValueOrDefault("replicaIdentity") is { } identity &&
+            (ReplicaIndex(o) is not { } index || o.Indexes.Any(i => i.Name == index && IsKey(i) && !heldKeys.Contains(HeldKey(o, i.Name)))))
+            sb.Append($"ALTER TABLE {PgDdl.Q(o)} REPLICA IDENTITY {identity};\n");
 
         var held = false;
         foreach (var (key, policy) in PoliciesOf(o))
@@ -406,15 +447,123 @@ internal sealed partial class PgScriptRun
         return sb.ToString();
     }
 
-    /// <summary>A table's keys and validated checks as CONSTRAINT lines of CREATE TABLE; <paramref name="checks"/> gets every check (NOT VALID ones are added after).</summary>
-    private static List<string> LocalConstraints(DbObject table, out List<ConstraintInfo> checks)
+    /// <summary>
+    /// A table's keys and validated checks as CONSTRAINT lines of CREATE TABLE (a key whose name the target uses is left
+    /// out); <paramref name="checks"/> gets every check (NOT VALID ones are added after).
+    /// </summary>
+    private List<string> LocalConstraints(DbObject table, out List<ConstraintInfo> checks)
     {
-        var lines = table.Indexes.Where(IsKey).OrderBy(i => i.IsPrimaryKey ? 0 : i.IsUniqueConstraint ? 1 : 2).ThenBy(i => i.Name, StringComparer.Ordinal)
+        var lines = table.Indexes.Where(i => IsKey(i) && !heldKeys.Contains(HeldKey(table, i.Name))).OrderBy(i => i.IsPrimaryKey ? 0 : i.IsUniqueConstraint ? 1 : 2).ThenBy(i => i.Name, StringComparer.Ordinal)
             .Select(k => $"    CONSTRAINT {PgDdl.Q(k.Name)} {k.Definition}").ToList();
         checks = [.. table.Constraints.Where(c => c.Kind == ConstraintKind.Check).OrderBy(c => c.Name, StringComparer.Ordinal)];
         lines.AddRange(checks.Where(c => !c.IsNotTrusted).Select(c => $"    CONSTRAINT {PgDdl.Q(c.Name)} {c.Definition}"));
         return lines;
     }
+
+    /// <summary>Why the login cannot make <paramref name="owner"/> a schema's owner (<paramref name="assumable"/> null: it could not be asked).</summary>
+    private static string CannotBecome(string owner, HashSet<string>? assumable) => assumable is null
+        ? $"whether the login these scripts were made with may SET ROLE to {owner} could not be checked (CREATE SCHEMA ... AUTHORIZATION and ALTER SCHEMA ... OWNER TO need that)"
+        : $"the login these scripts were made with may not SET ROLE to {owner}, which CREATE SCHEMA ... AUTHORIZATION and ALTER SCHEMA ... OWNER TO need";
+
+    /// <summary>Keys (table key, name) 03 leaves out of a CREATE TABLE because the target uses their name.</summary>
+    private readonly HashSet<string> heldKeys = new(StringComparer.Ordinal);
+
+    private static string HeldKey(DbObject table, string key) => $"{table.Key}\0{key}";
+
+    /// <summary>The keys a CREATE TABLE of 03 names itself: a partition's own, not those it gets from its parent.</summary>
+    private IEnumerable<IndexInfo> WrittenKeys(DbObject table) => Local(table, Src).Indexes.Where(IsKey);
+
+    /// <summary>
+    /// Why a new partition of a table the target has cannot be attached yet: the target's default partition of that
+    /// table holds rows that belong in the new bounds (PostgreSQL refuses it then), or holds rows and which ones belong
+    /// cannot be told. Null when it can go. A probe that cannot run is said so, and the partition is created.
+    /// </summary>
+    private async Task<string?> DefaultPartitionHoldsAsync(DbObject partition)
+    {
+        if (ParentOf(partition) is not { } parent || !t.TryGetValue(parent.Key, out var theirParent)) return null;
+        var bound = partition.Properties.GetValueOrDefault("partitionBound") ?? "";
+        if (bound == "DEFAULT") return null;
+        var of = partition.Properties.GetValueOrDefault("partitionOf");
+        if (Tgt.Objects.FirstOrDefault(o => o.Type == DbObjectType.Table && o.Properties.GetValueOrDefault("partitionOf") == of &&
+                                            o.Properties.GetValueOrDefault("partitionBound") == "DEFAULT") is not { } fallback) return null;
+        var rows = BoundPredicate(theirParent.Properties.GetValueOrDefault("partitionBy"), bound) is { } predicate
+            ? await probes.RowsWhereAsync(PgDdl.Q(fallback), predicate, $"rows of {PgDdl.Q(fallback)} that belong in {Display(partition)}", ct)
+            : await probes.RowCountAsync(PgDdl.Q(fallback), ct) is { Count: > 0 } all
+                ? new ProbeCount(all.Count, "which of them fall in its bounds cannot be told from its partition key")
+                : new ProbeCount(0);
+        if (rows.Count is null)
+            review.Note(ReviewLog.NotApplied, Kind(partition), Display(partition), null,
+                $"whether the target's default partition {fallback.FullName} holds rows that belong in it could not be checked ({rows.NotCheckedReason}); " +
+                "if it does, its file fails and changes nothing", Missing.Name);
+        if (rows.Count is not > 0) return null;
+        return $"the target's default partition {fallback.FullName} holds {N(rows.Count.Value)} row(s) " +
+               (rows.NotCheckedReason is { } unsure ? $"({unsure})" : "that belong in its bounds") +
+               ", and PostgreSQL refuses a new partition while its default partition has rows that belong in it. Move those rows out of " +
+               $"{fallback.FullName}, then create the scripts again";
+    }
+
+    /// <summary>
+    /// The rows a range or list partition's bounds take, as a predicate on the partition key, for a key of one plain
+    /// column: "at" >= '2027-01-01' AND "at" < '2028-01-01'. Null for any other key or bound, or when the bound's values
+    /// name an object (a probe never runs such a value).
+    /// </summary>
+    internal static string? BoundPredicate(string? partitionBy, string bound)
+    {
+        var key = PartitionKeyRx().Match(partitionBy ?? "");
+        if (!key.Success) return null;
+        var column = key.Groups["col"].Value;
+        string? predicate = null;
+        if (key.Groups["kind"].Value == "RANGE" && RangeBoundRx().Match(bound) is { Success: true } range)
+        {
+            var lo = range.Groups["lo"].Value.Trim();
+            var hi = range.Groups["hi"].Value.Trim();
+            if (SplitValues(lo).Count != 1 || SplitValues(hi).Count != 1) return null;
+            predicate = string.Join(" AND ", new[]
+            {
+                $"{column} IS NOT NULL", lo == "MINVALUE" ? null : $"{column} >= {lo}", hi == "MAXVALUE" ? null : $"{column} < {hi}",
+            }.OfType<string>());
+        }
+        else if (key.Groups["kind"].Value == "LIST" && ListBoundRx().Match(bound) is { Success: true } list)
+        {
+            var values = SplitValues(list.Groups["v"].Value);
+            var plain = values.Where(v => v != "NULL").ToList();
+            predicate = string.Join(" OR ", new[]
+            {
+                plain.Count > 0 ? $"{column} IN ({string.Join(", ", plain)})" : null, values.Contains("NULL") ? $"{column} IS NULL" : null,
+            }.OfType<string>());
+        }
+        return predicate is { Length: > 0 } && !PgTargetProbes.NamesAnObject(predicate) ? predicate : null;
+    }
+
+    /// <summary>"'a', 'b,c', NULL" as its values: commas inside quotes stay.</summary>
+    private static List<string> SplitValues(string text)
+    {
+        var values = new List<string>();
+        var sb = new StringBuilder();
+        var quoted = false;
+        foreach (var c in text)
+        {
+            if (c == '\'') quoted = !quoted;
+            if (c == ',' && !quoted)
+            {
+                values.Add(sb.ToString().Trim());
+                sb.Clear();
+                continue;
+            }
+            sb.Append(c);
+        }
+        if (sb.Length > 0) values.Add(sb.ToString().Trim());
+        return values;
+    }
+
+    [GeneratedRegex(@"^(?<kind>RANGE|LIST) \((?<col>[a-z_][a-z0-9_$]*|""(?:[^""]|"""")+"")\)$", RegexOptions.CultureInvariant)]
+    private static partial Regex PartitionKeyRx();
+
+    [GeneratedRegex(@"^FOR VALUES FROM \((?<lo>.*)\) TO \((?<hi>.*)\)$", RegexOptions.Singleline | RegexOptions.CultureInvariant)]
+    private static partial Regex RangeBoundRx();
+
+    [GeneratedRegex(@"^FOR VALUES IN \((?<v>.*)\)$", RegexOptions.Singleline | RegexOptions.CultureInvariant)]
+    private static partial Regex ListBoundRx();
 
     /// <summary>Lower-cased base names of the *.sql files under the quarantine folder.</summary>
     private HashSet<string> QuarantineNames()
@@ -613,7 +762,14 @@ internal sealed partial class PgScriptRun
                     var after = Lines(o.Properties.GetValueOrDefault("columns"));
                     if (before.Count > after.Count || before.Where((c, i) => c != after[i]).Any())
                     {
-                        Hold($"its columns change ({string.Join(", ", before)} to {string.Join(", ", after)}): CREATE OR REPLACE VIEW can only add columns at the end");
+                        var why = $"its columns change ({string.Join(", ", before)} to {string.Join(", ", after)}): CREATE OR REPLACE VIEW can only add columns at the end";
+                        if (status == Diff.Different && Destroys)
+                        {
+                            // 11_destructive drops it and creates it again (or says why not); what reads it here waits for that
+                            held[o.Key] = why;
+                            viewColumnsChange[o.Key] = o;
+                        }
+                        else Hold(why + (status == Diff.Different ? ". With changes that can lose data included, 11_destructive drops and creates it again" : ""));
                         continue;
                     }
                     text = PgDdl.Statement(def);
@@ -626,6 +782,10 @@ internal sealed partial class PgScriptRun
                         text += $"ALTER TABLE {PgDdl.Q(o.Schema, o.ParentName ?? "")} ENABLE TRIGGER {PgDdl.Q(o.Name)};\n";
                     def = text.TrimEnd();   // the module text the file carries
                     break;
+                case DbObjectType.MaterializedView when IndexesAloneDiffer(o, tgt):
+                    // its query is the same: 06 builds, rebuilds (and 11 drops) its indexes, and it keeps its rows
+                    if (!Selected(ScriptSection.Indexes)) Hold("only its indexes differ: 06_indexes changes them, and it is not selected");
+                    continue;
                 default:
                     Hold("a materialized view cannot be replaced in place: DROP and CREATE would empty it and break what uses it");
                     continue;
@@ -698,6 +858,7 @@ internal sealed partial class PgScriptRun
 
         foreach (var o in items)
         {
+            if (status == Diff.Different) replacedIn10[o.Key] = o;
             var (_, text, module) = planned[o.Key];
             review.Note(status == Diff.Different ? ReviewLog.DifferentModulesFile : ReviewLog.FormattingNotApplied, Kind(o), Display(o), null,
                 status == Diff.Different
@@ -707,6 +868,37 @@ internal sealed partial class PgScriptRun
                 Header(folder, Kind(o), Display(o)) + NotCompileChecked + text, NameOf(o), module));
         }
     }
+
+    /// <summary>
+    /// Two materialized views whose definitions differ in their indexes alone (the reader writes each index on a line of
+    /// its own after the query, and its own rules after those): the same query, options and rules.
+    /// </summary>
+    private static bool IndexesAloneDiffer(DbObject src, DbObject tgt) =>
+        src.Type == DbObjectType.MaterializedView && tgt.Type == DbObjectType.MaterializedView &&
+        WithoutIndexes(src) == WithoutIndexes(tgt) && !src.Indexes.Select(i => i.Definition).SequenceEqual(tgt.Indexes.Select(i => i.Definition));
+
+    private static string WithoutIndexes(DbObject mv)
+    {
+        var lines = (mv.Definition ?? "").Split('\n');
+        var skip = mv.Indexes.Select(i => i.Definition + ";").ToHashSet(StringComparer.Ordinal);
+        return string.Join("\n", lines.Where(l => !skip.Contains(l)));
+    }
+
+    /// <summary>The materialized views both sides have whose indexes alone differ, in name order: 06 plans their indexes as a table's.</summary>
+    private IEnumerable<(DbObject Src, DbObject Tgt)> ChangedMatviewIndexes() =>
+        Src.Objects.Where(o => o.Type == DbObjectType.MaterializedView && InScope(o) && !IsExcluded(o) && StatusOf(o) is Diff.Different or Diff.Formatting &&
+                               IndexesAloneDiffer(o, Target(o)!))
+            .OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal)
+            .Select(o => (o, Target(o)!));
+
+    /// <summary>Key -> the source's version of each module 10 replaces in this run.</summary>
+    private readonly Dictionary<string, DbObject> replacedIn10 = new(StringComparer.Ordinal);
+
+    /// <summary>Key -> the source's version of each view 10 cannot replace in place because its columns change: 11's to drop and create again.</summary>
+    private readonly Dictionary<string, DbObject> viewColumnsChange = new(StringComparer.Ordinal);
+
+    /// <summary>Widenings 04 leaves to 11 because only views read the column on the target: 11 drops and creates them again around it.</summary>
+    private readonly List<(DbObject Src, DbObject Tgt, ColumnInfo Column, ColumnInfo Theirs)> widenUnderViews = [];
 
     private static List<string> Lines(string? text) => [.. (text ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries)];
 
@@ -718,7 +910,7 @@ internal sealed partial class PgScriptRun
         foreach (var o in Src.Objects.Where(o => InScope(o) && !IsExcluded(o) && StatusOf(o) == Diff.Different && !altered.Contains(o.Key) &&
                                                  o.Type is DbObjectType.Schema or DbObjectType.EnumType or DbObjectType.Domain or DbObjectType.CompositeType
                                                      or DbObjectType.Sequence or DbObjectType.Extension or DbObjectType.RangeType or DbObjectType.Collation
-                                                     or DbObjectType.Operator))
+                                                     or DbObjectType.Operator or DbObjectType.ForeignTable))
             review.Hold(ReviewLog.NotApplied, Kind(o), Display(o), null, o.Type switch
             {
                 DbObjectType.EnumType => EnumCannotAdd(o) ?? "04_columntypes adds a missing enum label, and it is not selected",
@@ -730,6 +922,8 @@ internal sealed partial class PgScriptRun
                     $"the extension differs (source: version {o.Properties.GetValueOrDefault("version")} in schema {o.Properties.GetValueOrDefault("schema")}; target: " +
                     $"version {Target(o)!.Properties.GetValueOrDefault("version")} in schema {Target(o)!.Properties.GetValueOrDefault("schema")}). Extensions are " +
                     $"changed by hand, as a user allowed to: ALTER EXTENSION {PgDdl.Q(o.Name)} UPDATE, or SET SCHEMA",
+                DbObjectType.ForeignTable =>
+                    "changes to a foreign table are not scripted: change it by hand as a user allowed to (ALTER FOREIGN TABLE ...), or drop and create it again",
                 DbObjectType.RangeType or DbObjectType.Collation =>
                     $"a {Kind(o)} cannot be changed in place: it would have to be dropped and created again, with everything that uses it. Do it by hand",
                 _ => $"changes to an existing {Kind(o)} are not scripted in this version (ALTER TYPE ... ADD, DROP or ALTER ATTRIBUTE by hand)",
@@ -752,7 +946,7 @@ internal sealed partial class PgScriptRun
                 var isRule = key.StartsWith(PgCanonicalWriter.RulePrefix, StringComparison.Ordinal);
                 // what 05 (policies, row level security, logging, storage options) and 07 (rules) plan or hold themselves
                 var folder = isRule ? ScriptSection.Triggers
-                    : isPolicy || key is "rowSecurity" or "forceRowSecurity" or "persistence" or "options" or "ofType" ? ScriptSection.Constraints
+                    : isPolicy || key is "rowSecurity" or "forceRowSecurity" or "persistence" or "options" or "ofType" or "replicaIdentity" ? ScriptSection.Constraints
                     : (ScriptSection?)null;
                 if (folder is { } f && Selected(f)) continue;
                 var name = isPolicy ? $"policy {key[PgCanonicalWriter.PolicyPrefix.Length..]}" : isRule ? $"rule {key[PgCanonicalWriter.RulePrefix.Length..]}" : key;

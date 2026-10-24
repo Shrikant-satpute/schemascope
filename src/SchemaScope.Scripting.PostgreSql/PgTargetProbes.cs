@@ -127,6 +127,24 @@ public partial class PgTargetProbes(string label, string connectionString, int t
     }
 
     /// <summary>
+    /// Rows matching <paramref name="predicate"/>, one SchemaScope builds from the source's catalog (a partition's bounds
+    /// as literals on its key column) and that names no object, so running it reads rows and nothing else.
+    /// </summary>
+    public Task<ProbeCount> RowsWhereAsync(string table, string predicate, string what, CancellationToken ct)
+    {
+        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        if (NamesAnObject(predicate)) return NotRun(what, "the predicate names a function, operator or type, which is not run on the target");
+        return CountAsync(what, $"SELECT count(*) FROM {table} WHERE {predicate}", ct);
+    }
+
+    /// <summary>A sequence's current value (last_value), which ALTER SEQUENCE checks against a new MINVALUE and MAXVALUE.</summary>
+    public Task<ProbeCount> SequenceValueAsync(string sequence, CancellationToken ct)
+    {
+        if (!CheckExistingData) return Task.FromResult(new ProbeCount(null, DataOff));
+        return ScalarAsync($"current value of sequence {sequence}", $"SELECT last_value FROM {sequence}", [], data: true, ct);
+    }
+
+    /// <summary>
     /// Rows a CHECK would refuse. The expression is the source's and runs once per row of the target, so it is run only
     /// when it names no user object (a function, an operator or a domain's own check could do anything, and READ ONLY
     /// does not stop it reaching another server) and every function it calls is IMMUTABLE on the target. PostgreSQL
@@ -237,6 +255,43 @@ public partial class PgTargetProbes(string label, string connectionString, int t
         catch (Exception ex) when (Failed(ex, ct))
         {
             Note("roles on the target", ProbeResultKind.NotChecked, PgConnectionService.MessageOf(ex));
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Which of <paramref name="roles"/> this login may SET ROLE to (a superuser to any), as CREATE SCHEMA ... AUTHORIZATION
+    /// and ALTER SCHEMA ... OWNER TO require (PostgreSQL 16 asks for the SET option of the membership, older versions for
+    /// membership); null when that could not be asked.
+    /// </summary>
+    public async Task<HashSet<string>?> AssumableRolesAsync(IReadOnlyCollection<string> roles, CancellationToken ct)
+    {
+        if (roles.Count == 0) return [];
+        var conn = await ConnectAsync(ct);
+        if (conn is null)
+        {
+            Note("roles this login may become", ProbeResultKind.NotChecked, connectFailure ?? "no connection");
+            return null;
+        }
+        try
+        {
+            await using var tx = await conn.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+            await using (var setup = new NpgsqlCommand(PgSchemaReader.SessionSetup(timeoutSeconds), conn, tx)) await setup.ExecuteNonQueryAsync(ct);
+            await using var cmd = new NpgsqlCommand("""
+                SELECT r.rolname::text FROM pg_roles r
+                WHERE r.rolname = ANY($1)
+                  AND pg_has_role(current_user, r.oid, CASE WHEN current_setting('server_version_num')::int >= 160000 THEN 'SET' ELSE 'MEMBER' END)
+                """, conn, tx);
+            cmd.Parameters.AddWithValue(roles.ToArray());
+            var found = new HashSet<string>(StringComparer.Ordinal);
+            await using (var r = await cmd.ExecuteReaderAsync(ct))
+                while (await r.ReadAsync(ct)) found.Add(r.GetString(0));
+            await tx.RollbackAsync(ct);
+            return found;
+        }
+        catch (Exception ex) when (Failed(ex, ct))
+        {
+            Note("roles this login may become", ProbeResultKind.NotChecked, PgConnectionService.MessageOf(ex));
             return null;
         }
     }

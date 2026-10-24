@@ -51,6 +51,9 @@ public static class PgCanonicalWriter
     /// <summary>A table's rules (CREATE RULE) sit in its <see cref="DbObject.Properties"/> under this prefix and their name.</summary>
     public const string RulePrefix = "rule:";
 
+    /// <summary>A foreign table's column options (OPTIONS (...) of one column) sit in its <see cref="DbObject.Properties"/> under this prefix and the column's name.</summary>
+    public const string ColumnOptionsPrefix = "columnOptions:";
+
     public static string Q(string name) => "\"" + name.Replace("\"", "\"\"") + "\"";
 
     public static string Write(DbObject o, CompareOptions opt) => o.Type switch
@@ -65,8 +68,30 @@ public static class PgCanonicalWriter
         DbObjectType.RangeType => WriteRange(o),
         DbObjectType.Collation => WriteCollation(o),
         DbObjectType.Operator => WriteOperator(o),
+        DbObjectType.ForeignTable => WriteForeignTable(o, opt),
         _ => o.Definition ?? ""
     };
+
+    /// <summary>
+    /// CREATE FOREIGN TABLE with its columns (each with its own OPTIONS), checks, server and options, and where it hangs
+    /// (PARTITION OF or INHERITS). Its rows live on the other server and are never compared.
+    /// </summary>
+    public static string WriteForeignTable(DbObject o, CompareOptions opt)
+    {
+        var p = o.Properties;
+        var lines = o.Columns.OrderBy(c => c.Ordinal).Select(c => "    " + ColumnLine(c, o, opt) +
+            (p.GetValueOrDefault(ColumnOptionsPrefix + c.Name) is { Length: > 0 } options ? $" OPTIONS ({options})" : "")).ToList();
+        lines.AddRange(o.Constraints.Where(x => x.Kind == ConstraintKind.Check).OrderBy(x => Named(x.IsSystemNamed, opt) ? x.Name : x.Definition, StringComparer.Ordinal)
+            .Select(ck => "    " + (Named(ck.IsSystemNamed, opt) ? $"CONSTRAINT {Q(ck.Name)} " : "") + ck.Definition + (ck.IsNotTrusted ? " NOT VALID" : "")));
+        var sb = new StringBuilder($"CREATE FOREIGN TABLE {Q(o.Schema)}.{Q(o.Name)} (\n{string.Join(",\n", lines)}\n)");
+        if (p.GetValueOrDefault("inherits") is { Length: > 0 } inherits) sb.Append($" INHERITS ({inherits})");
+        sb.Append($" SERVER {p.GetValueOrDefault("server")}");
+        if (p.GetValueOrDefault("options") is { Length: > 0 } tableOptions) sb.Append($" OPTIONS ({tableOptions})");
+        sb.Append(';');
+        if (p.GetValueOrDefault("partitionOf") is { Length: > 0 } parent)
+            sb.Append($"\nALTER TABLE ONLY {parent} ATTACH PARTITION {Q(o.Schema)}.{Q(o.Name)} {p.GetValueOrDefault("partitionBound")};");
+        return sb.ToString();
+    }
 
     /// <summary>
     /// CREATE OPERATOR with its function, argument types, commutator, negator, estimators, HASHES and MERGES. The name
@@ -198,7 +223,7 @@ public static class PgCanonicalWriter
         foreach (var ix in o.Indexes
                      .Where(i => !i.IsPrimaryKey && !i.IsUniqueConstraint && i.TypeDesc != ExcludeConstraint)
                      .OrderBy(i => i.Name, StringComparer.Ordinal))
-            sb.Append(ix.Definition).Append(";\n");
+            sb.Append(IndexText(ix.Definition, opt.IgnoreCollation)).Append(";\n");
 
         foreach (var fk in o.ForeignKeys.OrderBy(f => f.Name, StringComparer.Ordinal))
             sb.Append($"ALTER TABLE {Q(o.Schema)}.{Q(o.Name)} ADD CONSTRAINT {Q(fk.Name)} {fk.Definition};\n");
@@ -206,6 +231,7 @@ public static class PgCanonicalWriter
         // row level security: whether it is on, whether it binds the owner too, and every policy
         if (p.ContainsKey("rowSecurity")) sb.Append($"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;\n");
         if (p.ContainsKey("forceRowSecurity")) sb.Append($"ALTER TABLE {table} FORCE ROW LEVEL SECURITY;\n");
+        if (p.GetValueOrDefault("replicaIdentity") is { Length: > 0 } replica) sb.Append($"ALTER TABLE {table} REPLICA IDENTITY {replica};\n");
         foreach (var policy in p.Where(kv => kv.Key.StartsWith(PolicyPrefix, StringComparison.Ordinal))
                      .OrderBy(kv => kv.Key, StringComparer.Ordinal))
             sb.Append(policy.Value).Append('\n');
@@ -218,6 +244,88 @@ public static class PgCanonicalWriter
     }
 
     private static bool Named(bool systemNamed, CompareOptions opt) => !(opt.IgnoreSystemNamedConstraints && systemNamed);
+
+    /// <summary>
+    /// An index's pg_get_indexdef as the compare sees it: with collations ignored, without its COLLATE clauses.
+    /// pg_get_indexdef writes COLLATE only where the index's collation is not its column's, so with the columns'
+    /// collations ignored, the same index reads differently on two sides whose columns differ in collation alone.
+    /// </summary>
+    public static string IndexText(string? definition, bool ignoreCollation) =>
+        ignoreCollation ? WithoutCollate(definition ?? "") : definition ?? "";
+
+    /// <summary>Every COLLATE name (bare, quoted, or schema-qualified) outside literals and quoted names taken out.</summary>
+    internal static string WithoutCollate(string text)
+    {
+        if (!text.Contains("COLLATE", StringComparison.OrdinalIgnoreCase)) return text;
+        static bool Ident(char c) => char.IsLetterOrDigit(c) || c is '_' or '$';
+        var sb = new StringBuilder(text.Length);
+        var i = 0;
+        // a quoted name or a bare word starting at i, and where it ends
+        int Name(int at)
+        {
+            if (at < text.Length && text[at] == '"')
+            {
+                for (var j = at + 1; j < text.Length; j++)
+                    if (text[j] == '"') { if (j + 1 < text.Length && text[j + 1] == '"') j++; else return j + 1; }
+                return text.Length;
+            }
+            var end = at;
+            while (end < text.Length && Ident(text[end])) end++;
+            return end;
+        }
+        while (i < text.Length)
+        {
+            var c = text[i];
+            if (c == '\'')
+            {
+                // a literal: '' doubles a quote, and in E'...' a backslash escapes the next character
+                var escapes = i > 0 && text[i - 1] is 'E' or 'e' && (i < 2 || !Ident(text[i - 2]));
+                var j = i + 1;
+                for (; j < text.Length; j++)
+                {
+                    if (escapes && text[j] == '\\') { j++; continue; }
+                    if (text[j] != '\'') continue;
+                    if (j + 1 < text.Length && text[j + 1] == '\'') { j++; continue; }
+                    break;
+                }
+                var stop = Math.Min(j + 1, text.Length);
+                sb.Append(text, i, stop - i);
+                i = stop;
+                continue;
+            }
+            if (c == '"')
+            {
+                var stop = Name(i);
+                sb.Append(text, i, stop - i);
+                i = stop;
+                continue;
+            }
+            if (string.CompareOrdinal(text, i, "COLLATE", 0, 7) == 0 && (i == 0 || !Ident(text[i - 1])) && (i + 7 >= text.Length || !Ident(text[i + 7])))
+            {
+                var at = i + 7;
+                while (at < text.Length && text[at] == ' ') at++;
+                var end = Name(at);
+                if (end < text.Length && text[end] == '.') end = Name(end + 1);
+                if (end > at)
+                {
+                    while (sb.Length > 0 && sb[^1] == ' ') sb.Length--;
+                    i = end;
+                    continue;
+                }
+            }
+            if (Ident(c))
+            {
+                var stop = i;
+                while (stop < text.Length && Ident(text[stop])) stop++;
+                sb.Append(text, i, stop - i);
+                i = stop;
+                continue;
+            }
+            sb.Append(c);
+            i++;
+        }
+        return sb.ToString();
+    }
 
     /// <summary>
     /// A table's WITH (...) options as the reader keeps them ("a=1, b=2", in order), fillfactor left out when

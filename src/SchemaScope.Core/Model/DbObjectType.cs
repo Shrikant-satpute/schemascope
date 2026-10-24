@@ -35,7 +35,9 @@ public enum DbObjectType
     /// <summary>PostgreSQL: a collation a user made (CREATE COLLATION).</summary>
     Collation = 18,
     /// <summary>PostgreSQL: an operator a user made (CREATE OPERATOR), told apart by its argument types.</summary>
-    Operator = 19
+    Operator = 19,
+    /// <summary>PostgreSQL: a table whose rows live on another server (CREATE FOREIGN TABLE ... SERVER).</summary>
+    ForeignTable = 20
 }
 
 public static class DbObjectTypeExtensions
@@ -63,6 +65,7 @@ public static class DbObjectTypeExtensions
         DbObjectType.RangeType => "Range type",
         DbObjectType.Collation => "Collation",
         DbObjectType.Operator => "Operator",
+        DbObjectType.ForeignTable => "Foreign table",
         _ => t.ToString()
     };
 

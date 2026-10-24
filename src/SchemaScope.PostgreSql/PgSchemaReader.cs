@@ -134,12 +134,13 @@ public sealed class PgSchemaReader : ISchemaReader
 
     private sealed record Rel(uint Oid, string Schema, string Name, char Kind, string? ViewDef, char Persistence,
         bool RowSecurity, bool ForceRowSecurity, string[] Options, string? PartitionKey, bool IsPartition,
-        string? PartitionBound, string[] Parents, string? OfType);
+        string? PartitionBound, string[] Parents, string? OfType, char ReplicaIdentity, string? ReplicaIndex, string? ForeignServer,
+        string[] ForeignOptions);
     private sealed record Policy(uint Rel, string Name, bool Permissive, char Command, string[] Roles, string? Using,
         string? WithCheck);
     private sealed record Col(uint Rel, int Num, string Name, string Type, bool NotNull, string Identity, string Generated,
         string? Default, string? Collation, long? SeqStart, long? SeqIncrement, long? SeqMin, long? SeqMax, long? SeqCache, bool? SeqCycle,
-        bool NotNullNotValid);
+        bool NotNullNotValid, string[] FdwOptions);
     private sealed record Con(uint Rel, uint TypeOid, string Name, char Kind, string Definition, bool Validated,
         string[] Columns, string? RefSchema, string? RefTable, string[] RefColumns, string DeleteAction, string UpdateAction);
     private sealed record Idx(uint Rel, string Name, string Method, bool Unique, string Definition, string? Predicate,
@@ -196,7 +197,7 @@ public sealed class PgSchemaReader : ISchemaReader
         while (await r.ReadAsync(ct))
             raw.Relations.Add(new Rel(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), ViewText(Expr(r, 4), versionNum),
                 Ch(r, 5), r.GetBoolean(6), r.GetBoolean(7), r.GetFieldValue<string[]>(8), Expr(r, 9), r.GetBoolean(10), Expr(r, 11),
-                r.GetFieldValue<string[]>(12), Str(r, 13)));
+                r.GetFieldValue<string[]>(12), Str(r, 13), Ch(r, 14), Str(r, 15), Str(r, 16), r.GetFieldValue<string[]>(17)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -204,7 +205,7 @@ public sealed class PgSchemaReader : ISchemaReader
                 Str(r, 5) ?? "", Str(r, 6) ?? "", Expr(r, 7), Str(r, 8),
                 r.IsDBNull(9) ? null : r.GetInt64(9), r.IsDBNull(10) ? null : r.GetInt64(10), r.IsDBNull(11) ? null : r.GetInt64(11),
                 r.IsDBNull(12) ? null : r.GetInt64(12), r.IsDBNull(13) ? null : r.GetInt64(13), r.IsDBNull(14) ? null : r.GetBoolean(14),
-                r.GetBoolean(15)));
+                r.GetBoolean(15), r.GetFieldValue<string[]>(16)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -313,11 +314,32 @@ public sealed class PgSchemaReader : ISchemaReader
 
         foreach (var rel in raw.Relations)
         {
-            var type = rel.Kind switch { 'v' => DbObjectType.View, 'm' => DbObjectType.MaterializedView, _ => DbObjectType.Table };
+            var type = rel.Kind switch
+            {
+                'v' => DbObjectType.View, 'm' => DbObjectType.MaterializedView, 'f' => DbObjectType.ForeignTable, _ => DbObjectType.Table
+            };
             if (options.IsExcluded(type, rel.Schema, rel.Name)) continue;
             var o = New(type, rel.Schema, rel.Name);
 
-            if (type == DbObjectType.Table)
+            if (type == DbObjectType.ForeignTable)
+            {
+                // its columns (with their own options), defaults and checks, its server and options, where it hangs
+                o.Columns = [.. columns[rel.Oid].Select(Column)];
+                foreach (var c in columns[rel.Oid].Where(c => c.Default is not null && c.Generated == ""))
+                    o.Constraints.Add(new ConstraintInfo { Kind = ConstraintKind.Default, ColumnName = c.Name, Definition = c.Default!, IsSystemNamed = true });
+                foreach (var con in constraints[rel.Oid].Where(c => c.Kind == 'c')) AddConstraint(o, con);
+                foreach (var c in columns[rel.Oid].Where(c => c.FdwOptions.Length > 0))
+                    o.Properties[PgCanonicalWriter.ColumnOptionsPrefix + c.Name] = FdwOptions(c.FdwOptions);
+                o.Properties["server"] = rel.ForeignServer ?? "";
+                if (rel.ForeignOptions.Length > 0) o.Properties["options"] = FdwOptions(rel.ForeignOptions);
+                if (rel.IsPartition && rel.Parents.Length > 0)
+                {
+                    o.Properties["partitionOf"] = rel.Parents[0];
+                    o.Properties["partitionBound"] = rel.PartitionBound ?? "";
+                }
+                else if (rel.Parents.Length > 0) o.Properties["inherits"] = string.Join(", ", rel.Parents);
+            }
+            else if (type == DbObjectType.Table)
             {
                 o.Columns = [.. columns[rel.Oid].Select(Column)];
                 foreach (var c in columns[rel.Oid].Where(c => c.Default is not null && c.Generated == ""))
@@ -560,6 +582,11 @@ public sealed class PgSchemaReader : ISchemaReader
     /// key, the parent and bounds of a partition, plain inheritance, the type of a typed table, WITH (...) options, row level security (and FORCE)
     /// and each policy. Only what is set is recorded, so a plain table carries none of these.
     /// </summary>
+    /// <summary>A foreign table's or column's options ("name=value" each) as OPTIONS (...) takes them: name 'value', in name order.</summary>
+    private static string FdwOptions(string[] options) => string.Join(", ", options
+        .Select(x => x.Split('=', 2)).OrderBy(x => x[0], StringComparer.Ordinal)
+        .Select(x => $"{PgCanonicalWriter.Q(x[0])} '{(x.Length > 1 ? x[1] : "").Replace("'", "''")}'"));
+
     private static void TableFacts(DbObject o, Rel rel, IEnumerable<Policy> policies, CompareOptions options)
     {
         if (rel.Persistence == 'u') o.Properties["persistence"] = "UNLOGGED";
@@ -579,6 +606,16 @@ public sealed class PgSchemaReader : ISchemaReader
         if (rel.Options.Order(StringComparer.Ordinal).ToList() is { Count: > 0 } storage) o.Properties["options"] = string.Join(", ", storage);
         if (rel.RowSecurity) o.Properties["rowSecurity"] = "ENABLE";
         if (rel.ForceRowSecurity) o.Properties["forceRowSecurity"] = "FORCE";
+        // what logical replication sends of an updated or deleted row, the default (the primary key) left out. USING
+        // INDEX whose index is gone sends nothing, as NOTHING does
+        var replica = rel.ReplicaIdentity switch
+        {
+            'f' => "FULL",
+            'n' => "NOTHING",
+            'i' => rel.ReplicaIndex is { } index ? $"USING INDEX {index}" : "NOTHING",
+            _ => null,
+        };
+        if (replica is not null) o.Properties["replicaIdentity"] = replica;
 
         foreach (var p in policies)
         {

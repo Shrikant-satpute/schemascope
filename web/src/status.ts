@@ -140,4 +140,5 @@ export const TYPE_ORDER = [
   'rangeType',
   'collation',
   'operator',
+  'foreignTable',
 ] as const

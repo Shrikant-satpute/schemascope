@@ -7,6 +7,10 @@ public sealed class SchemaSnapshot
 {
     public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
+
+    /// <summary>The port, for engines that keep it apart from the host (PostgreSQL); null for SQL Server.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? Port { get; set; }
     public string Database { get; set; } = "";
     /// <summary>Friendly name shown in the UI, e.g. "Davi (prod)".</summary>
     public string Label { get; set; } = "";

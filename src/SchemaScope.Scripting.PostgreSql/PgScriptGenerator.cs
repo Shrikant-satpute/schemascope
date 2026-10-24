@@ -25,7 +25,9 @@ namespace SchemaScope.Scripting.PostgreSql;
 ///   10 different code: CREATE OR REPLACE when the signature and the return type are unchanged, otherwise held
 ///   11 destructive: only with "Include changes that can lose data" - drops of what only the target has and column
 ///      changes that can lose data, each after a read-only probe, every DROP RESTRICT; never run by RUN.ps1
-///   02, 08, 09: not applicable on PostgreSQL
+///   08 formatting (code): CREATE OR REPLACE for code that differs only in layout, comments or letter case
+///   09 formatting (names): RENAME COLUMN for a column whose name differs only by letter case
+///   02: not applicable on PostgreSQL
 /// </summary>
 public sealed class PgScriptGenerator : IScriptGenerator
 {
@@ -95,12 +97,10 @@ public sealed class PgScriptGenerator : IScriptGenerator
                 ? ["No CONCURRENTLY: each index is built inside its file's transaction.", "A foreign key that needs a unique index of this folder comes after the indexes."]
                 : ["No CONCURRENTLY: each index is built inside its file's transaction."]);
             Add(run.Triggers, ScriptSection.Triggers, "A trigger's file also creates its trigger function when the target lacks it.");
-            if (options.Sections.Contains(ScriptSection.Formatting))
-            {
-                folders.Add(NotApplicable(FormattingModulesFolder, "Formatting (code)",
-                    "PostgreSQL keeps each body as written; code that differs only in layout is left as it is."));
-                folders.Add(NotApplicable(FormattingTablesFolder, "Formatting (names)", "PostgreSQL names are exact; nothing differs only by letter case."));
-            }
+            Add(run.FormattingModules, ScriptSection.Formatting,
+                "Code whose text differs only in layout, comments or letter case is re-created with the source's text (CREATE OR REPLACE, the signature unchanged).");
+            Add(run.FormattingTables, ScriptSection.Formatting,
+                "A column whose name differs from the source's only by letter case is renamed (RENAME COLUMN), keeping its values.");
             Add(run.Different, ScriptSection.DifferentModules);
             if (options.IncludeDestructive) folders.Add(Write(writer, run.Destructive, runner, [.. run.Destructive.Notes]));
             folders = [.. folders.OrderBy(f => f.Folder, StringComparer.Ordinal)];
@@ -231,13 +231,13 @@ public sealed class PgScriptGenerator : IScriptGenerator
     {
         [ColumnsFolder] = "Adds columns the source has on tables both sides have: only those that are nullable or have a default (or are identity or generated). A NOT NULL column with no default cannot be added to a table that has rows - see 99_review.",
         [TableTypesFolder] = "Not applicable: PostgreSQL has no table types.",
-        [MissingFolder] = "Creates the schemas, enum, domain and composite types, sequences, tables, views, materialized views, functions, procedures and aggregates the target lacks, in pg_depend order. Code is copied from the source's pg_get_*def text and is not compile-checked; it is created with plain CREATE, never OR REPLACE, so a file fails and changes nothing when the target already has that object. Extensions are only noted in 99_review. No triggers (see 07), no foreign keys (05) and no indexes (06).",
-        [ColumnTypesFolder] = "Widens columns (longer varchar, numeric with more digits, int to bigint) and relaxes NOT NULL to NULL where the source does. Never narrows, never tightens; held while a view or similar reads the column.",
-        [ConstraintsFolder] = "Adds defaults, checks, primary and unique keys and foreign keys the target lacks. On an existing table a check or foreign key is added NOT VALID (new rows are checked at once, without a long lock) and validated by a later file.",
+        [MissingFolder] = "Creates the schemas, collations, enum, range, domain and composite types, sequences, tables (partitions with PARTITION OF their parent, inheritance children with INHERITS), views, materialized views, functions, procedures and aggregates the target lacks, in pg_depend order. Code is copied from the source's pg_get_*def text and is not compile-checked; it is created with plain CREATE, never OR REPLACE, so a file fails and changes nothing when the target already has that object. Extensions are only noted in 99_review. No triggers (see 07), no foreign keys (05) and no indexes (06).",
+        [ColumnTypesFolder] = "Widens columns (longer varchar, numeric with more digits, int to bigint) and relaxes NOT NULL to NULL where the source does, and adds the labels an enum type lacks (one file each). Never narrows, never tightens; held while a view or similar reads the column.",
+        [ConstraintsFolder] = "Adds defaults, checks, primary and unique keys and foreign keys the target lacks, and brings existing objects in line where nothing can be lost: a changed default, a foreign key whose actions differ, row level security and its policies, storage options and logging, sequence options and owners, domain defaults and checks, schema owners. On an existing table a check or foreign key is added NOT VALID (new rows are checked at once, without a long lock) and validated by a later file.",
         [IndexesFolder] = "Adds indexes the target lacks, without CONCURRENTLY (it cannot run inside the file's transaction), so writes to the table wait while each one builds. An index of a partitioned table is built on every partition. A foreign key whose referenced columns only a unique index of this folder covers comes after the indexes.",
-        [TriggersFolder] = "Creates source triggers the target lacks, each with its trigger function when the target lacks that too. A trigger changes every write to its table, so this folder is never run by RUN.ps1.",
-        [FormattingModulesFolder] = "Not applicable: PostgreSQL keeps each body as written.",
-        [FormattingTablesFolder] = "Not applicable: PostgreSQL names are exact.",
+        [TriggersFolder] = "Creates source triggers the target lacks, each with its trigger function when the target lacks that too, and the tables' rules (CREATE RULE). A trigger or a rule changes every write to its table, so this folder is never run by RUN.ps1.",
+        [FormattingModulesFolder] = "Re-creates functions, procedures and views whose text differs from the source's only in layout, comments or letter case, with CREATE OR REPLACE and the source's text (the signature is unchanged, so nothing that uses them breaks). Never run by RUN.ps1.",
+        [FormattingTablesFolder] = "Renames columns whose names differ from the source's only by letter case (ALTER TABLE ... RENAME COLUMN), which keeps their values. PostgreSQL names are exact, so code that names a column the old way must change with it. Never run by RUN.ps1.",
         [DifferentFolder] = "Replaces functions, procedures, aggregates, views and triggers whose code really differs with CREATE OR REPLACE, when the signature, the return type (and a view's columns) allow it; anything else is held. Replaces the target's own code - read 99_review\\different_modules.md first.",
         [DestructiveFolder] = "**CAN LOSE DATA.** Drops what only the target has (tables with their rows, columns with their values, views, materialized views, functions, procedures, aggregates, triggers, sequences, domains and types, and defaults, checks, foreign keys, unique keys and indexes), narrows columns, turns NULL into NOT NULL, and replaces checks whose rule differs. Each change was checked against the data when generated; what could not be proven safe is held back in 99_review\\not_applied_destructive.md. Every DROP is RESTRICT. Never run by RUN.ps1 - see the caution below.",
     };
@@ -284,7 +284,7 @@ public sealed class PgScriptGenerator : IScriptGenerator
         sb.Append("- **04 first**: it only changes columns the target already has, before anything new can read them.\n");
         sb.Append("- **01 before 03**: new code and views read the new columns.\n");
         sb.Append("- **05 after 03**: foreign keys of new tables need every table to exist; a VALIDATE file comes after the file that adds its constraint.\n");
-        sb.Append("- **07 and 10 are never run by RUN.ps1.** Run each folder's `run_all.ps1` on its own when you have decided to, after RUN.ps1.\n");
+        sb.Append("- **07, 08, 09 and 10 are never run by RUN.ps1.** Run each folder's `run_all.ps1` on its own when you have decided to, after RUN.ps1.\n");
         var destructive = folders.Any(f => f.Folder == DestructiveFolder && f.Files > 0);
         if (destructive) sb.Append("- **11 is never run by RUN.ps1**, and comes last: after every other folder, and only once you have read the caution below.\n");
         sb.Append('\n');

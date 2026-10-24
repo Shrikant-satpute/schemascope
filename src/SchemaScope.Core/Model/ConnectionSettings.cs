@@ -86,7 +86,7 @@ public sealed class ConnectionSettings
 
     /// <summary>
     /// The one rule for releasing a stored secret: it only ever goes back to the
-    /// engine, server, port, login and auth mode it was saved against. The database
+    /// engine, server, port, login (its exact letter case, except on SQL Server) and auth mode it was saved against. The database
     /// may differ - one server is often compared against itself - because a database
     /// name cannot redirect a credential elsewhere. A raw connection string must also
     /// name the same hosts and port as the saved one; when either side cannot be read,
@@ -96,7 +96,9 @@ public sealed class ConnectionSettings
     {
         if (a.Engine != b.Engine || a.EffectivePort != b.EffectivePort ||
             !string.Equals(a.Server, b.Server, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(a.UserName ?? "", b.UserName ?? "", StringComparison.OrdinalIgnoreCase) ||
+            // SQL Server logins compare without case; a PostgreSQL (or MySQL) role named Postgres is not postgres
+            !string.Equals(a.UserName ?? "", b.UserName ?? "",
+                a.Engine == DatabaseEngine.SqlServer ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal) ||
             a.Auth != b.Auth ||
             a.UseRawConnectionString != b.UseRawConnectionString)
             return false;

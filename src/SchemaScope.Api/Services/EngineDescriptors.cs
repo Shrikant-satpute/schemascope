@@ -103,7 +103,9 @@ public static class EngineDescriptors
                     "Creates the triggers the target does not have, with their trigger functions. Never run by RUN.ps1.",
                     "Changes what every write to the table does - needs the module owner's OK.", true),
                 new(ScriptSection.Formatting, "08-09", "Formatting",
-                    "Not applicable: PostgreSQL keeps code as written and names exactly.", null, false),
+                    "Re-creates code that differs only in layout or comments from the source's text (08), and renames columns whose names " +
+                    "differ only by letter case (09). Never run by RUN.ps1.",
+                    "Replaces the target's text of that code, and renames columns that code may name in the old spelling.", true),
                 new(ScriptSection.DifferentModules, "10", "Different code",
                     "Replaces functions, procedures, views and triggers whose code really differs, with CREATE OR REPLACE where the signature allows. " +
                     "Never run by RUN.ps1.",
@@ -136,7 +138,7 @@ public static class EngineDescriptors
                     new(AuthMode.Password, "User name and password", "Password", true),
                 ],
                 new EngineFormText(
-                    ServerLabel: "Host", ServerHint: "host name or address; several: host1,host2",
+                    ServerLabel: "Host", ServerHint: "host name or address; several: host1,host2 (the port goes in Port)",
                     ServerPlaceholder: "localhost  or  db.internal",
                     ConnectionStringHint: "Anything Npgsql accepts, as key=value pairs (postgres:// URIs are not accepted).",
                     ConnectionStringPlaceholder: "Host=db.internal;Port=5432;Database=app;Username=app;Password=***;SSL Mode=VerifyFull",

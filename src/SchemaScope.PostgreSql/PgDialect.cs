@@ -48,6 +48,9 @@ public static class PgCanonicalWriter
     /// <summary>A table's row security policies sit in its <see cref="DbObject.Properties"/> under this prefix and their name.</summary>
     public const string PolicyPrefix = "policy:";
 
+    /// <summary>A table's rules (CREATE RULE) sit in its <see cref="DbObject.Properties"/> under this prefix and their name.</summary>
+    public const string RulePrefix = "rule:";
+
     public static string Q(string name) => "\"" + name.Replace("\"", "\"\"") + "\"";
 
     public static string Write(DbObject o, CompareOptions opt) => o.Type switch
@@ -59,6 +62,8 @@ public static class PgCanonicalWriter
         DbObjectType.EnumType => $"CREATE TYPE {Q(o.Schema)}.{Q(o.Name)} AS ENUM ({o.Properties.GetValueOrDefault("labels")});",
         DbObjectType.CompositeType => WriteComposite(o, opt),
         DbObjectType.Extension => WriteExtension(o),
+        DbObjectType.RangeType => WriteRange(o),
+        DbObjectType.Collation => WriteCollation(o),
         _ => o.Definition ?? ""
     };
 
@@ -70,6 +75,33 @@ public static class PgCanonicalWriter
 
     private static string WriteExtension(DbObject o) =>
         $"CREATE EXTENSION {Q(o.Name)} WITH SCHEMA {Q(o.Properties.GetValueOrDefault("schema") ?? "")} VERSION '{o.Properties.GetValueOrDefault("version")?.Replace("'", "''")}';";
+
+    /// <summary>CREATE TYPE ... AS RANGE with every option that is set (the multirange's name only when it is not the default).</summary>
+    public static string WriteRange(DbObject o)
+    {
+        var p = o.Properties;
+        var options = new List<string> { $"SUBTYPE = {p.GetValueOrDefault("subtype")}" };
+        if (p.GetValueOrDefault("subtypeOpClass") is { Length: > 0 } opclass) options.Add($"SUBTYPE_OPCLASS = {opclass}");
+        if (p.GetValueOrDefault("collation") is { Length: > 0 } collation) options.Add($"COLLATION = {collation}");
+        if (p.GetValueOrDefault("canonical") is { Length: > 0 } canonical) options.Add($"CANONICAL = {canonical}");
+        if (p.GetValueOrDefault("subtypeDiff") is { Length: > 0 } diff) options.Add($"SUBTYPE_DIFF = {diff}");
+        if (p.GetValueOrDefault("multirange") is { Length: > 0 } multi) options.Add($"MULTIRANGE_TYPE_NAME = {Q(o.Schema)}.{Q(multi)}");
+        return $"CREATE TYPE {Q(o.Schema)}.{Q(o.Name)} AS RANGE ({string.Join(", ", options)});";
+    }
+
+    /// <summary>CREATE COLLATION with its provider, locale (or lc_collate and lc_ctype for libc), determinism and ICU rules.</summary>
+    public static string WriteCollation(DbObject o)
+    {
+        static string Lit(string? v) => "'" + (v ?? "").Replace("'", "''") + "'";
+        var p = o.Properties;
+        var options = new List<string> { $"provider = {p.GetValueOrDefault("provider")}" };
+        if (p.TryGetValue("locale", out var locale)) options.Add($"locale = {Lit(locale)}");
+        if (p.TryGetValue("lc_collate", out var collate)) options.Add($"lc_collate = {Lit(collate)}");
+        if (p.TryGetValue("lc_ctype", out var ctype)) options.Add($"lc_ctype = {Lit(ctype)}");
+        if (p.GetValueOrDefault("deterministic") == "false") options.Add("deterministic = false");
+        if (p.TryGetValue("rules", out var rules)) options.Add($"rules = {Lit(rules)}");
+        return $"CREATE COLLATION {Q(o.Schema)}.{Q(o.Name)} ({string.Join(", ", options)});";
+    }
 
     private static string WriteSequence(DbObject o)
     {
@@ -156,6 +188,10 @@ public static class PgCanonicalWriter
         foreach (var policy in p.Where(kv => kv.Key.StartsWith(PolicyPrefix, StringComparison.Ordinal))
                      .OrderBy(kv => kv.Key, StringComparer.Ordinal))
             sb.Append(policy.Value).Append('\n');
+        // rules: what an INSERT, UPDATE or DELETE on the table really does
+        foreach (var rule in p.Where(kv => kv.Key.StartsWith(RulePrefix, StringComparison.Ordinal))
+                     .OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            sb.Append(rule.Value).Append('\n');
 
         return sb.ToString().TrimEnd('\n');
     }

@@ -41,13 +41,19 @@ internal static class PgCatalogQueries
 
     /// <summary>
     /// Every catalog set in one round trip, in this order: schemas, relations, columns, constraints, indexes,
-    /// routines, triggers, sequences, types, extensions, row security policies, dependencies.
+    /// routines, triggers, sequences, types, extensions, row security policies, collations, rules, dependencies.
     /// </summary>
     public static string Catalog(int versionNum) => string.Join("\n", Schemas, Relations, Columns(versionNum), Constraints,
-        Indexes, Routines, Triggers, Sequences, Types, Extensions, Policies, Dependencies);
+        Indexes, Routines, Triggers, Sequences, Types(versionNum), Extensions, Policies, Collations(versionNum), Rules,
+        Dependencies(versionNum));
 
+    // The public schema's owner is left out while it is the one each version gives it (the bootstrap superuser up to
+    // 14, pg_database_owner from 15) or the database's owner: one schema created on two versions is the same schema.
     private static readonly string Schemas = $"""
-        SELECT n.nspname, pg_get_userbyid(n.nspowner)
+        SELECT n.nspname,
+               CASE WHEN n.nspname = 'public' AND (n.nspowner = 10 OR pg_get_userbyid(n.nspowner) = 'pg_database_owner'
+                         OR n.nspowner = (SELECT d.datdba FROM pg_database d WHERE d.datname = current_database()))
+                    THEN '' ELSE pg_get_userbyid(n.nspowner) END
         FROM pg_namespace n
         WHERE {UserSchema("n")} AND {NotExtensionMember("pg_namespace", "n.oid")};
         """;
@@ -140,7 +146,8 @@ internal static class PgCatalogQueries
     /// <summary>
     /// Functions, procedures and aggregates. pg_get_functiondef refuses aggregates, so theirs is put together here
     /// from pg_aggregate. The overload signature is the argument types (oidvectortypes), what PostgreSQL itself keys a
-    /// routine on.
+    /// routine on. A function a type made for itself (a range type's constructors and its multirange's, pg_depend
+    /// deptype 'i') belongs to that type, as CREATE TYPE ... AS RANGE makes it, and is never listed.
     /// </summary>
     private static readonly string Routines = $"""
         SELECT p.oid, n.nspname, p.proname, p.prokind::text, p.proretset, oidvectortypes(p.proargtypes),
@@ -158,7 +165,8 @@ internal static class PgCatalogQueries
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         LEFT JOIN pg_aggregate ag ON ag.aggfnoid = p.oid
-        WHERE {UserSchema("n")} AND {NotExtensionMember("pg_proc", "p.oid")};
+        WHERE {UserSchema("n")} AND {NotExtensionMember("pg_proc", "p.oid")}
+          AND NOT EXISTS (SELECT 1 FROM pg_depend id WHERE id.classid = 'pg_proc'::regclass AND id.objid = p.oid AND id.deptype = 'i');
         """;
 
     // user triggers only: not the internal ones behind foreign keys, not the clones a partition gets from its parent
@@ -190,21 +198,36 @@ internal static class PgCatalogQueries
           AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'i');
         """;
 
-    // d domain, e enum, c composite - only a standalone one (CREATE TYPE ... AS), not every table's row type
-    private static readonly string Types = $"""
+    // d domain, e enum, r range, c composite - only a standalone one (CREATE TYPE ... AS), not every table's row type.
+    // A range's multirange (PostgreSQL 14, typtype 'm') is made with it and is not listed.
+    private static string Types(int versionNum) => $"""
         SELECT t.oid, n.nspname, t.typname, t.typtype::text, format_type(t.typbasetype, t.typtypmod), t.typnotnull,
                t.typdefault,
                CASE WHEN t.typtype = 'd' AND t.typcollation <> 0 AND t.typcollation <> bt.typcollation THEN
                     CASE WHEN cn.nspname = 'pg_catalog' THEN quote_ident(co.collname)
                          ELSE quote_ident(cn.nspname) || '.' || quote_ident(co.collname) END END,
                ARRAY(SELECT quote_literal(e.enumlabel) FROM pg_enum e WHERE e.enumtypid = t.oid ORDER BY e.enumsortorder),
-               t.typrelid
+               t.typrelid,
+               format_type(rg.rngsubtype, NULL),
+               CASE WHEN rg.rngsubopc <> 0 AND NOT op.opcdefault THEN quote_ident(opn.nspname) || '.' || quote_ident(op.opcname) END,
+               CASE WHEN rg.rngcollation <> 0 AND rg.rngcollation <> st.typcollation THEN
+                    CASE WHEN rcn.nspname = 'pg_catalog' THEN quote_ident(rco.collname)
+                         ELSE quote_ident(rcn.nspname) || '.' || quote_ident(rco.collname) END END,
+               CASE WHEN rg.rngcanonical <> 0 THEN rg.rngcanonical::regproc::text END,
+               CASE WHEN rg.rngsubdiff <> 0 THEN rg.rngsubdiff::regproc::text END,
+               {(versionNum >= 140000 ? "(SELECT mt.typname::text FROM pg_type mt WHERE mt.oid = rg.rngmultitypid)" : "NULL::text")}
         FROM pg_type t
         JOIN pg_namespace n ON n.oid = t.typnamespace
         LEFT JOIN pg_type bt ON bt.oid = t.typbasetype
         LEFT JOIN pg_collation co ON co.oid = t.typcollation
         LEFT JOIN pg_namespace cn ON cn.oid = co.collnamespace
-        WHERE (t.typtype IN ('d', 'e') OR (t.typtype = 'c' AND (SELECT relkind FROM pg_class WHERE oid = t.typrelid) = 'c'))
+        LEFT JOIN pg_range rg ON rg.rngtypid = t.oid
+        LEFT JOIN pg_type st ON st.oid = rg.rngsubtype
+        LEFT JOIN pg_opclass op ON op.oid = rg.rngsubopc
+        LEFT JOIN pg_namespace opn ON opn.oid = op.opcnamespace
+        LEFT JOIN pg_collation rco ON rco.oid = rg.rngcollation
+        LEFT JOIN pg_namespace rcn ON rcn.oid = rco.collnamespace
+        WHERE (t.typtype IN ('d', 'e', 'r') OR (t.typtype = 'c' AND (SELECT relkind FROM pg_class WHERE oid = t.typrelid) = 'c'))
           AND {UserSchema("n")} AND {NotExtensionMember("pg_type", "t.oid")};
         """;
 
@@ -227,14 +250,44 @@ internal static class PgCatalogQueries
         """;
 
     /// <summary>
+    /// User collations (CREATE COLLATION): provider c libc, i ICU, b builtin (PostgreSQL 17). Up to 14 an ICU
+    /// collation's locale is its collcollate; 15 and 16 keep it in colliculocale, 17 in colllocale. ICU rules are 16's.
+    /// </summary>
+    private static string Collations(int versionNum) => $"""
+        SELECT co.oid, n.nspname, co.collname, co.collprovider::text, co.collisdeterministic,
+               co.collcollate::text, co.collctype::text,
+               {(versionNum >= 170000 ? "co.colllocale" : versionNum >= 150000 ? "co.colliculocale" : "NULL::text")},
+               {(versionNum >= 160000 ? "co.collicurules" : "NULL::text")}
+        FROM pg_collation co
+        JOIN pg_namespace n ON n.oid = co.collnamespace
+        WHERE {UserSchema("n")} AND {NotExtensionMember("pg_collation", "co.oid")};
+        """;
+
+    /// <summary>
+    /// Rules other than a view's own _RETURN (CREATE RULE): a table's, and the extra ones a view may have. ev_enabled
+    /// 'D' is a disabled rule.
+    /// </summary>
+    private static readonly string Rules = $"""
+        SELECT rw.ev_class, rw.rulename, pg_get_ruledef(rw.oid, true), rw.ev_enabled::text
+        FROM pg_rewrite rw
+        JOIN pg_class c ON c.oid = rw.ev_class
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE rw.rulename <> '_RETURN' AND c.relkind IN ('r', 'p', 'v') AND {UserSchema("n")} AND {NotExtensionMember("pg_class", "c.oid")};
+        """;
+
+    /// <summary>
     /// What each object needs (pg_depend, normal and automatic dependencies only), with both ends resolved to what the
     /// reader lists: a view's rule, a default or generated column, a constraint and a policy stand for their table (a
-    /// domain's constraint for its domain), a row type for its table, an array type for its element type. The needed
-    /// object's extension is named when an extension made it. Built-in objects (oid below 16384) are never needed by
-    /// name, so they are left out. A foreign key is marked as one: scripts add those once every table exists.
+    /// domain's constraint for its domain), a row type for its table, an array type for its element type, a multirange
+    /// for its range. A table's own rule is marked "rule" (07 creates it, not 03). An index stands for its table, named,
+    /// and marked "key" when it backs a primary, unique or exclusion key (made with the table) and "index" otherwise (06);
+    /// of an index only what it needs beyond its table's columns is kept: an operator class, an operator, a collation,
+    /// a function or a type. The needed object's extension is named when an extension made it. Built-in objects (oid
+    /// below 16384) are never needed by name, so they are left out. A foreign key is marked as one: scripts add those
+    /// once every table exists.
     /// </summary>
-    private const string Dependencies = """
-        SELECT x.dep_kind, x.dep_oid, x.ref_kind, x.ref_oid, x.ref_col, x.via, e.extname
+    private static string Dependencies(int versionNum) => $"""
+        SELECT x.dep_kind, x.dep_oid, x.ref_kind, x.ref_oid, x.ref_col, x.via, e.extname, x.ix_name
         FROM (
             SELECT CASE WHEN dp.classid = 'pg_type'::regclass OR (dp.classid = 'pg_constraint'::regclass AND co.conrelid = 0) THEN 't'
                         WHEN dp.classid = 'pg_proc'::regclass THEN 'p'
@@ -244,35 +297,52 @@ internal static class PgCatalogQueries
                         WHEN dp.classid = 'pg_attrdef'::regclass THEN ad.adrelid
                         WHEN dp.classid = 'pg_constraint'::regclass THEN CASE WHEN co.conrelid <> 0 THEN co.conrelid ELSE co.contypid END
                         WHEN dp.classid = 'pg_policy'::regclass THEN pol.polrelid
+                        WHEN ix.indexrelid IS NOT NULL THEN ix.indrelid
                         ELSE dp.objid END AS dep_oid,
                    CASE WHEN dp.refclassid = 'pg_proc'::regclass THEN 'p'
+                        WHEN dp.refclassid = 'pg_opclass'::regclass THEN 'o'
+                        WHEN dp.refclassid = 'pg_operator'::regclass THEN 'r'
+                        WHEN dp.refclassid = 'pg_collation'::regclass THEN 'l'
                         WHEN dp.refclassid = 'pg_class'::regclass OR rt.typrelid <> 0 THEN 'c'
                         ELSE 't' END AS ref_kind,
                    CASE WHEN dp.refclassid = 'pg_type'::regclass THEN CASE WHEN rt.typrelid <> 0 THEN rt.typrelid ELSE rt.oid END
                         ELSE dp.refobjid END AS ref_oid,
                    CASE WHEN dp.refclassid = 'pg_class'::regclass AND dp.refobjsubid > 0 THEN
                         (SELECT a.attname::text FROM pg_attribute a WHERE a.attrelid = dp.refobjid AND a.attnum = dp.refobjsubid) END AS ref_col,
-                   CASE WHEN dp.classid = 'pg_rewrite'::regclass THEN 'view'
+                   CASE WHEN dp.classid = 'pg_rewrite'::regclass THEN CASE WHEN rwc.relkind IN ('r', 'p') THEN 'rule' ELSE 'view' END
                         WHEN dp.classid = 'pg_attrdef'::regclass THEN 'default'
                         WHEN dp.classid = 'pg_constraint'::regclass THEN CASE WHEN co.contype = 'f' THEN 'foreignkey' ELSE 'constraint' END
                         WHEN dp.classid = 'pg_trigger'::regclass THEN 'trigger'
                         WHEN dp.classid = 'pg_policy'::regclass THEN 'policy'
                         WHEN dp.classid = 'pg_proc'::regclass THEN 'routine'
                         WHEN dp.classid = 'pg_type'::regclass THEN 'type'
-                        ELSE 'relation' END AS via
+                        WHEN ix.indexrelid IS NOT NULL THEN
+                             CASE WHEN EXISTS (SELECT 1 FROM pg_constraint kc WHERE kc.conindid = ix.indexrelid AND kc.contype IN ('p', 'u', 'x'))
+                                  THEN 'key' ELSE 'index' END
+                        ELSE 'relation' END AS via,
+                   CASE WHEN ix.indexrelid IS NOT NULL THEN ixc.relname::text END AS ix_name
             FROM pg_depend dp
             LEFT JOIN pg_rewrite rw ON dp.classid = 'pg_rewrite'::regclass AND rw.oid = dp.objid
+            LEFT JOIN pg_class rwc ON rwc.oid = rw.ev_class
             LEFT JOIN pg_attrdef ad ON dp.classid = 'pg_attrdef'::regclass AND ad.oid = dp.objid
             LEFT JOIN pg_constraint co ON dp.classid = 'pg_constraint'::regclass AND co.oid = dp.objid
             LEFT JOIN pg_policy pol ON dp.classid = 'pg_policy'::regclass AND pol.oid = dp.objid
+            LEFT JOIN pg_index ix ON dp.classid = 'pg_class'::regclass AND ix.indexrelid = dp.objid
+            LEFT JOIN pg_class ixc ON ixc.oid = ix.indexrelid
             LEFT JOIN pg_type rt0 ON dp.refclassid = 'pg_type'::regclass AND rt0.oid = dp.refobjid
-            LEFT JOIN pg_type rt ON rt.oid = CASE WHEN rt0.typcategory = 'A' AND rt0.typelem <> 0 THEN rt0.typelem ELSE rt0.oid END
+            {(versionNum >= 140000 ? "LEFT JOIN pg_range mr ON mr.rngmultitypid = rt0.oid" : "LEFT JOIN (SELECT NULL::oid AS rngtypid) mr ON false")}
+            LEFT JOIN pg_type rt ON rt.oid = CASE WHEN mr.rngtypid IS NOT NULL THEN mr.rngtypid
+                                                  WHEN rt0.typcategory = 'A' AND rt0.typelem <> 0 THEN rt0.typelem ELSE rt0.oid END
             WHERE dp.deptype IN ('n', 'a') AND dp.objid >= 16384 AND dp.refobjid >= 16384
               AND dp.classid IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_rewrite'::regclass,
                                  'pg_attrdef'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass)
-              AND dp.refclassid IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass)
+              AND dp.refclassid IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_opclass'::regclass,
+                                    'pg_operator'::regclass, 'pg_collation'::regclass)
+              AND NOT (ix.indexrelid IS NOT NULL AND dp.refclassid = 'pg_class'::regclass)
         ) x
-        LEFT JOIN pg_depend xd ON xd.classid = CASE x.ref_kind WHEN 'c' THEN 'pg_class'::regclass WHEN 't' THEN 'pg_type'::regclass ELSE 'pg_proc'::regclass END
+        LEFT JOIN pg_depend xd ON xd.classid = CASE x.ref_kind WHEN 'c' THEN 'pg_class'::regclass WHEN 't' THEN 'pg_type'::regclass
+                                                               WHEN 'o' THEN 'pg_opclass'::regclass WHEN 'r' THEN 'pg_operator'::regclass
+                                                               WHEN 'l' THEN 'pg_collation'::regclass ELSE 'pg_proc'::regclass END
              AND xd.objid = x.ref_oid AND xd.refclassid = 'pg_extension'::regclass AND xd.deptype = 'e'
         LEFT JOIN pg_extension e ON e.oid = xd.refobjid
         WHERE x.dep_oid IS NOT NULL AND x.ref_oid IS NOT NULL;

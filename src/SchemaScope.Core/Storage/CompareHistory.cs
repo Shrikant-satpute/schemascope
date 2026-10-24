@@ -17,6 +17,9 @@ public sealed class CompareHistoryDatabase
     public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Label { get; set; } = "";
     public string Server { get; set; } = "";
+    /// <summary>The port, for engines that keep it apart from the host (PostgreSQL); null for SQL Server.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? Port { get; set; }
     public string Database { get; set; } = "";
 }
 

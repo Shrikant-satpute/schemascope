@@ -48,6 +48,7 @@ public sealed class CompareEngine(CompareOptions options)
             Label = string.IsNullOrWhiteSpace(t.Label) ? $"{t.Server}.{t.Database}" : t.Label,
             Engine = t.Engine,
             Server = t.Server,
+            Port = t.Port,
             Database = t.Database,
             ProductVersion = t.ProductVersion,
             Collation = t.Collation,
@@ -106,7 +107,9 @@ public sealed class CompareEngine(CompareOptions options)
                     }
                     row.Cells.Add(cell);
 
-                    local[i, (int)cell.Status]++;
+                    // an object neither the source nor this target has (another target's own) is no object of this
+                    // target's: counted nowhere, so Same never exceeds what the two databases hold
+                    if (src is not null || targetIndexes[i].ContainsKey(key) || targetFailed[i]) local[i, (int)cell.Status]++;
                     if (cell.Status.IsDifference()) differing++;
                     if (cell.Status.Severity() > worst.Severity()) worst = cell.Status;
                 }
@@ -275,6 +278,7 @@ public sealed class CompareEngine(CompareOptions options)
         Label = string.IsNullOrWhiteSpace(s.Label) ? $"{s.Server}.{s.Database}" : s.Label,
         Engine = s.Engine,
         Server = s.Server,
+        Port = s.Port,
         Database = s.Database,
         ProductVersion = s.ProductVersion,
         Collation = s.Collation,

@@ -37,7 +37,6 @@ public partial class PgTargetProbes(string label, string connectionString, int t
         new("Memory-optimized (In-Memory OLTP) tables", ProbeResultKind.NotApplicable, "PostgreSQL has no memory-optimized tables."),
         new("Modules that use a changed table type", ProbeResultKind.NotApplicable, "PostgreSQL has no table types (02_tabletypes)."),
         new("Forced Query Store plans on replaced code", ProbeResultKind.NotApplicable, "PostgreSQL has no Query Store."),
-        new("Renames by letter case", ProbeResultKind.NotApplicable, "PostgreSQL names are exact; nothing is renamed (09_formatting_tables)."),
     ];
 
     public bool CheckExistingData { get; } = checkExistingData;

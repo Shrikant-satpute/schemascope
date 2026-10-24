@@ -74,6 +74,9 @@ public sealed class TargetSummary
     public string Label { get; set; } = "";
     public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
+    /// <summary>The port, for engines that keep it apart from the host (PostgreSQL); null for SQL Server.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? Port { get; set; }
     public string Database { get; set; } = "";
     public string ProductVersion { get; set; } = "";
     public string Collation { get; set; } = "";
@@ -102,6 +105,9 @@ public sealed class SnapshotInfo
     public string Label { get; set; } = "";
     public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
+    /// <summary>The port, for engines that keep it apart from the host (PostgreSQL); null for SQL Server.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? Port { get; set; }
     public string Database { get; set; } = "";
     public string ProductVersion { get; set; } = "";
     public string Collation { get; set; } = "";

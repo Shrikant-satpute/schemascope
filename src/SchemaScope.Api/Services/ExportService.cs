@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Text;
 using SchemaScope.Core.Comparison;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 
 namespace SchemaScope.Api.Services;
@@ -59,6 +60,13 @@ public sealed class ExportService
 
     private static string Label(ObjectStatus s) => StatusLabels[(int)s];
 
+    /// <summary>"PostgreSQL 16.4": the engine and its version, for engines other than SQL Server (whose reports are unchanged).</summary>
+    private static string EngineText(DatabaseEngine engine, string? version) =>
+        string.IsNullOrWhiteSpace(version) ? ConnectionRules.NameOf(engine) : $"{ConnectionRules.NameOf(engine)} {version}";
+
+    /// <summary>host:port, or the host alone when no port is known.</summary>
+    private static string HostPort(string server, int? port) => port is { } p ? $"{server}:{p}" : server;
+
     // ---------------- Markdown ----------------
 
     public string BuildMarkdown(CompareResult result, ExportRequest request)
@@ -67,7 +75,10 @@ public sealed class ExportService
         sb.AppendLine($"# Schema comparison - {result.Source.Label}");
         sb.AppendLine();
         sb.AppendLine($"- Run: {result.StartedUtc:yyyy-MM-dd HH:mm} UTC");
-        sb.AppendLine($"- Source: `{result.Source.Server}` / `{result.Source.Database}` ({result.Source.ObjectCount} objects)");
+        sb.AppendLine(result.Source.Engine == DatabaseEngine.SqlServer
+            ? $"- Source: `{result.Source.Server}` / `{result.Source.Database}` ({result.Source.ObjectCount} objects)"
+            : $"- Source: {EngineText(result.Source.Engine, result.Source.ProductVersion)} `{HostPort(result.Source.Server, result.Source.Port)}` / " +
+              $"`{result.Source.Database}` ({result.Source.ObjectCount} objects)");
         sb.AppendLine($"- Compared in {result.TotalMs} ms");
         sb.AppendLine();
 
@@ -77,8 +88,11 @@ public sealed class ExportService
         sb.AppendLine("|---|---:|---:|---:|---:|---:|---:|");
         foreach (var t in result.Targets)
         {
-            if (t.Failed) { sb.AppendLine($"| {t.Label} | FAILED | | | | | |"); continue; }
-            sb.AppendLine($"| {t.Label} | {t.MatchPercent:0.0}% | {t.Same} | {t.FormattingOnly} | " +
+            // another engine's target also says where it is: two databases of one name on one host differ by port
+            var label = t.Engine == DatabaseEngine.SqlServer ? t.Label
+                : $"{t.Label} ({EngineText(t.Engine, t.ProductVersion)} `{HostPort(t.Server, t.Port)}` / `{t.Database}`)";
+            if (t.Failed) { sb.AppendLine($"| {label} | FAILED | | | | | |"); continue; }
+            sb.AppendLine($"| {label} | {t.MatchPercent:0.0}% | {t.Same} | {t.FormattingOnly} | " +
                           $"{t.Different} | {t.MissingInTarget} | {t.OnlyInTarget} |");
         }
         sb.AppendLine();
@@ -162,7 +176,10 @@ public sealed class ExportService
 
         sb.Append("<h1>Schema comparison</h1>");
         sb.Append($"<div class=\"sub\">Source <b>{H(result.Source.Label)}</b> " +
-                  $"({H(result.Source.Server)} / {H(result.Source.Database)}) &middot; " +
+                  (result.Source.Engine == DatabaseEngine.SqlServer
+                      ? $"({H(result.Source.Server)} / {H(result.Source.Database)}) &middot; "
+                      : $"({H(EngineText(result.Source.Engine, result.Source.ProductVersion))}, {H(HostPort(result.Source.Server, result.Source.Port))} / " +
+                        $"{H(result.Source.Database)}) &middot; ") +
                   $"{result.Source.ObjectCount} objects &middot; " +
                   $"{result.StartedUtc:yyyy-MM-dd HH:mm} UTC &middot; compared in {result.TotalMs} ms</div>");
 
@@ -174,6 +191,8 @@ public sealed class ExportService
         {
             sb.Append("<div class=\"card\">");
             sb.Append($"<h3>{H(t.Label)}</h3>");
+            if (t.Engine != DatabaseEngine.SqlServer)
+                sb.Append($"<div class=\"chips\">{H(EngineText(t.Engine, t.ProductVersion))}, {H(HostPort(t.Server, t.Port))} / {H(t.Database)}</div>");
             if (t.Failed)
             {
                 sb.Append($"<div class=\"s-miss\">Could not be read</div><div class=\"chips\">{H(t.Error ?? "")}</div>");

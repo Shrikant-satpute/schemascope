@@ -211,7 +211,8 @@ internal sealed partial class PgScriptRun
                 DbObjectType.Table => (DKind.DropTable, $"DROP TABLE {PgDdl.Q(o)} RESTRICT", "drop_table"),
                 DbObjectType.Sequence => (DKind.DropSequence, $"DROP SEQUENCE {PgDdl.Q(o)} RESTRICT", "drop_sequence"),
                 DbObjectType.Domain => (DKind.DropType, $"DROP DOMAIN {PgDdl.Q(o)} RESTRICT", "drop_domain"),
-                DbObjectType.EnumType or DbObjectType.CompositeType => (DKind.DropType, $"DROP TYPE {PgDdl.Q(o)} RESTRICT", "drop_type"),
+                DbObjectType.EnumType or DbObjectType.CompositeType or DbObjectType.RangeType => (DKind.DropType, $"DROP TYPE {PgDdl.Q(o)} RESTRICT", "drop_type"),
+                DbObjectType.Collation => (DKind.DropType, $"DROP COLLATION {PgDdl.Q(o)} RESTRICT", "drop_collation"),
                 _ => (DKind.DropModule, DropModule(o), "drop_" + Kind(o).Replace(' ', '_')),
             };
             var i = new DItem { Kind = kind, Name = Display(o), Word = Kind(o), Table = o, FileWord = $"{fileWord}_{Display(o)}" };
@@ -242,6 +243,8 @@ internal sealed partial class PgScriptRun
         foreach (var (src, tgt) in common)
             foreach (var c in tgt.Columns.Where(c => src.Columns.All(x => x.Name != c.Name)).OrderBy(c => c.Ordinal))
             {
+                // 09 renames it to the source's spelling, or it looks like the source's column under another one: its values stay
+                if (KeptTargetColumn(src, c.Name) is not null) continue;
                 var i = Part(DKind.DropColumn, "column", tgt, c.Name, "drop_column");
                 if (TwinName(src.Columns.Select(x => x.Name), c.Name)) Hold(i, OtherCase($"column {tgt.FullName}.{c.Name}"));
                 if (tgt.Properties.GetValueOrDefault("partitionBy") is { } key && PgDdl.MentionsColumn(key, c.Name))
@@ -284,7 +287,8 @@ internal sealed partial class PgScriptRun
                 "default" => $"a default or generated column of {table.FullName} uses it",
                 "constraint" => $"a constraint of {table.FullName} uses it",
                 "policy" => $"a row level security policy on {table.FullName} uses it",
-                "view" => $"a rule on {table.FullName} uses it",
+                "view" or "rule" => $"a rule on {table.FullName} uses it",
+                "key" or "index" => $"index {d.Index} of {table.FullName} uses it",
                 "trigger" => $"a trigger on {table.FullName} uses it",
                 _ => table.Properties.GetValueOrDefault("partitionOf") is { } || table.Properties.ContainsKey("inherits")
                     ? $"table {table.FullName} is a partition or child of it"
@@ -394,7 +398,7 @@ internal sealed partial class PgScriptRun
                 if (by.Key == k.Key)
                 {
                     // its own generated columns and checks are above; a rule on the table stays
-                    if (d.Via is "view" or "policy") i.Deps.Add(new DDep(d.Via == "view" ? $"a rule on {k.FullName} reads it" : "a row level security policy reads it", null));
+                    if (d.Via is "view" or "rule" or "policy") i.Deps.Add(new DDep(d.Via == "policy" ? "a row level security policy reads it" : $"a rule on {k.FullName} reads it", null));
                     continue;
                 }
                 i.Deps.Add(new DDep($"{Kind(by)} {Display(by)} reads it", objects.GetValueOrDefault(by.Key)));

@@ -88,6 +88,9 @@ public sealed class CompareService
             Engine = resolved.Engine,
             Label = resolved.DisplayName,
             Server = resolved.Server,
+            // shown with the host for engines that keep the port apart; SQL Server keeps it in the server name
+            Port = resolved.Engine == DatabaseEngine.SqlServer ? null
+                : ConnectionEndpoints.Parse(resolved.Engine, resolved.ConnectionString)?.Port ?? DatabaseEngines.DefaultPort(resolved.Engine),
             Database = resolved.Database
         };
 

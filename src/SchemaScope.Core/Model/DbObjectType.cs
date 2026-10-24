@@ -29,7 +29,11 @@ public enum DbObjectType
     /// <summary>PostgreSQL: a standalone row type (CREATE TYPE ... AS (...)).</summary>
     CompositeType = 15,
     /// <summary>PostgreSQL: an installed extension. The objects it creates are not compared one by one.</summary>
-    Extension = 16
+    Extension = 16,
+    /// <summary>PostgreSQL: a range of a subtype (CREATE TYPE ... AS RANGE); its constructors and multirange come with it.</summary>
+    RangeType = 17,
+    /// <summary>PostgreSQL: a collation a user made (CREATE COLLATION).</summary>
+    Collation = 18
 }
 
 public static class DbObjectTypeExtensions
@@ -54,6 +58,8 @@ public static class DbObjectTypeExtensions
         DbObjectType.EnumType => "Enum type",
         DbObjectType.CompositeType => "Composite type",
         DbObjectType.Extension => "Extension",
+        DbObjectType.RangeType => "Range type",
+        DbObjectType.Collation => "Collation",
         _ => t.ToString()
     };
 

@@ -54,6 +54,7 @@ public sealed class PgSchemaReader : ISchemaReader
 
         var connectMs = total.ElapsedMilliseconds;
         if (string.IsNullOrEmpty(snapshot.Server)) snapshot.Server = conn.Host ?? "";
+        snapshot.Port = conn.Port;
         snapshot.Database = conn.Database;
 
         try
@@ -148,9 +149,13 @@ public sealed class PgSchemaReader : ISchemaReader
     private sealed record Seq(string Schema, string Name, string Type, long Start, long Increment, long Min, long Max,
         long Cache, bool Cycle, string? OwnedBy, uint Oid);
     /// <summary>One pg_depend row resolved (<see cref="PgCatalogQueries"/>): kinds c relation, t type, p routine, g trigger.</summary>
-    private sealed record Dep(char Kind, uint Oid, char RefKind, uint RefOid, string? RefColumn, string Via, string? Extension);
+    private sealed record Dep(char Kind, uint Oid, char RefKind, uint RefOid, string? RefColumn, string Via, string? Extension, string? Index);
     private sealed record Typ(uint Oid, string Schema, string Name, char Kind, string BaseType, bool NotNull, string? Default,
-        string? Collation, string[] Labels, uint RelOid);
+        string? Collation, string[] Labels, uint RelOid, string? Subtype, string? SubtypeOpClass, string? RangeCollation,
+        string? Canonical, string? SubtypeDiff, string? Multirange);
+    private sealed record Coll(uint Oid, string Schema, string Name, char Provider, bool Deterministic, string? Collate, string? Ctype,
+        string? Locale, string? Rules);
+    private sealed record Rule(uint Rel, string Name, string Definition, char Enabled);
 
     private sealed class RawCatalog
     {
@@ -165,6 +170,8 @@ public sealed class PgSchemaReader : ISchemaReader
         public List<Typ> Types { get; } = [];
         public List<(string Name, string Version, string Schema)> Extensions { get; } = [];
         public List<Policy> Policies { get; } = [];
+        public List<Coll> Collations { get; } = [];
+        public List<Rule> Rules { get; } = [];
         public List<Dep> Dependencies { get; } = [];
     }
 
@@ -176,41 +183,52 @@ public sealed class PgSchemaReader : ISchemaReader
 
         static string? Str(NpgsqlDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
         static char Ch(NpgsqlDataReader r, int i) => r.IsDBNull(i) || r.GetString(i).Length == 0 ? '\0' : r.GetString(i)[0];
+        // the server's deparse of an expression, spelled as every version spells it (PgDeparse)
+        static string? Expr(NpgsqlDataReader r, int i) => PgDeparse.FunctionSyntax(Str(r, i));
 
         while (await r.ReadAsync(ct)) raw.Schemas.Add((r.GetString(0), r.GetString(1)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
-            raw.Relations.Add(new Rel(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), Str(r, 4), Ch(r, 5),
-                r.GetBoolean(6), r.GetBoolean(7), r.GetFieldValue<string[]>(8), Str(r, 9), r.GetBoolean(10), Str(r, 11),
+            raw.Relations.Add(new Rel(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), ViewText(Expr(r, 4), versionNum),
+                Ch(r, 5), r.GetBoolean(6), r.GetBoolean(7), r.GetFieldValue<string[]>(8), Expr(r, 9), r.GetBoolean(10), Expr(r, 11),
                 r.GetFieldValue<string[]>(12)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.Columns.Add(new Col(r.GetFieldValue<uint>(0), r.GetInt16(1), r.GetString(2), r.GetString(3), r.GetBoolean(4),
-                Str(r, 5) ?? "", Str(r, 6) ?? "", Str(r, 7), Str(r, 8),
+                Str(r, 5) ?? "", Str(r, 6) ?? "", Expr(r, 7), Str(r, 8),
                 r.IsDBNull(9) ? null : r.GetInt64(9), r.IsDBNull(10) ? null : r.GetInt64(10), r.IsDBNull(11) ? null : r.GetInt64(11),
                 r.IsDBNull(12) ? null : r.GetInt64(12), r.IsDBNull(13) ? null : r.GetInt64(13), r.IsDBNull(14) ? null : r.GetBoolean(14)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
-            raw.Constraints.Add(new Con(r.GetFieldValue<uint>(0), r.GetFieldValue<uint>(1), r.GetString(2), Ch(r, 3), r.GetString(4),
+            raw.Constraints.Add(new Con(r.GetFieldValue<uint>(0), r.GetFieldValue<uint>(1), r.GetString(2), Ch(r, 3), Expr(r, 4)!,
                 r.GetBoolean(5), r.GetFieldValue<string[]>(6), Str(r, 7), Str(r, 8), r.GetFieldValue<string[]>(9),
                 Str(r, 10) ?? "a", Str(r, 11) ?? "a"));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
-            raw.Indexes.Add(new Idx(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), r.GetBoolean(3), r.GetString(4),
-                Str(r, 5), r.GetInt16(6), r.GetFieldValue<string[]>(7), r.GetFieldValue<bool?[]>(8)));
+            raw.Indexes.Add(new Idx(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), r.GetBoolean(3), Expr(r, 4)!,
+                Expr(r, 5), r.GetInt16(6), [.. r.GetFieldValue<string[]>(7).Select(c => PgDeparse.FunctionSyntax(c)!)],
+                r.GetFieldValue<bool?[]>(8)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
+        {
+            // the IN mode PostgreSQL 14 writes out, and the defaults, as every version spells them - in the header too
+            var arguments = Str(r, 7) ?? "";
+            var plain = PgDeparse.Arguments(arguments);
+            var definition = Str(r, 6) ?? "";
+            if (plain != arguments && definition.IndexOf($"({arguments})", StringComparison.Ordinal) is var at and >= 0)
+                definition = definition[..at] + $"({plain})" + definition[(at + arguments.Length + 2)..];
             raw.Routines.Add(new Routine(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), r.GetBoolean(4),
-                r.GetString(5), Str(r, 6) ?? "", Str(r, 7) ?? "", Str(r, 8)));
+                r.GetString(5), definition, plain, Str(r, 8)));
+        }
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
-            raw.Triggers.Add(new Trg(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), Ch(r, 4), r.GetFieldValue<uint>(5)));
+            raw.Triggers.Add(new Trg(r.GetString(0), r.GetString(1), r.GetString(2), Expr(r, 3)!, Ch(r, 4), r.GetFieldValue<uint>(5)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -220,7 +238,8 @@ public sealed class PgSchemaReader : ISchemaReader
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.Types.Add(new Typ(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), r.GetString(4), r.GetBoolean(5),
-                Str(r, 6), Str(r, 7), r.GetFieldValue<string[]>(8), r.GetFieldValue<uint>(9)));
+                Expr(r, 6), Str(r, 7), r.GetFieldValue<string[]>(8), r.GetFieldValue<uint>(9), Str(r, 10), Str(r, 11), Str(r, 12),
+                Str(r, 13), Str(r, 14), Str(r, 15)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct)) raw.Extensions.Add((r.GetString(0), r.GetString(1), r.GetString(2)));
@@ -228,15 +247,28 @@ public sealed class PgSchemaReader : ISchemaReader
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.Policies.Add(new Policy(r.GetFieldValue<uint>(0), r.GetString(1), r.GetBoolean(2), Ch(r, 3),
-                r.GetFieldValue<string[]>(4), Str(r, 5), Str(r, 6)));
+                r.GetFieldValue<string[]>(4), Expr(r, 5), Expr(r, 6)));
+
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.Collations.Add(new Coll(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), r.GetBoolean(4), Str(r, 5),
+                Str(r, 6), Str(r, 7), Str(r, 8)));
+
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.Rules.Add(new Rule(r.GetFieldValue<uint>(0), r.GetString(1), Expr(r, 2)!, Ch(r, 3)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
             raw.Dependencies.Add(new Dep(Ch(r, 0), r.GetFieldValue<uint>(1), Ch(r, 2), r.GetFieldValue<uint>(3), Str(r, 4),
-                r.GetString(5), Str(r, 6)));
+                r.GetString(5), Str(r, 6), Str(r, 7)));
 
         return raw;
     }
+
+    /// <summary>A view's text as PostgreSQL 16 prints it (<see cref="PgDeparse.UnqualifiedSingleRelation"/>), from any version.</summary>
+    private static string? ViewText(string? viewdef, int versionNum) =>
+        viewdef is null || versionNum >= 160000 ? viewdef : PgDeparse.UnqualifiedSingleRelation(viewdef);
 
     // ------------------------------------------------------------------ model
 
@@ -251,12 +283,14 @@ public sealed class PgSchemaReader : ISchemaReader
         var byType = new Dictionary<uint, DbObject>();
         var byProc = new Dictionary<uint, DbObject>();
         var byTrigger = new Dictionary<uint, DbObject>();
+        var byCollation = new Dictionary<uint, DbObject>();
 
         foreach (var (name, owner) in raw.Schemas)
         {
             if (options.IsExcluded(DbObjectType.Schema, name, name)) continue;
             var o = New(DbObjectType.Schema, name, name);
-            o.Properties["owner"] = owner;
+            // empty: the public schema with the owner its version gives it
+            if (owner.Length > 0) o.Properties["owner"] = owner;
             objects.Add(o);
         }
 
@@ -265,6 +299,7 @@ public sealed class PgSchemaReader : ISchemaReader
         var typeConstraints = raw.Constraints.Where(c => c.TypeOid != 0).ToLookup(c => c.TypeOid);
         var indexes = raw.Indexes.ToLookup(i => i.Rel);
         var policies = raw.Policies.ToLookup(p => p.Rel);
+        var rules = raw.Rules.ToLookup(r => r.Rel);
 
         foreach (var rel in raw.Relations)
         {
@@ -280,6 +315,7 @@ public sealed class PgSchemaReader : ISchemaReader
                 foreach (var con in constraints[rel.Oid]) AddConstraint(o, con);
                 o.Indexes.AddRange(indexes[rel.Oid].Select(Index));
                 TableFacts(o, rel, policies[rel.Oid], options);
+                foreach (var rule in rules[rel.Oid]) o.Properties[PgCanonicalWriter.RulePrefix + rule.Name] = RuleText(rule, rel);
             }
             else
             {
@@ -301,6 +337,9 @@ public sealed class PgSchemaReader : ISchemaReader
                     sb.Append('\n').Append(ix.Definition).Append(';');
                     o.Indexes.Add(Index(ix));
                 }
+                // a view's own rules (DO INSTEAD on an updatable view) are part of what it is too, replaced with it
+                foreach (var rule in rules[rel.Oid].OrderBy(x => x.Name, StringComparer.Ordinal))
+                    sb.Append('\n').Append(RuleText(rule, rel, orReplace: true));
                 o.Definition = sb.ToString();
                 // what the view returns, one column a line, in order: CREATE OR REPLACE VIEW may only add columns at the end
                 o.Properties["columns"] = string.Join("\n", columns[rel.Oid].Select(c => $"{PgCanonicalWriter.Q(c.Name)} {c.Type}"));
@@ -357,9 +396,29 @@ public sealed class PgSchemaReader : ISchemaReader
             byRel[s.Oid] = o;
         }
 
+        foreach (var c in raw.Collations)
+        {
+            if (options.IsExcluded(DbObjectType.Collation, c.Schema, c.Name)) continue;
+            var o = New(DbObjectType.Collation, c.Schema, c.Name);
+            o.Properties["provider"] = c.Provider switch { 'i' => "icu", 'b' => "builtin", 'd' => "default", _ => "libc" };
+            if (c.Provider == 'c')
+            {
+                o.Properties["lc_collate"] = c.Collate ?? "";
+                o.Properties["lc_ctype"] = c.Ctype ?? "";
+            }
+            else o.Properties["locale"] = c.Locale ?? c.Collate ?? "";
+            if (!c.Deterministic) o.Properties["deterministic"] = "false";
+            if (c.Rules is not null) o.Properties["rules"] = c.Rules;
+            objects.Add(o);
+            byCollation[c.Oid] = o;
+        }
+
         foreach (var t in raw.Types)
         {
-            var type = t.Kind switch { 'd' => DbObjectType.Domain, 'e' => DbObjectType.EnumType, _ => DbObjectType.CompositeType };
+            var type = t.Kind switch
+            {
+                'd' => DbObjectType.Domain, 'e' => DbObjectType.EnumType, 'r' => DbObjectType.RangeType, _ => DbObjectType.CompositeType
+            };
             if (options.IsExcluded(type, t.Schema, t.Name)) continue;
             var o = New(type, t.Schema, t.Name);
             switch (type)
@@ -373,6 +432,15 @@ public sealed class PgSchemaReader : ISchemaReader
                     break;
                 case DbObjectType.EnumType:
                     o.Properties["labels"] = string.Join(", ", t.Labels);
+                    break;
+                case DbObjectType.RangeType:
+                    o.Properties["subtype"] = t.Subtype ?? "";
+                    if (t.SubtypeOpClass is not null) o.Properties["subtypeOpClass"] = t.SubtypeOpClass;
+                    if (t.RangeCollation is not null) o.Properties["collation"] = t.RangeCollation;
+                    if (t.Canonical is not null) o.Properties["canonical"] = t.Canonical;
+                    if (t.SubtypeDiff is not null) o.Properties["subtypeDiff"] = t.SubtypeDiff;
+                    // the multirange's name only when it is not the one PostgreSQL 14 gives it by itself
+                    if (t.Multirange is { } multi && multi != DefaultMultirangeName(t.Name)) o.Properties["multirange"] = multi;
                     break;
                 default:
                     o.Columns = [.. columns[t.RelOid].Select(Column)];
@@ -392,8 +460,29 @@ public sealed class PgSchemaReader : ISchemaReader
             objects.Add(o);
         }
 
-        AddDependencies(raw.Dependencies, byRel, byType, byProc, byTrigger);
+        AddDependencies(raw.Dependencies, byRel, byType, byProc, byTrigger, byCollation);
         return objects;
+    }
+
+    /// <summary>
+    /// A rule as pg_get_ruledef writes it, with its enabled state when that is not the default. A view's is written as
+    /// CREATE OR REPLACE RULE, so the view's text replaces it along with the view.
+    /// </summary>
+    private static string RuleText(Rule rule, Rel rel, bool orReplace = false)
+    {
+        var text = rule.Definition.TrimEnd();
+        if (orReplace && text.StartsWith("CREATE RULE ", StringComparison.Ordinal)) text = "CREATE OR REPLACE RULE " + text["CREATE RULE ".Length..];
+        if (!text.EndsWith(';')) text += ";";
+        var state = rule.Enabled switch { 'D' => "DISABLE", 'R' => "ENABLE REPLICA", 'A' => "ENABLE ALWAYS", _ => null };
+        return state is null ? text
+            : $"{text}\nALTER TABLE {PgCanonicalWriter.Q(rel.Schema)}.{PgCanonicalWriter.Q(rel.Name)} {state} RULE {PgCanonicalWriter.Q(rule.Name)};";
+    }
+
+    /// <summary>The multirange name PostgreSQL 14 makes for a range: its first "range" becomes "multirange", else "_multirange" is added.</summary>
+    internal static string DefaultMultirangeName(string range)
+    {
+        var at = range.IndexOf("range", StringComparison.Ordinal);
+        return at >= 0 ? range[..at] + "multirange" + range[(at + "range".Length)..] : range + "_multirange";
     }
 
     /// <summary>
@@ -402,14 +491,16 @@ public sealed class PgSchemaReader : ISchemaReader
     /// object needing itself is kept only with a column - a generated column or a trigger naming one of its own table's.
     /// </summary>
     private static void AddDependencies(List<Dep> deps, Dictionary<uint, DbObject> byRel, Dictionary<uint, DbObject> byType,
-        Dictionary<uint, DbObject> byProc, Dictionary<uint, DbObject> byTrigger)
+        Dictionary<uint, DbObject> byProc, Dictionary<uint, DbObject> byTrigger, Dictionary<uint, DbObject> byCollation)
     {
+        // an operator class or operator is never listed itself: only the extension it belongs to is a need
         DbObject? Find(char kind, uint oid) => kind switch
         {
             'c' => byRel.GetValueOrDefault(oid),
             't' => byType.GetValueOrDefault(oid),
             'p' => byProc.GetValueOrDefault(oid),
             'g' => byTrigger.GetValueOrDefault(oid),
+            'l' => byCollation.GetValueOrDefault(oid),
             _ => null
         };
 
@@ -426,7 +517,7 @@ public sealed class PgSchemaReader : ISchemaReader
             }
             else continue;
 
-            var dep = new DbDependency(key, d.RefColumn, d.Via);
+            var dep = new DbDependency(key, d.RefColumn, d.Via, d.Index);
             dependent.DependsOn ??= [];
             if (!dependent.DependsOn.Contains(dep)) dependent.DependsOn.Add(dep);
         }

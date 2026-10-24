@@ -97,8 +97,22 @@ public static class PgRunners
             }
             $fail = 0
             foreach ($f in $files) {
-                # one transaction per file: a statement that fails rolls the whole file back
-                & psql -X -v ON_ERROR_STOP=1 --single-transaction -h $Server -p $Port -U $User -d $Database -f $f.FullName
+                # psql cannot open a path of 260 characters or more (Windows' MAX_PATH; a PostgreSQL file name carries the
+                # argument types), so such a file runs from a short copy in TEMP, removed straight after
+                $path = $f.FullName
+                $copy = $null
+                if ($path.Length -ge 250) {
+                    $copy = Join-Path ([System.IO.Path]::GetTempPath()) ("schemascope-" + [guid]::NewGuid().ToString("n") + ".sql")
+                    [System.IO.File]::Copy("\\?\" + $path, $copy, $true)
+                    $path = $copy
+                }
+                try {
+                    # one transaction per file: a statement that fails rolls the whole file back
+                    & psql -X -v ON_ERROR_STOP=1 --single-transaction -h $Server -p $Port -U $User -d $Database -f $path
+                }
+                finally {
+                    if ($copy) { Remove-Item -LiteralPath $copy -ErrorAction SilentlyContinue }
+                }
                 if ($LASTEXITCODE -ne 0) {
                     Write-Host "FAILED  $($f.Name)" -ForegroundColor Red
                     $fail++

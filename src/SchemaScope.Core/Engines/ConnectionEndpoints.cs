@@ -143,6 +143,11 @@ public static partial class ConnectionEndpoints
         return (host, string.IsNullOrEmpty(instance) ? null : instance, port);
     }
 
+    /// <summary>True when a host list has an entry that is only digits: SQL Server's "host,port" typed where hosts are listed.</summary>
+    public static bool HasPortAfterComma(string? hostList) =>
+        !string.IsNullOrWhiteSpace(hostList) && hostList.Contains(',') &&
+        hostList.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Any(h => h.All(char.IsAsciiDigit));
+
     /// <summary>"a,b:5433" plus an optional Port key: every host, and the one port (a per-host port must agree with it).</summary>
     private static EndpointInfo? HostList(DatabaseEngine engine, string? hostValue, string? portValue, string database)
     {
@@ -168,7 +173,9 @@ public static partial class ConnectionEndpoints
                 host = part[..colon];
             }
             host = host.Trim('[', ']').Trim();
-            if (host.Length == 0) return null;
+            // "localhost,61909" is SQL Server's way to write a port; here a comma lists hosts, and a host that is only
+            // digits is a port in the wrong place, not a host to send the password to
+            if (host.Length == 0 || host.All(char.IsAsciiDigit)) return null;
             hosts.Add(host);
         }
         return hosts.Count == 0 ? null : new EndpointInfo(engine, hosts, port, null, database, "");

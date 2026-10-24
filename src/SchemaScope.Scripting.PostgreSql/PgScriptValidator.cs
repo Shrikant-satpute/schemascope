@@ -46,7 +46,8 @@ public sealed partial class PgScriptValidator
             var text = ScriptWriter.ReadBack(f.FullPath);
 
             var statements = Splitter.Split(text);
-            summary.Batches += statements.Count;
+            // _ALL.sql repeats its folder's files for one manual run: checked like them, counted once (with them)
+            if (!IsAllFile(f)) summary.Batches += statements.Count;
             var fileProblems = new List<string>();
 
             if (PgStatementSplitter.Unterminated(text) is { } open)
@@ -96,6 +97,8 @@ public sealed partial class PgScriptValidator
         return summary;
     }
 
+    private static bool IsAllFile(WrittenFile f) => string.Equals(Path.GetFileName(f.RelativePath), "_ALL.sql", StringComparison.OrdinalIgnoreCase);
+
     private static string Report(ValidationSummary s, List<(string File, int Statements, string Result)> rows)
     {
         var sb = new StringBuilder();
@@ -104,7 +107,7 @@ public sealed partial class PgScriptValidator
         sb.Append(level.Parsed
             ? $"Every statement was parsed with {level.Parser}, the PostgreSQL parser, after being split the way psql splits it.\n\n"
             : "**Lexical check only - not validated.** No PostgreSQL parser was available, so only quotes, comments, dollar bodies and brackets were checked.\n\n");
-        sb.Append($"- Statements: {s.Batches}\n- Syntax errors: {s.SyntaxErrors}\n- Code bodies that are the source's text exactly: {s.ModulesExact} of {s.ModulesChecked}\n");
+        sb.Append($"- Statements: {s.Batches} (an _ALL.sql repeats its folder's files: it is checked too, not counted again)\n- Syntax errors: {s.SyntaxErrors}\n- Code bodies that are the source's text exactly: {s.ModulesExact} of {s.ModulesChecked}\n");
         sb.Append($"- {NotCompileChecked}\n\n");
         sb.Append(s.Passed ? "Nothing was found.\n\n" : $"**{s.Problems.Count} problem(s) found** - fix or regenerate before running anything.\n\n");
         sb.Append("| File | Statements | Result |\n|---|---:|---|\n");

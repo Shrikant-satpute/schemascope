@@ -19,7 +19,8 @@ public static class PgObjectScripts
     private static readonly string[] RunOrder =
     [
         PgScriptGenerator.ColumnTypesFolder, PgScriptGenerator.ColumnsFolder, PgScriptGenerator.MissingFolder,
-        PgScriptGenerator.ConstraintsFolder, PgScriptGenerator.IndexesFolder, PgScriptGenerator.TriggersFolder, PgScriptGenerator.DifferentFolder,
+        PgScriptGenerator.ConstraintsFolder, PgScriptGenerator.IndexesFolder, PgScriptGenerator.TriggersFolder,
+        PgScriptGenerator.FormattingModulesFolder, PgScriptGenerator.FormattingTablesFolder, PgScriptGenerator.DifferentFolder,
     ];
 
     /// <summary>The warning with a DROP to copy: Generate script never runs it; Create scripts can put it in 11_destructive.</summary>
@@ -28,15 +29,15 @@ public static class PgObjectScripts
     private static ObjectStatus StatusOf(CompareRow row, int index) =>
         index < row.Cells.Count ? row.Cells[index].Status : ObjectStatus.Unavailable;
 
-    /// <summary>What a script for the row does (as <see cref="ObjectScripts.Plan"/>), with PostgreSQL's own answers where they differ.</summary>
+    /// <summary>
+    /// What a script for the row does (as <see cref="ObjectScripts.Plan"/>), with PostgreSQL's own answers where they
+    /// differ. Code that differs only in layout is re-created from the source's text (08), as Create scripts does.
+    /// </summary>
     public static string Plan(CompareResult result, CompareRow row, int index, out string? why)
     {
         var plan = ObjectScripts.Plan(result, row, index, out why);
         switch (plan)
         {
-            case "formatting":
-                why = "Only layout, comments or letter case differ, and PostgreSQL keeps each body as written: there is nothing to script.";
-                return "unavailable";
             case "unavailable" when row.Type == DbObjectType.AggregateFunction && StatusOf(row, index) == ObjectStatus.Different:
                 why = null;
                 return "alter";
@@ -161,6 +162,7 @@ public static class PgObjectScripts
         };
         if (statuses.Any(s => s.Type == DbObjectType.Trigger && s.Status == ObjectStatus.MissingInTarget)) sections.Add(ScriptSection.Triggers);
         if (statuses.Any(s => s.Type.IsModule() && s.Status == ObjectStatus.Different)) sections.Add(ScriptSection.DifferentModules);
+        if (statuses.Any(s => s.Type.IsModule() && s.Status == ObjectStatus.FormattingOnly)) sections.Add(ScriptSection.Formatting);
 
         static string Short(string s) => s.Length > 40 ? s[..40] : s;
         var options = new ScriptOptions

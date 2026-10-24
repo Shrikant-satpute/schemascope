@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { ArrowRight, Clock, History, Play, Trash2, AlertTriangle } from 'lucide-react'
 import type { CompareHistoryDatabase, CompareHistoryEntry, ConnectionSettings } from '../types'
 import { api } from '../api'
-import { dbColour, dbKey } from '../dbColour'
-import { Button, EmptyState, Panel } from './ui'
+import { dbColour, dbKey, serverWithPort } from '../dbColour'
+import { engineChip, engineName } from '../engines'
+import { Button, EmptyState, EngineChip, Panel } from './ui'
 import { countNonDefault } from './OptionsDialog'
 
 /**
@@ -218,7 +219,7 @@ function Side({ label, children }: { label: string; children: React.ReactNode })
 
 /** One database in the picture, wearing the same colour it wears everywhere else. */
 function DbChip({ db, available }: { db: CompareHistoryDatabase; available: boolean }) {
-  const colour = dbColour(dbKey(db.server, db.database))
+  const colour = dbColour(dbKey(db.server, db.database, db.engine, db.port))
 
   return (
     <span
@@ -229,11 +230,14 @@ function DbChip({ db, available }: { db: CompareHistoryDatabase; available: bool
         borderStyle: available ? 'solid' : 'dashed',
         opacity: available ? 1 : 0.6,
       }}
-      title={`${db.server} / ${db.database}${available ? '' : ' - connection deleted'}`}
+      title={`${engineName(db.engine)}: ${serverWithPort(db.server, db.port)} / ${db.database}${available ? '' : ' - connection deleted'}`}
     >
-      <span className="truncate text-[12.5px] font-medium">{db.label || db.server}</span>
+      <span className="flex min-w-0 items-center gap-1.5">
+        {(db.engine ?? 'sqlServer') !== 'sqlServer' && <EngineChip label={engineChip(db.engine)} title={engineName(db.engine)} />}
+        <span className="truncate text-[12.5px] font-medium">{db.label || db.server}</span>
+      </span>
       <span className="truncate font-mono text-[10.5px]" style={{ color: 'var(--text-3)' }}>
-        {db.server} / {db.database}
+        {serverWithPort(db.server, db.port)} / {db.database}
       </span>
     </span>
   )

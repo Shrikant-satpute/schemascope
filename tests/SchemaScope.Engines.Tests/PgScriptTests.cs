@@ -144,7 +144,6 @@ public abstract class PgScriptTestsBase(PgServer pg)
     private static readonly Dictionary<string, string[]> StillDifferent = new(StringComparer.Ordinal)
     {
         ["Extension pgcrypto.pgcrypto: MissingInTarget"] = ["pgcrypto"],
-        ["Scalar function app.fmt integer: FormattingOnly"] = ["app.fmt(integer)"],
         ["Scalar function app.kind integer: Different"] = ["app.kind(integer)"],
         ["Table app.customers: Different"] = ["app.customers.must", "app.customers.customers_name_check", "app.customers.legacy", "app.customers.customers_legacy_ix"],
         ["Table app.notes: Different"] = ["app.notes.body"],
@@ -218,13 +217,14 @@ public abstract class PgScriptTestsBase(PgServer pg)
             Assert.Contains("CREATE OR REPLACE FUNCTION app.label(x integer)", Folder("10_different_modules"));
             Assert.Contains("CREATE OR REPLACE VIEW", Folder("10_different_modules"));
             Assert.Contains(outcome.Folders, f => f.Folder == "02_tabletypes" && f.Notes.Any(n => n.StartsWith("Not applicable")));
-            Assert.Contains(outcome.Folders, f => f.Folder == "08_formatting_modules" && f.Notes.Any(n => n.StartsWith("Not applicable")));
+            // code that differs only in layout is re-created from the source's text by 08, not held
+            Assert.Contains("CREATE OR REPLACE FUNCTION app.fmt(x integer)", Folder("08_formatting_modules"));
             Assert.Contains(outcome.HeldBack, h => h.Object == "app.customers.must" && h.Reason.Contains("NOT NULL with no default"));
             Assert.Contains(outcome.HeldBack, h => h.Object == "app.notes.body" && h.Reason.Contains("v_notes"));
             Assert.Contains(outcome.HeldBack, h => h.Object == "app.customers.customers_name_check" && h.Reason.Contains("1 existing row"));
             Assert.Contains(outcome.HeldBack, h => h.Object == "pgcrypto" && h.Reason.Contains("CREATE EXTENSION"));
             Assert.Contains(outcome.HeldBack, h => h.Object == "app.kind(integer)" && h.Reason.Contains("return type"));
-            Assert.Contains(outcome.HeldBack, h => h.Object == "app.fmt(integer)");
+            Assert.DoesNotContain(outcome.HeldBack, h => h.Object == "app.fmt(integer)");
             Assert.Contains("ADD COLUMN \"b\" integer", Folder("01_columns"));
             Assert.Contains(outcome.HeldBack, h => h.Object == "app.ordered" && h.Reason.Contains("cannot move one"));
 
@@ -235,7 +235,7 @@ public abstract class PgScriptTestsBase(PgServer pg)
 
             // run it the way RUN.ps1 does, with psql inside the container, then 07 and 10 by hand: every file, failures collected
             var order = Regex.Match(run, @"\$folders = @\((?<f>[^)]*)\)").Groups["f"].Value.Split(',').Select(f => f.Trim('"')).ToList();
-            order.AddRange(["07_triggers", "10_different_modules"]);
+            order.AddRange(["07_triggers", "08_formatting_modules", "10_different_modules"]);
             Assert.All(order, folder => Assert.NotEmpty(PgScriptPair.FilesOf(outcome, folder)));
             Assert.Empty(await new PgScriptPair(pg, src, tgt, output).RunAsync(outcome, order));
 

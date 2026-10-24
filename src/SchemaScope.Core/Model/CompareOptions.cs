@@ -11,11 +11,13 @@ namespace SchemaScope.Core.Model;
 public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
 {
     /// <summary>The object types a set of options knows about: 1 for SQL Server's own (Schema..Synonym), 2 with
-    /// PostgreSQL's (MaterializedView..Extension).</summary>
-    public const int CurrentTypeSet = 2;
+    /// PostgreSQL's (MaterializedView..Extension), 3 with PostgreSQL's range types and collations.</summary>
+    public const int CurrentTypeSet = 3;
 
     private static readonly DbObjectType[] AddedInTypeSet2 =
         [DbObjectType.MaterializedView, DbObjectType.Domain, DbObjectType.EnumType, DbObjectType.CompositeType, DbObjectType.Extension];
+
+    private static readonly DbObjectType[] AddedInTypeSet3 = [DbObjectType.RangeType, DbObjectType.Collation];
 
     /// <summary>
     /// Which object types existed when these options were written (<see cref="CurrentTypeSet"/>). Options saved
@@ -30,6 +32,7 @@ public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
     void IJsonOnDeserialized.OnDeserialized()
     {
         if (TypeSet < 2) IncludedTypes.UnionWith(AddedInTypeSet2);
+        if (TypeSet < 3) IncludedTypes.UnionWith(AddedInTypeSet3);
         TypeSet = Math.Max(TypeSet, CurrentTypeSet);
     }
 

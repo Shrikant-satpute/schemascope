@@ -147,7 +147,9 @@ export function ApplyDialog({
   if (outcome) {
     const ok = outcome.applied.filter((f) => f.ok).length
     const failed = outcome.applied.find((f) => !f.ok)
-    const after = recompared ? matchFor(compareResult, t.server, t.database) : null
+    // every file of the sections that were run, not only those that got as far as running
+    const total = Math.max(fileCount, outcome.applied.length)
+    const after = recompared ? matchFor(compareResult, plan) : null
 
     return (
       <Modal
@@ -165,8 +167,8 @@ export function ApplyDialog({
           <Banner tone={outcome.success ? 'success' : 'error'}>
             <div>{outcome.message}</div>
             <div className="mt-0.5">
-              {ok.toLocaleString()} of {outcome.applied.length.toLocaleString()} file
-              {outcome.applied.length === 1 ? '' : 's'} applied.
+              {ok.toLocaleString()} of {total.toLocaleString()} file
+              {total === 1 ? '' : 's'} applied.
               {!outcome.success &&
                 ok > 0 &&
                 (failed
@@ -514,14 +516,22 @@ function serverText(t: ApplyPlan['applyTarget']): string {
   return t.port ? `${t.server}:${t.port}` : t.server
 }
 
-/** The target in a fresh result that is the database just applied to. */
-function matchFor(result: CompareResult | null, server: string, database: string) {
+/**
+ * The target in a fresh result that is the database just applied to. The compare runs again with the same targets
+ * in the same order, so it is the plan's own target index - checked to be the same engine, label and database (letter
+ * case counting outside SQL Server), so a result from another comparison is never read as this one's.
+ */
+function matchFor(result: CompareResult | null, plan: ApplyPlan) {
   if (!result) return null
-  const same = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0
-  const byDatabase = result.targets.filter((x) => !x.failed && same(x.database, database))
-  // the summary's server name can be spelled differently from the connection's, so only use it to pick between several
-  if (byDatabase.length <= 1) return byDatabase[0] ?? null
-  return byDatabase.find((x) => same(x.server, server)) ?? null
+  const t = plan.applyTarget
+  const engine = t.engine ?? 'sqlServer'
+  const x = result.targets[plan.targetIndex]
+  if (!x || x.failed || (x.engine ?? 'sqlServer') !== engine || x.label !== t.label) return null
+  const sameDatabase =
+    engine === 'sqlServer' ? x.database.localeCompare(t.database, undefined, { sensitivity: 'accent' }) === 0 : x.database === t.database
+  if (!sameDatabase) return null
+  if (t.port != null && x.port != null && x.port !== t.port) return null
+  return x
 }
 
 /** Ids the server accepts: 8-64 letters, digits or dashes. */

@@ -5,6 +5,7 @@ import type { CompareResult, ObjectStatus } from '../types'
 import type { DbColour } from '../dbColour'
 import { STATUS, TYPE_COUNT_ORDER, TYPE_COUNT_WORD, typeCounts } from '../status'
 import { engineChip } from '../engines'
+import { serverWithPort } from '../dbColour'
 import { EngineChip } from './ui'
 
 /** Names for the stage keys the engine reports, in the order the work happens. */
@@ -243,7 +244,7 @@ function TargetTile({
         >
           {showEngine && <EngineChip label={engineChip(target.engine, target.productVersion)} />}
           <span className="truncate">
-            {target.server} / {target.database}
+            {serverWithPort(target.server, target.port)} / {target.database}
           </span>
         </div>
 

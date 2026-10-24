@@ -1,3 +1,5 @@
+import type { DatabaseEngine } from './types'
+
 /**
  * A soft identity colour per database.
  *
@@ -55,13 +57,28 @@ export function dbColour(key: string): DbColour {
   return colour
 }
 
-/** What makes a database that database: the server it lives on and its name. */
-export function dbKey(server?: string | null, database?: string | null): string {
-  return `${(server ?? '').trim().toLowerCase()}/${(database ?? '').trim().toLowerCase()}`
+/** The port an engine listens on when a connection names none (SQL Server keeps its port in the server name). */
+const DEFAULT_PORTS: Partial<Record<DatabaseEngine, number>> = { postgreSql: 5432, mySql: 3306, mariaDb: 3306 }
+
+/**
+ * What makes a database that database. SQL Server: the server it lives on and its name, letter case aside (keys as
+ * they always were). Any other engine: engine|host|port|name - its port is apart from the host, so two servers on one
+ * host get two keys, and its database name is exact ("App" and "app" are two databases).
+ */
+export function dbKey(server?: string | null, database?: string | null, engine?: DatabaseEngine | null, port?: number | null): string {
+  if (!engine || engine === 'sqlServer') return `${(server ?? '').trim().toLowerCase()}/${(database ?? '').trim().toLowerCase()}`
+  return `${engine}|${(server ?? '').trim().toLowerCase()}|${port ?? DEFAULT_PORTS[engine] ?? ''}|${(database ?? '').trim()}`
+}
+
+/** host:port for an engine that keeps the port apart (PostgreSQL); the server as it is for SQL Server. */
+export function serverWithPort(server: string, port?: number | null): string {
+  return port != null ? `${server}:${port}` : server
 }
 
 interface ConnectionLike {
+  engine?: DatabaseEngine
   server?: string
+  port?: number | null
   database?: string
   useRawConnectionString?: boolean
   rawConnectionString?: string | null
@@ -70,7 +87,7 @@ interface ConnectionLike {
 /** The key for a saved connection, optionally pointed at another database on the same server. */
 export function connectionKey(c: ConnectionLike, database?: string): string {
   const db = database || c.database
-  return c.useRawConnectionString ? dbKey(c.rawConnectionString ?? '', db) : dbKey(c.server, db)
+  return c.useRawConnectionString ? dbKey(c.rawConnectionString ?? '', db, c.engine) : dbKey(c.server, db, c.engine, c.port)
 }
 
 export function connectionColour(c: ConnectionLike, database?: string): DbColour {

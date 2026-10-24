@@ -137,4 +137,6 @@ export const TYPE_ORDER = [
   'enumType',
   'compositeType',
   'extension',
+  'rangeType',
+  'collation',
 ] as const

@@ -64,7 +64,7 @@ public sealed class PgRouteTests : IAsyncLifetime
         Assert.Equal("psql", scripts.GetProperty("runner").GetString());
         Assert.StartsWith("Parsed with the PostgreSQL parser", scripts.GetProperty("validation").GetString());
         var sections = scripts.GetProperty("sections").EnumerateArray().ToList();
-        Assert.Equal(["tableTypes", "formatting"], sections.Where(s => !s.GetProperty("applicable").GetBoolean()).Select(s => s.GetProperty("section").GetString()));
+        Assert.Equal(["tableTypes"], sections.Where(s => !s.GetProperty("applicable").GetBoolean()).Select(s => s.GetProperty("section").GetString()));
         Assert.False(engines.Single(e => e.GetProperty("engine").GetString() == "sqlServer").TryGetProperty("scripts", out _));
         Assert.True(pg.GetProperty("form").GetProperty("sslMode").GetBoolean());
         Assert.False(pg.GetProperty("defaults").GetProperty("trustServerCertificate").GetBoolean());
@@ -315,6 +315,8 @@ public sealed class PgRouteTests : IAsyncLifetime
         var (run, plan) = RunWithPlan(Pg("Dev", "Host=127.0.0.1;Port=2;Database=App"), Pg("Prod", "Host=127.0.0.1;Port=1;Database=App"));
         var apply = await Apply(run, plan, "App");
         Assert.Equal(HttpStatusCode.BadRequest, apply.StatusCode);
-        Assert.Equal("Applying scripts to PostgreSql is not available in this version.", await Message(apply));
+        // the reason is the switch, said as the compare says it (the first sentence is the one the SQL Server suite pins)
+        Assert.Equal("Applying scripts to PostgreSql is not available with preview engines off. PostgreSQL is a preview in this version: " +
+                     "turn on \"Show preview engines\" on the Connections screen to use it.", await Message(apply));
     }
 }

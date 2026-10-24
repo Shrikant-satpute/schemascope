@@ -38,6 +38,9 @@ public sealed class PgConnectionService : IConnectionService
             return raw.ConnectionString;
         }
 
+        // SQL Server's "host,port": here the comma would list a host called after the port, and the password go to 5432
+        if (ConnectionEndpoints.HasPortAfterComma(s.Server))
+            throw new ArgumentException("For PostgreSQL the port goes in the Port field, not after a comma: a comma lists hosts.");
         // with no password Npgsql would send PGPASSWORD or a pgpass.conf entry instead (ConnectionRules.MissingPassword)
         if (string.IsNullOrEmpty(s.Password))
             throw new ArgumentException("Type the password: a PostgreSQL connection without one is not attempted.");

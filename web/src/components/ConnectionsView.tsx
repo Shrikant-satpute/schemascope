@@ -73,7 +73,7 @@ export function ConnectionsView({
                 setPreview(v).catch((e) => setPreviewError(e instanceof Error ? e.message : String(e)))
               }}
               label={`Show preview engines (${preview.engines.join(', ')})`}
-              hint="Compare only in this version: scripts and apply are not offered for a preview engine. Turned off, SchemaScope refuses those connections."
+              hint="A preview engine offers compare, scripts and apply in Read & write mode, and is still being proven on more schemas. Turned off, SchemaScope refuses those connections."
             />
             {previewError && (
               <div className="px-2 pb-1 text-[12px]" style={{ color: 'var(--st-miss)' }}>

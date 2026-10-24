@@ -414,9 +414,9 @@ public abstract class PgDestructiveTestsBase(PgServer pg)
         foreach (var sequence in new[] { "s", "s2", "s3" })
             Assert.Equal(sequence, await pair.ScalarAsync($"SELECT to_regclass('{sequence}')::text"));
         Assert.Equal(DBNull.Value, await pair.ScalarAsync("SELECT to_regclass('gone')::text"));
-        // they still differ only by OWNED BY, which is held; none went missing
-        Assert.Equal(["Sequence public.s2: Different", "Sequence public.s3: Different", "Sequence public.s: Different", "Table public.t: Different"],
-            PgScriptPair.NotSame(await pair.CompareAsync()));
+        // none went missing, and 05 set them OWNED BY NONE as the source has them: only the held column is left
+        Assert.Equal(["Table public.t: Different"], PgScriptPair.NotSame(await pair.CompareAsync()));
+        Assert.Equal(0L, await pair.ScalarAsync("SELECT count(*) FROM pg_depend WHERE classid = 'pg_class'::regclass AND deptype = 'a' AND objid IN ('s'::regclass, 's2'::regclass, 's3'::regclass)"));
     }
 
     protected async Task A_generated_column_change_is_held_by_04_with_or_without_destructive()

@@ -60,6 +60,25 @@ public static class ConnectionRules
         return null;
     }
 
+    private const string PortAfterComma =
+        "For PostgreSQL the port goes in its own field (Port=5433), not after a comma: a comma lists hosts (host1,host2), " +
+        "so \"localhost,5433\" would mean a host called 5433 on the default port 5432.";
+
+    /// <summary>The Host (or Server) value of a key=value string, or null when it cannot be read.</summary>
+    private static string? RawHosts(string? connectionString)
+    {
+        try
+        {
+            var b = new System.Data.Common.DbConnectionStringBuilder { ConnectionString = connectionString ?? "" };
+            foreach (var key in new[] { "host", "server" })
+                if (b.TryGetValue(key, out var v) && v?.ToString() is { } text) return text;
+        }
+        catch (ArgumentException)
+        {
+        }
+        return null;
+    }
+
     /// <summary>
     /// PostgreSQL in this version: a user name and password, a port in range, TLS verified unless the user ticked
     /// "Trust server certificate" (Require and Prefer never check the certificate, and Disable has no TLS at all, so
@@ -73,12 +92,16 @@ public static class ConnectionRules
             if (ConnectionEndpoints.IsUri(s.RawConnectionString))
                 return "Connection strings in URI form (postgres://user:password@host) are not accepted. " +
                        "Use key=value pairs, e.g. Host=host;Port=5432;Database=name;Username=user.";
+            if (RawHosts(s.RawConnectionString) is { } hosts && ConnectionEndpoints.HasPortAfterComma(hosts))
+                return PortAfterComma;
             // Npgsql's own reading: a key it does not know, or hosts and ports that cannot be told apart, is refused
             if (!string.IsNullOrWhiteSpace(s.RawConnectionString) &&
                 new PgConnectionService().ParseEndpoint(s.RawConnectionString) is null)
                 return "That is not a PostgreSQL connection string SchemaScope can read: name the host (or hosts) and one port, " +
                        "e.g. Host=host;Port=5432;Database=name;Username=user.";
         }
+        if (!s.UseRawConnectionString && ConnectionEndpoints.HasPortAfterComma(s.Server))
+            return PortAfterComma;
         if (s.Auth != AuthMode.Password)
             return "That sign-in method is not available for PostgreSQL in this version: use a user name and password.";
         if (s.Port is { } port && port is <= 0 or > 65535)

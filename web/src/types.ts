@@ -151,6 +151,8 @@ export type DbObjectType =
   | 'enumType'
   | 'compositeType'
   | 'extension'
+  | 'rangeType'
+  | 'collation'
 
 export interface ConnectionSettings {
   id: string
@@ -220,8 +222,12 @@ export interface CompareOptions {
 /** One database as it took part in a past compare. */
 export interface CompareHistoryDatabase {
   connectionId?: string | null
+  /** Missing on runs saved before engines existed: SQL Server. */
+  engine?: DatabaseEngine
   label: string
   server: string
+  /** Engines other than SQL Server (whose port is part of the server name). */
+  port?: number | null
   database: string
 }
 
@@ -277,6 +283,8 @@ export interface TargetSummary {
   /** Missing on runs saved before engines existed: SQL Server. */
   engine?: DatabaseEngine
   server: string
+  /** Engines other than SQL Server (whose port is part of the server name). */
+  port?: number | null
   database: string
   productVersion: string
   collation: string
@@ -299,6 +307,8 @@ export interface SnapshotInfo {
   label: string
   engine?: DatabaseEngine
   server: string
+  /** Engines other than SQL Server (whose port is part of the server name). */
+  port?: number | null
   database: string
   productVersion: string
   collation: string

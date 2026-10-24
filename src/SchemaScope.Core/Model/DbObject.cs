@@ -109,6 +109,10 @@ public sealed class DbObject
 /// <summary>One thing a <see cref="DbObject"/> needs.</summary>
 /// <param name="Key">The needed object's <see cref="DbObject.Key"/> (an extension's when it belongs to one).</param>
 /// <param name="Column">The column of that table or view it names, when the dependency is on one column.</param>
-/// <param name="Via">What records the need: view (a view's or rule's query), default (a default or generated column),
-/// constraint, trigger, policy, routine, type or relation.</param>
-public sealed record DbDependency(string Key, string? Column = null, string Via = "relation");
+/// <param name="Via">What records the need: view (a view's query, or a rule on a view), rule (a rule on a table), default
+/// (a default or generated column), constraint, trigger, policy, routine, type, relation, key (the index behind a
+/// primary, unique or exclusion key) or index (another index).</param>
+/// <param name="Index">For key and index: the index of the dependent table that needs it.</param>
+public sealed record DbDependency(string Key, string? Column = null, string Via = "relation",
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? Index = null);

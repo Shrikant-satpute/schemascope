@@ -294,7 +294,7 @@ export function ObjectScriptDialog({
       >
         <div className="flex flex-col gap-3">
           <Header status={status} text={plan ? PLAN_TEXT[plan](targetLabel, row?.typeLabel ?? '') : ''} />
-          <PlanBanner plan={plan} target={targetLabel} />
+          <PlanBanner plan={plan} target={targetLabel} rollback={!!outcome.rollback} />
 
           {!outcome.script.trim() && (
             <Banner tone="warning">
@@ -380,7 +380,8 @@ export function ObjectScriptDialog({
 
         {deps && (
           <>
-            <PlanBanner plan={plan} target={targetLabel} />
+            {/* SQL Server's alter scripts come with a rollback; another engine's do not */}
+            <PlanBanner plan={plan} target={targetLabel} rollback={(target?.engine ?? 'sqlServer') === 'sqlServer'} />
             {deps.warnings.map((w, i) => (
               <Banner key={i} tone="warning">
                 {w}
@@ -517,7 +518,7 @@ function Header({ status, text }: { status?: ObjectStatus; text: string }) {
 }
 
 /** The plans that need a second look before anyone runs them. */
-function PlanBanner({ plan, target }: { plan?: ObjectScriptPlan; target: string }) {
+function PlanBanner({ plan, target, rollback }: { plan?: ObjectScriptPlan; target: string; rollback: boolean }) {
   if (plan === 'tableType') {
     return (
       <Banner tone="error">
@@ -538,8 +539,10 @@ function PlanBanner({ plan, target }: { plan?: ObjectScriptPlan; target: string 
   if (plan === 'alter') {
     return (
       <Banner tone="warning">
-        This overwrites {target}'s version. If that change was made on purpose it is lost - the Rollback tab has{' '}
-        {target}'s current definition.
+        This overwrites {target}'s version. If that change was made on purpose it is lost
+        {rollback
+          ? ` - the Rollback tab has ${target}'s current definition.`
+          : `. No rollback is written: the compare's diff shows ${target}'s current definition, so copy it first if you may need it.`}
       </Banner>
     )
   }

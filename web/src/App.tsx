@@ -560,6 +560,10 @@ export default function App() {
       {showOptions && options && (
         <OptionsDialog
           options={options}
+          // the engines in the setup: SQL Server's own switches are shown only when one side is SQL Server
+          engines={[source, ...targets]
+            .filter((x): x is TargetSlot => !!x)
+            .map((x) => connections.find((c) => c.id === x.connectionId)?.engine ?? 'sqlServer')}
           onClose={() => setShowOptions(false)}
           onApply={(o) => {
             setOptions(o)

@@ -61,6 +61,23 @@ public static partial class PgDdl
         return false;
     }
 
+    /// <summary>
+    /// True when <paramref name="text"/> qualifies a name with schema <paramref name="schema"/> (bare or quoted, then a
+    /// dot) anywhere, a routine's body and literals included: a body names what it calls in its own text.
+    /// </summary>
+    public static bool MentionsSchema(string? text, string schema)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        var code = text;
+        foreach (var form in new[] { Ident(schema) + ".", Q(schema) + "." }.Distinct())
+            for (var at = code.IndexOf(form, StringComparison.Ordinal); at >= 0; at = code.IndexOf(form, at + 1, StringComparison.Ordinal))
+            {
+                var before = at > 0 ? code[at - 1] : ' ';
+                if (!PgStatementSplitter.IsIdentCont(before) && before != '.' && before != '"') return true;
+            }
+        return false;
+    }
+
     /// <summary>The statement with exactly one terminating semicolon and a newline.</summary>
     public static string Statement(string sql)
     {

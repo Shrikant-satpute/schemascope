@@ -1045,6 +1045,7 @@ public static class SchemaScopeApi
             SchemaScopeStore store,
             ScriptProgressStore progressStore,
             EngineRegistry engines,
+            EngineCatalog catalog,
             ILoggerFactory loggers) =>
         {
             if (!http.HasJsonContentType())
@@ -1074,7 +1075,11 @@ public static class SchemaScopeApi
             // the engine is the session's, never the request's
             var engine = session.TargetConnections[index].Engine;
             if (!engines.Supports(engine, EngineFeature.Apply) || applier.ExecutorFor(engine) is not { } executor)
-                return Refuse(StatusCodes.Status400BadRequest, $"Applying scripts to {engine} is not available in this version.");
+                // a preview engine this build carries, switched off: say so, as the compare does (the first sentence
+                // keeps the wording older clients and tests look for)
+                return Refuse(StatusCodes.Status400BadRequest, catalog.Carries(engine) && !engines.TryGet(engine, out _)
+                    ? $"Applying scripts to {engine} is not available with preview engines off. {ConnectionRules.NotEnabled(engine)}"
+                    : $"Applying scripts to {engine} is not available in this version.");
             // scripts across engines are written to a folder only, never applied from here
             if (session.SourceConnection!.Engine != engine)
                 return Refuse(StatusCodes.Status400BadRequest, "Scripts made across engines are never applied from SchemaScope.");
@@ -1091,7 +1096,9 @@ public static class SchemaScopeApi
                     ? $"Type the target database name, {target.Database}, to confirm."
                     : $"Type the target database name, {target.Database}, exactly as written (letter case counts), to confirm.");
             if (target.Protected)
-                return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is marked \"Protected - never apply scripts here\". Nothing was applied.");
+                return Refuse(StatusCodes.Status403Forbidden, MarkedItself(session, index, store)
+                    ? $"{target.Label} is marked \"Protected - never apply scripts here\". Nothing was applied."
+                    : $"{target.Label} is on a server marked \"Protected - never apply scripts here\". Nothing was applied.");
             if (IsSource(session, index))
                 return Refuse(StatusCodes.Status403Forbidden, "That is the source database of this comparison. SchemaScope never applies scripts to the source.");
 
@@ -1204,6 +1211,24 @@ public static class SchemaScopeApi
     }
 
     /// <summary>The target as the session really connects to it. The caller has checked the index.</summary>
+    /// <summary>
+    /// The target's own connection is the one marked Protected (rather than another one on the same server). A store
+    /// that cannot be read counts as marked: the refusal stands either way, only its wording depends on this.
+    /// </summary>
+    private static bool MarkedItself(CompareSession session, int index, SchemaScopeStore store)
+    {
+        var target = session.TargetConnections[index];
+        if (target.ProtectedServer) return true;
+        try
+        {
+            return target.ConnectionId is { } id && store.GetConnection(id) is { ProtectedServer: true };
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
     private static ApplyTarget ApplyTargetOf(CompareSession session, int index, SchemaScopeStore store)
     {
         var source = session.TargetConnections[index];

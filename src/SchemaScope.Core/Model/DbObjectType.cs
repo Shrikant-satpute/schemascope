@@ -37,7 +37,15 @@ public enum DbObjectType
     /// <summary>PostgreSQL: an operator a user made (CREATE OPERATOR), told apart by its argument types.</summary>
     Operator = 19,
     /// <summary>PostgreSQL: a table whose rows live on another server (CREATE FOREIGN TABLE ... SERVER).</summary>
-    ForeignTable = 20
+    ForeignTable = 20,
+    /// <summary>PostgreSQL: a text search dictionary a user made (CREATE TEXT SEARCH DICTIONARY).</summary>
+    TextSearchDictionary = 21,
+    /// <summary>PostgreSQL: a text search configuration a user made (CREATE TEXT SEARCH CONFIGURATION), with its mappings.</summary>
+    TextSearchConfiguration = 22,
+    /// <summary>PostgreSQL: an operator class a user made (CREATE OPERATOR CLASS), told apart by its access method.</summary>
+    OperatorClass = 23,
+    /// <summary>PostgreSQL: a cast a user made (CREATE CAST), named by its source and target types.</summary>
+    Cast = 24
 }
 
 public static class DbObjectTypeExtensions
@@ -66,6 +74,10 @@ public static class DbObjectTypeExtensions
         DbObjectType.Collation => "Collation",
         DbObjectType.Operator => "Operator",
         DbObjectType.ForeignTable => "Foreign table",
+        DbObjectType.TextSearchDictionary => "Text search dictionary",
+        DbObjectType.TextSearchConfiguration => "Text search configuration",
+        DbObjectType.OperatorClass => "Operator class",
+        DbObjectType.Cast => "Cast",
         _ => t.ToString()
     };
 

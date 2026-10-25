@@ -11,8 +11,9 @@ namespace SchemaScope.Core.Model;
 public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
 {
     /// <summary>The object types a set of options knows about: 1 for SQL Server's own (Schema..Synonym), 2 with
-    /// PostgreSQL's (MaterializedView..Extension), 3 with PostgreSQL's range types and collations, 4 with its operators, 5 with its foreign tables.</summary>
-    public const int CurrentTypeSet = 5;
+    /// PostgreSQL's (MaterializedView..Extension), 3 with PostgreSQL's range types and collations, 4 with its operators, 5 with its foreign tables,
+    /// 6 with its text search dictionaries and configurations, operator classes and casts.</summary>
+    public const int CurrentTypeSet = 6;
 
     private static readonly DbObjectType[] AddedInTypeSet2 =
         [DbObjectType.MaterializedView, DbObjectType.Domain, DbObjectType.EnumType, DbObjectType.CompositeType, DbObjectType.Extension];
@@ -22,6 +23,9 @@ public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
     private static readonly DbObjectType[] AddedInTypeSet4 = [DbObjectType.Operator];
 
     private static readonly DbObjectType[] AddedInTypeSet5 = [DbObjectType.ForeignTable];
+
+    private static readonly DbObjectType[] AddedInTypeSet6 =
+        [DbObjectType.TextSearchDictionary, DbObjectType.TextSearchConfiguration, DbObjectType.OperatorClass, DbObjectType.Cast];
 
     /// <summary>
     /// Which object types existed when these options were written (<see cref="CurrentTypeSet"/>). Options saved
@@ -39,6 +43,7 @@ public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
         if (TypeSet < 3) IncludedTypes.UnionWith(AddedInTypeSet3);
         if (TypeSet < 4) IncludedTypes.UnionWith(AddedInTypeSet4);
         if (TypeSet < 5) IncludedTypes.UnionWith(AddedInTypeSet5);
+        if (TypeSet < 6) IncludedTypes.UnionWith(AddedInTypeSet6);
         TypeSet = Math.Max(TypeSet, CurrentTypeSet);
     }
 
@@ -88,12 +93,15 @@ public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
     /// <summary>
     /// These options as an engine other than SQL Server reads with them: SQL Server's default schemas (as the app
     /// wrote them) give way to the engine's own, so a real PostgreSQL schema called sys or guest is compared, and
-    /// names match exactly when the engine's do. Schemas the user added stay excluded.
+    /// names match exactly when the engine's do. Schemas the user added stay excluded. The defaults are told from the
+    /// user's own entries by being there whole, as the app writes them: a list the user typed (guest, tmp) is the user's,
+    /// every name of it, guest too.
     /// </summary>
     public CompareOptions ForEngine(IEnumerable<string> defaultExcludedSchemas, bool exactNames)
     {
         var copy = Clone();
-        copy.ExcludedSchemas = [.. ExcludedSchemas.Where(s => !SqlServerExcludedSchemas.Contains(s, StringComparer.Ordinal))
+        var asWritten = SqlServerExcludedSchemas.All(d => ExcludedSchemas.Contains(d, StringComparer.Ordinal));
+        copy.ExcludedSchemas = [.. ExcludedSchemas.Where(s => !asWritten || !SqlServerExcludedSchemas.Contains(s, StringComparer.Ordinal))
             .Concat(defaultExcludedSchemas).Distinct(StringComparer.Ordinal)];
         copy.ExactNames = exactNames;
         return copy;

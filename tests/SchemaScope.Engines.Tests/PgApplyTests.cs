@@ -317,7 +317,8 @@ public abstract class PgApplyTestsBase(PgServer pg)
             Assert.Equal(DBNull.Value, await RegClassAsync(db, "app.never_run"));
 
             // each file ran in a transaction of its own with the apply's settings
-            Assert.Equal("5s|1min|pg_catalog, pg_temp|SchemaScope|off",
+            // the login's own search_path, between pg_catalog and pg_temp
+            Assert.Equal("5s|1min|pg_catalog, \"$user\", public, pg_temp|SchemaScope|off",
                 await ScalarAsync(db, "SELECT lt || '|' || it || '|' || sp || '|' || an || '|' || ro FROM app.kept"));
 
             var run = Assert.Single(temp.Store.GetApplyRuns());

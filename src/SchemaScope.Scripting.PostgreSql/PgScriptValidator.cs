@@ -84,6 +84,13 @@ public sealed partial class PgScriptValidator
                 if (text.Contains(expected, StringComparison.Ordinal)) summary.ModulesExact++;
                 else fileProblems.Add("the code body is not the source's text");
             }
+            // a file that creates several (11's view rebuilds): each one's text
+            foreach (var module in f.ExpectedModules)
+            {
+                summary.ModulesChecked++;
+                if (text.Contains(module.Text, StringComparison.Ordinal)) summary.ModulesExact++;
+                else fileProblems.Add("a code body it creates again is not the source's text");
+            }
 
             foreach (var p in fileProblems) summary.Problems.Add($"{name}: {p}");
             rows.Add((name, statements.Count, fileProblems.Count == 0 ? "ok" : string.Join("; ", fileProblems)));

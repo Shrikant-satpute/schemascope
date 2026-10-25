@@ -145,6 +145,8 @@ public static class StructureDiffService
             x.Kind == ConstraintKind.Default &&
             string.Equals(x.ColumnName, c.Name, names));
 
+        // PostgreSQL in its own words: GENERATED ... AS IDENTITY (START WITH ...), GENERATED ALWAYS AS (...) STORED / VIRTUAL
+        var postgres = owner.Fold is IdentifierFold.Exact;
         return new ColumnFacet
         {
             Ordinal = c.Ordinal,
@@ -152,12 +154,13 @@ public static class StructureDiffService
             Nullable = c.IsNullable ? "NULL" : "NOT NULL",
             Identity = !c.IsIdentity ? ""
                 : c.IdentityKind is { } kind
-                    // PostgreSQL: GENERATED ALWAYS / BY DEFAULT AS IDENTITY
-                    ? options.IgnoreIdentitySeed ? $"GENERATED {kind} AS IDENTITY"
-                        : $"GENERATED {kind} AS IDENTITY({c.IdentitySeed},{c.IdentityIncrement}{(c.IdentityOptions is { } limits ? ", " + limits : "")})"
+                    ? options.IgnoreIdentitySeed || c.IdentitySeed is null ? $"GENERATED {kind} AS IDENTITY"
+                        : $"GENERATED {kind} AS IDENTITY (START WITH {c.IdentitySeed} INCREMENT BY {c.IdentityIncrement}{(c.IdentityOptions is { } limits ? " " + limits : "")})"
                     : options.IgnoreIdentitySeed ? "IDENTITY" : $"IDENTITY({c.IdentitySeed},{c.IdentityIncrement})",
             Default = def?.Definition ?? "",
-            Computed = c.IsComputed ? $"AS {c.ComputedDefinition}{(c.IsPersisted ? " PERSISTED" : "")}" : "",
+            Computed = !c.IsComputed ? ""
+                : postgres ? $"GENERATED ALWAYS AS ({c.ComputedDefinition}) {(c.IsPersisted ? "STORED" : "VIRTUAL")}"
+                : $"AS {c.ComputedDefinition}{(c.IsPersisted ? " PERSISTED" : "")}",
             Collation = c.Collation ?? ""
         };
     }
@@ -206,6 +209,9 @@ public static class StructureDiffService
                 .ToDictionary(kv => kv.Key, kv => kv.Value!, StringComparer.Ordinal)
             : new Dictionary<string, string>(StringComparer.Ordinal);
 
+    /// <summary>A PostgreSQL key's WITH (...) index options (PgCanonicalWriter.KeyText leaves fillfactor out of the compare the same way).</summary>
+    private static readonly System.Text.RegularExpressions.Regex KeyWith = new(@" WITH \((?<o>[^()]*)\)", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     private static Dictionary<string, string> Render(List<IndexInfo>? indexes, CompareOptions options, StringComparer names)
     {
         var map = new Dictionary<string, string>(names);
@@ -218,6 +224,10 @@ public static class StructureDiffService
                 // the engine's own text (PostgreSQL), keyed as below: a default-named key by kind and columns
                 var ownKind = ix.IsPrimaryKey ? "PRIMARY KEY" : ix.IsUniqueConstraint ? "UNIQUE" : ix.TypeDesc;
                 var ownCols = string.Join(", ", ix.KeyColumns.OrderBy(k => k.Ordinal).Select(k => k.Name));
+                // a key's index options as the compare sees them: no fillfactor when it is ignored
+                if (options.IgnoreFillFactor && (ix.IsPrimaryKey || ix.IsUniqueConstraint || ix.TypeDesc == "EXCLUDE"))
+                    own = KeyWith.Replace(own, m => string.Join(", ", m.Groups["o"].Value.Split(", ", StringSplitOptions.RemoveEmptyEntries)
+                        .Where(x => !x.StartsWith("fillfactor=", StringComparison.Ordinal))) is { Length: > 0 } kept ? $" WITH ({kept})" : "");
                 map[options.IgnoreSystemNamedConstraints && ix.IsSystemNamed ? $"{ownKind} ({ownCols})" : ix.Name] = own;
                 continue;
             }

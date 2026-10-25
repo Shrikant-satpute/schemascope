@@ -218,6 +218,10 @@ public sealed class PgConnectionService : IConnectionService
             WindowsSignInRefusedException => ex.Message,
             NpgsqlException { InnerException: SocketException so } => $"Could not reach the server ({so.SocketErrorCode}).",
             NpgsqlException { InnerException: AuthenticationException } => "The TLS handshake failed: the server certificate could not be verified.",
+            // the driver names the file's path, and a Passfile's path is a secret the string holds: never echoed
+            FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or
+                NpgsqlException { InnerException: FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException } =>
+                "A file the connection string names (its Passfile, or an SSL certificate or key) could not be read.",
             _ => ex.Message
         };
         return text.Length > 400 ? text[..400] + "..." : text;

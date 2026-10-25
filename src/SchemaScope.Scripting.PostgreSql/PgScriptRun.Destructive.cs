@@ -63,6 +63,8 @@ internal sealed partial class PgScriptRun
         public List<DDep> Deps { get; } = [];
         public List<string> Statements { get; } = [];
         public List<string> Header { get; } = [];
+        /// <summary>The source's code texts the file carries exactly (the views a rebuild creates again), for the validator.</summary>
+        public List<string> Modules { get; } = [];
         /// <summary>Scripted-but-check rows for the review, written only when the item is kept.</summary>
         public List<(string Kind, string Name, string Reason)> Notes { get; } = [];
         public string? Held { get; set; }
@@ -191,6 +193,16 @@ internal sealed partial class PgScriptRun
                 i.Statements.Add($"DROP INDEX {PgDdl.Q(tgt.Schema, x.Name)} RESTRICT");
                 i.Header.Add($"Drops {(x.IsUnique ? "UNIQUE " : "")}INDEX {x.Name} on {tgt.FullName}: {srcLabel} has no such index. ({x.Definition})");
             }
+
+            foreach (var key in tgt.Properties.Keys.Where(k => k.StartsWith(PgCanonicalWriter.StatisticsPrefix, StringComparison.Ordinal) && !src.Properties.ContainsKey(k))
+                         .Order(StringComparer.Ordinal))
+            {
+                var name = key[PgCanonicalWriter.StatisticsPrefix.Length..];
+                var i = Part(DKind.DropIndex, "statistics", tgt, name, "drop_statistics");
+                i.Statements.Add($"DROP STATISTICS {name} RESTRICT");
+                i.Header.Add($"Drops statistics {name} on {tgt.FullName}: {srcLabel} has none of that name. No row is lost; the planner forgets " +
+                             "what it knew of how those columns go together.");
+            }
         }
 
         // ---- objects only the target has
@@ -225,6 +237,10 @@ internal sealed partial class PgScriptRun
                 DbObjectType.EnumType or DbObjectType.CompositeType or DbObjectType.RangeType => (DKind.DropType, $"DROP TYPE {PgDdl.Q(o)} RESTRICT", "drop_type"),
                 DbObjectType.Collation => (DKind.DropType, $"DROP COLLATION {PgDdl.Q(o)} RESTRICT", "drop_collation"),
                 DbObjectType.Operator => (DKind.DropType, $"DROP OPERATOR {PgDdl.Q(o.Schema)}.{o.Name} ({o.Signature}) RESTRICT", "drop_operator"),
+                DbObjectType.OperatorClass => (DKind.DropType, $"DROP OPERATOR CLASS {PgDdl.Q(o)} USING {PgDdl.Q(o.Signature ?? "")} RESTRICT", "drop_operator_class"),
+                DbObjectType.TextSearchConfiguration => (DKind.DropType, $"DROP TEXT SEARCH CONFIGURATION {PgDdl.Q(o)} RESTRICT", "drop_text_search_configuration"),
+                DbObjectType.TextSearchDictionary => (DKind.DropType, $"DROP TEXT SEARCH DICTIONARY {PgDdl.Q(o)} RESTRICT", "drop_text_search_dictionary"),
+                DbObjectType.Cast => (DKind.DropType, $"DROP CAST ({o.Properties.GetValueOrDefault("source")} AS {o.Properties.GetValueOrDefault("target")}) RESTRICT", "drop_cast"),
                 _ => (DKind.DropModule, DropModule(o), "drop_" + Kind(o).Replace(' ', '_')),
             };
             var i = new DItem { Kind = kind, Name = Display(o), Word = Kind(o), Table = o, FileWord = $"{fileWord}_{Display(o)}" };
@@ -369,8 +385,9 @@ internal sealed partial class PgScriptRun
                 }
                 case DKind.DropIndex:
                 {
-                    var x = i.Table.Indexes.First(x => !IsKey(x) && x.Name == i.Sub);
-                    if (x.IsUnique && x.FilterDefinition is null)
+                    // a dropped extended statistics object (DropIndex too) is no index: nothing stands on it
+                    var x = i.Table.Indexes.FirstOrDefault(x => !IsKey(x) && x.Name == i.Sub);
+                    if (x is { IsUnique: true, FilterDefinition: null })
                         AddFkRefs(i, i.Table, f => f.ReferencedColumns.ToHashSet(StringComparer.Ordinal).SetEquals(Columns(x)));
                     break;
                 }
@@ -549,7 +566,8 @@ internal sealed partial class PgScriptRun
                            (IsRoutine(m) ? BodiesOff : "") + PgDdl.Statement(rollbackModule);
             }
             Destructive.Files.Add(new PgFile(i.FileWord, body, i.Kind == DKind.DropModule && i.Table.Type == DbObjectType.Trigger
-                ? new ObjectName(i.Table.Schema, i.Table.ParentName ?? "") : new ObjectName(i.Table.Schema, i.Table.Name), Rollback: rollback, RollbackModule: rollbackModule));
+                ? new ObjectName(i.Table.Schema, i.Table.ParentName ?? "") : new ObjectName(i.Table.Schema, i.Table.Name), Rollback: rollback, RollbackModule: rollbackModule,
+                Modules: i.Modules.Count > 0 ? i.Modules : null));
         }
 
         var kinds = kept.GroupBy(i => i.Kind switch
@@ -698,7 +716,11 @@ internal sealed partial class PgScriptRun
                 i.Statements.Add($"ALTER TABLE {PgDdl.Q(tgt)} ALTER COLUMN {PgDdl.Q(c.Name)} TYPE {c.DataType}{collate}");
             }
             foreach (var n in Order(mine))
-                i.Statements.Add(mine[n].Type == DbObjectType.View ? CreateOnly(mine[n].Definition!.TrimEnd()).Text : mine[n].Definition!.TrimEnd());
+            {
+                var (create, module) = mine[n].Type == DbObjectType.View ? CreateOnly(mine[n].Definition!.TrimEnd()) : (mine[n].Definition!.TrimEnd(), mine[n].Definition!.TrimEnd());
+                i.Statements.Add(create);
+                i.Modules.Add(module);
+            }
         }
         return rebuilt;
     }

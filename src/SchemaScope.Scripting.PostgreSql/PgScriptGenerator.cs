@@ -198,8 +198,9 @@ public sealed class PgScriptGenerator : IScriptGenerator
             var name = ScriptText.Safe(f.Name);
             if (name.Length > 100) name = name[..100];
             var file = $"{++n:000}_{name}.sql";
+            // a file that creates several views again (11's rebuilds) carries each one's source text: the validator checks every one
             writer.WriteSql(folder.Name, "objects\\" + file, f.Text, f.Module is null ? WrittenFileKind.Statements : WrittenFileKind.RawModule, f.Object,
-                expectedModuleText: f.Module);
+                expectedModuleText: f.Module, expectedModules: f.Modules?.Select(m => new ExpectedModule(f.Object ?? new ObjectName("", ""), m, PgModuleSettings)).ToList());
             all.Append('\n').Append(f.Text);
             // 11_destructive: the dropped code as the target has it, under the same file name; never part of a plan
             if (f.Rollback is null) continue;
@@ -221,6 +222,9 @@ public sealed class PgScriptGenerator : IScriptGenerator
         result.Notes.AddRange(notes);
         return result;
     }
+
+    /// <summary>SQL Server's SET options mean nothing to PostgreSQL; an <see cref="ExpectedModule"/> needs some.</summary>
+    private static readonly ModuleSettings PgModuleSettings = new(AnsiNulls: true, QuotedIdentifier: true);
 
     private static FolderResult NotApplicable(string folder, string title, string why) =>
         new() { Folder = folder, Title = title, Notes = [$"Not applicable for PostgreSQL: {why}"] };
@@ -303,10 +307,22 @@ public sealed class PgScriptGenerator : IScriptGenerator
             sb.Append("- In SchemaScope it is applied only in Read & write mode, with \"I understand this can lose data\" ticked.\n\n");
         }
 
-        sb.Append(destructive
-            ? "## Undo\n\n- 01, 03, 05, 06 and 07 only add; to undo them, drop what was added or restore the backup. "
-            : "## Undo\n\n- Nothing in these scripts drops anything. 01, 03, 05, 06 and 07 only add; to undo them, drop what was added or restore the backup. ");
-        sb.Append("04 widens columns; narrowing back can lose data, so restore the backup. 10 replaces code: the target's text before is in the compare.\n");
+        // a file of 05, 06 or 07 that replaces something of the target's says so first ("-- The target's ... of this name ...")
+        var replacing = new[] { run.Constraints, run.Indexes, run.Triggers }
+            .Where(f => folders.Any(r => r.Folder == f.Name))
+            .Select(f => (f.Name, Files: f.Files.Count(x => x.Text.Contains("\n-- The target's ", StringComparison.Ordinal))))
+            .Where(x => x.Files > 0).ToList();
+        sb.Append("## Undo\n\n");
+        sb.Append(destructive ? "- " : "- Nothing in these scripts drops data. ");
+        sb.Append("01 and 03 only add; to undo them, drop what was added or restore the backup.\n");
+        sb.Append("- 05, 06 and 07 add, and also bring what the target already has in line with the source (sequence options, defaults, storage " +
+                  "options, replica identity, owners)");
+        sb.Append(replacing.Count == 0 ? ". "
+            : $"; {string.Join(" and ", replacing.Select(x => $"{x.Files} file(s) of {x.Name}"))} drop something of the target's and create the " +
+              "source's under the same name (a foreign key or key, a default, a domain check, a policy, an index, a rule), each saying in its first " +
+              "comment what the target had. ");
+        sb.Append("To undo those, put the target's version back or restore the backup.\n");
+        sb.Append("- 04 widens columns; narrowing back can lose data, so restore the backup. 10 replaces code: the target's text before is in the compare.\n");
         if (destructive)
             sb.Append("- 11 drops tables, columns and code that only the target has and changes column types: only the backup brings their data back; " +
                       "`11_destructive\\rollback\\` recreates the dropped code.\n");

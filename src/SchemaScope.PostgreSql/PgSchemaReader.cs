@@ -1,6 +1,7 @@
 using System.Data;
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using Npgsql;
 using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
@@ -17,7 +18,7 @@ namespace SchemaScope.PostgreSql;
 /// (<see cref="IdentifierFold.Exact"/>) and routines with their argument types: "Users" and users, or f(integer) and
 /// f(text), are separate objects and never collide.
 /// </summary>
-public sealed class PgSchemaReader : ISchemaReader
+public sealed partial class PgSchemaReader : ISchemaReader
 {
     /// <summary>The oldest server the catalog queries are written for.</summary>
     public const int MinimumVersionNum = 130000;
@@ -108,11 +109,12 @@ public sealed class PgSchemaReader : ISchemaReader
     /// <summary>
     /// The first statement of the reader's transaction: READ ONLY (the server refuses any write in it), a statement
     /// timeout and a lock timeout (so it can neither run forever nor queue behind a DDL lock for long), and search_path
-    /// pg_catalog alone, so the deparse names every user object with its schema.
+    /// pg_catalog alone, so the deparse names every user object with its schema. JIT off: the catalog joins are
+    /// estimated costly enough to be compiled, which takes longer (a fifth of a second a database) than they run.
     /// </summary>
     internal static string SessionSetup(int timeoutSeconds) =>
         $"SET TRANSACTION READ ONLY; SET LOCAL statement_timeout = {timeoutSeconds * 1000}; " +
-        "SET LOCAL lock_timeout = 5000; SET LOCAL search_path = pg_catalog;";
+        "SET LOCAL lock_timeout = 5000; SET LOCAL search_path = pg_catalog; SET LOCAL jit = off;";
 
     private async Task ReadServerInfoAsync(NpgsqlConnection conn, NpgsqlTransaction tx, SchemaSnapshot s, CancellationToken ct)
     {
@@ -135,14 +137,14 @@ public sealed class PgSchemaReader : ISchemaReader
     private sealed record Rel(uint Oid, string Schema, string Name, char Kind, string? ViewDef, char Persistence,
         bool RowSecurity, bool ForceRowSecurity, string[] Options, string? PartitionKey, bool IsPartition,
         string? PartitionBound, string[] Parents, string? OfType, char ReplicaIdentity, string? ReplicaIndex, string? ForeignServer,
-        string[] ForeignOptions);
+        string[] ForeignOptions, bool Populated);
     private sealed record Policy(uint Rel, string Name, bool Permissive, char Command, string[] Roles, string? Using,
         string? WithCheck);
     private sealed record Col(uint Rel, int Num, string Name, string Type, bool NotNull, string Identity, string Generated,
         string? Default, string? Collation, long? SeqStart, long? SeqIncrement, long? SeqMin, long? SeqMax, long? SeqCache, bool? SeqCycle,
         bool NotNullNotValid, string[] FdwOptions);
     private sealed record Con(uint Rel, uint TypeOid, string Name, char Kind, string Definition, bool Validated,
-        string[] Columns, string? RefSchema, string? RefTable, string[] RefColumns, string DeleteAction, string UpdateAction);
+        string[] Columns, string? RefSchema, string? RefTable, string[] RefColumns, string DeleteAction, string UpdateAction, string[]? IndexOptions);
     private sealed record Idx(uint Rel, string Name, string Method, bool Unique, string Definition, string? Predicate,
         int KeyCount, string[] Columns, bool?[] Descending);
     private sealed record Routine(uint Oid, string Schema, string Name, char Kind, bool ReturnsSet, string Signature,
@@ -150,7 +152,7 @@ public sealed class PgSchemaReader : ISchemaReader
     private sealed record Trg(string Schema, string Table, string Name, string Definition, char Enabled, uint Oid);
     private sealed record Seq(string Schema, string Name, string Type, long Start, long Increment, long Min, long Max,
         long Cache, bool Cycle, string? OwnedBy, uint Oid);
-    /// <summary>One pg_depend row resolved (<see cref="PgCatalogQueries"/>): kinds c relation, t type, p routine, g trigger.</summary>
+    /// <summary>One pg_depend row resolved (<see cref="PgCatalogQueries"/>): kinds c relation, t type, p routine, g trigger, r operator, l collation, o operator class, f text search configuration, y text search dictionary.</summary>
     private sealed record Dep(char Kind, uint Oid, char RefKind, uint RefOid, string? RefColumn, string Via, string? Extension, string? Index);
     private sealed record Typ(uint Oid, string Schema, string Name, char Kind, string BaseType, bool NotNull, string? Default,
         string? Collation, string[] Labels, uint RelOid, string? Subtype, string? SubtypeOpClass, string? RangeCollation,
@@ -161,8 +163,21 @@ public sealed class PgSchemaReader : ISchemaReader
     private sealed record Oper(uint Oid, string Schema, string Name, string? Left, string? Right, string Function, string? Commutator,
         string? Negator, string? Restrict, string? Join, bool Hashes, bool Merges);
 
+    private sealed record TsDict(uint Oid, string Schema, string Name, string Template, string? Options, bool UserTemplate);
+    private sealed record TsConfig(uint Oid, string Schema, string Name, string Parser, bool UserParser, string[] Mappings, uint[] Dicts);
+    private sealed record OpClass(uint Oid, string Schema, string Name, bool IsDefault, string Type, string Method, string? Family,
+        string? Storage, string[] Operators, string[] Functions, uint[] OperatorOids, uint[] FunctionOids, uint TypeOid);
+    private sealed record CastRow(uint Oid, string Schema, string Source, string Target, char Method, string? Function, char Context,
+        uint FunctionOid, uint SourceOid, uint TargetOid);
+    private sealed record Stat(uint Rel, string Schema, string Name, string Definition, int? Target);
+
     private sealed class RawCatalog
     {
+        public List<TsDict> TextSearchDictionaries { get; } = [];
+        public List<TsConfig> TextSearchConfigurations { get; } = [];
+        public List<OpClass> OperatorClasses { get; } = [];
+        public List<CastRow> Casts { get; } = [];
+        public List<Stat> Statistics { get; } = [];
         public List<(string Name, string Owner)> Schemas { get; } = [];
         public List<Rel> Relations { get; } = [];
         public List<Col> Columns { get; } = [];
@@ -197,7 +212,7 @@ public sealed class PgSchemaReader : ISchemaReader
         while (await r.ReadAsync(ct))
             raw.Relations.Add(new Rel(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Ch(r, 3), ViewText(Expr(r, 4), versionNum),
                 Ch(r, 5), r.GetBoolean(6), r.GetBoolean(7), r.GetFieldValue<string[]>(8), Expr(r, 9), r.GetBoolean(10), Expr(r, 11),
-                r.GetFieldValue<string[]>(12), Str(r, 13), Ch(r, 14), Str(r, 15), Str(r, 16), r.GetFieldValue<string[]>(17)));
+                r.GetFieldValue<string[]>(12), Str(r, 13), Ch(r, 14), Str(r, 15), Str(r, 16), r.GetFieldValue<string[]>(17), r.GetBoolean(18)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -211,7 +226,7 @@ public sealed class PgSchemaReader : ISchemaReader
         while (await r.ReadAsync(ct))
             raw.Constraints.Add(new Con(r.GetFieldValue<uint>(0), r.GetFieldValue<uint>(1), r.GetString(2), Ch(r, 3), Expr(r, 4)!,
                 r.GetBoolean(5), r.GetFieldValue<string[]>(6), Str(r, 7), Str(r, 8), r.GetFieldValue<string[]>(9),
-                Str(r, 10) ?? "a", Str(r, 11) ?? "a"));
+                Str(r, 10) ?? "a", Str(r, 11) ?? "a", r.IsDBNull(12) ? null : r.GetFieldValue<string[]>(12)));
 
         await r.NextResultAsync(ct);
         while (await r.ReadAsync(ct))
@@ -273,6 +288,30 @@ public sealed class PgSchemaReader : ISchemaReader
         while (await r.ReadAsync(ct))
             raw.Dependencies.Add(new Dep(Ch(r, 0), r.GetFieldValue<uint>(1), Ch(r, 2), r.GetFieldValue<uint>(3), Str(r, 4),
                 r.GetString(5), Str(r, 6), Str(r, 7)));
+
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.TextSearchDictionaries.Add(new TsDict(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), r.GetString(3), Str(r, 4), r.GetBoolean(5)));
+
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.TextSearchConfigurations.Add(new TsConfig(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetBoolean(4),
+                r.GetFieldValue<string[]>(5), r.GetFieldValue<uint[]>(6)));
+
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.OperatorClasses.Add(new OpClass(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), r.GetBoolean(3), r.GetString(4), r.GetString(5),
+                Str(r, 6), Str(r, 7), r.GetFieldValue<string[]>(8), r.GetFieldValue<string[]>(9), r.GetFieldValue<uint[]>(10),
+                r.GetFieldValue<uint[]>(11), r.GetFieldValue<uint>(12)));
+
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.Casts.Add(new CastRow(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), r.GetString(3), Ch(r, 4), Str(r, 5), Ch(r, 6),
+                r.GetFieldValue<uint>(7), r.GetFieldValue<uint>(8), r.GetFieldValue<uint>(9)));
+
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+            raw.Statistics.Add(new Stat(r.GetFieldValue<uint>(0), r.GetString(1), r.GetString(2), Expr(r, 3)!, r.IsDBNull(4) ? null : r.GetInt32(4)));
 
         return raw;
     }
@@ -357,6 +396,8 @@ public sealed class PgSchemaReader : ISchemaReader
                 var body = (rel.ViewDef ?? "").TrimEnd();
                 if (checkOption is not null)
                     body = $"{body.TrimEnd(';').TrimEnd()}\n  WITH {checkOption["check_option=".Length..].ToUpperInvariant()} CHECK OPTION;";
+                // a materialized view nobody has filled (REFRESH) yet is created as one: its query is not run
+                if (type == DbObjectType.MaterializedView && !rel.Populated) body = $"{body.TrimEnd(';').TrimEnd()}\nWITH NO DATA;";
 
                 var sb = new StringBuilder();
                 sb.Append(type == DbObjectType.View ? "CREATE OR REPLACE VIEW " : "CREATE MATERIALIZED VIEW ")
@@ -372,6 +413,9 @@ public sealed class PgSchemaReader : ISchemaReader
                 // a view's own rules (DO INSTEAD on an updatable view) are part of what it is too, replaced with it
                 foreach (var rule in rules[rel.Oid].OrderBy(x => x.Name, StringComparer.Ordinal))
                     sb.Append('\n').Append(RuleText(rule, rel, orReplace: true));
+                // what an INSERT through the view puts in a column it leaves out (ALTER VIEW ... SET DEFAULT), in column order
+                foreach (var c in columns[rel.Oid].Where(c => type == DbObjectType.View && c.Default is not null))
+                    sb.Append('\n').Append(ViewDefault(rel.Schema, rel.Name, c.Name)).Append(c.Default).Append(';');
                 o.Definition = sb.ToString();
                 // what the view returns, one column a line, in order: CREATE OR REPLACE VIEW may only add columns at the end
                 o.Properties["columns"] = string.Join("\n", columns[rel.Oid].Select(c => $"{PgCanonicalWriter.Q(c.Name)} {c.Type}"));
@@ -512,8 +556,102 @@ public sealed class PgSchemaReader : ISchemaReader
             objects.Add(o);
         }
 
-        AddDependencies(raw.Dependencies, byRel, byType, byProc, byTrigger, byCollation, byOperator);
+        // text search dictionaries and configurations; a template or parser of the user's own is C code, noted so the
+        // scripts hold what needs it (needs is what SchemaScope does not create)
+        var byTsDict = new Dictionary<uint, DbObject>();
+        foreach (var d in raw.TextSearchDictionaries)
+        {
+            if (options.IsExcluded(DbObjectType.TextSearchDictionary, d.Schema, d.Name)) continue;
+            var o = New(DbObjectType.TextSearchDictionary, d.Schema, d.Name);
+            o.Properties["template"] = d.Template;
+            if (d.Options is { Length: > 0 } init) o.Properties["options"] = init;
+            if (d.UserTemplate) o.Properties[PgCanonicalWriter.NeedsPrefix + "template"] = $"text search template {d.Template}";
+            objects.Add(o);
+            byTsDict[d.Oid] = o;
+        }
+        var byTsConfig = new Dictionary<uint, DbObject>();
+        foreach (var c in raw.TextSearchConfigurations)
+        {
+            if (options.IsExcluded(DbObjectType.TextSearchConfiguration, c.Schema, c.Name)) continue;
+            var o = New(DbObjectType.TextSearchConfiguration, c.Schema, c.Name);
+            o.Properties["parser"] = c.Parser;
+            if (c.UserParser) o.Properties[PgCanonicalWriter.NeedsPrefix + "parser"] = $"text search parser {c.Parser}";
+            foreach (var m in c.Mappings)
+            {
+                var at = m.IndexOf(" WITH ", StringComparison.Ordinal);
+                o.Properties[PgCanonicalWriter.MappingPrefix + m[..at]] = m[(at + " WITH ".Length)..];
+            }
+            foreach (var dict in c.Dicts) Need(o, byTsDict.GetValueOrDefault(dict));
+            objects.Add(o);
+            byTsConfig[c.Oid] = o;
+        }
+
+        // operator classes, keyed on their access method as PostgreSQL keys them; they need their operators, support
+        // functions and type
+        var byOpclass = new Dictionary<uint, DbObject>();
+        foreach (var c in raw.OperatorClasses)
+        {
+            if (options.IsExcluded(DbObjectType.OperatorClass, c.Schema, c.Name)) continue;
+            var o = New(DbObjectType.OperatorClass, c.Schema, c.Name);
+            o.Signature = c.Method;
+            if (c.IsDefault) o.Properties["default"] = "1";
+            o.Properties["type"] = c.Type;
+            o.Properties["method"] = c.Method;
+            if (c.Family is not null) o.Properties["family"] = c.Family;
+            if (c.Storage is not null) o.Properties["storage"] = c.Storage;
+            o.Properties["items"] = string.Join("\n", c.Operators.Concat(c.Functions));
+            foreach (var op in c.OperatorOids) Need(o, byOperator.GetValueOrDefault(op));
+            foreach (var fn in c.FunctionOids) Need(o, byProc.GetValueOrDefault(fn));
+            Need(o, byType.GetValueOrDefault(c.TypeOid));
+            objects.Add(o);
+            byOpclass[c.Oid] = o;
+        }
+
+        // casts, named by their types; they need their function and types
+        var casts = new List<(DbObject Cast, DbObject? Function)>();
+        foreach (var c in raw.Casts)
+        {
+            var name = $"{c.Source} AS {c.Target}";
+            if (options.IsExcluded(DbObjectType.Cast, c.Schema, name)) continue;
+            var o = New(DbObjectType.Cast, c.Schema, name);
+            o.Properties["source"] = c.Source;
+            o.Properties["target"] = c.Target;
+            o.Properties["method"] = c.Method switch { 'i' => "INOUT", 'b' => "BINARY", _ => "FUNCTION" };
+            if (c.Function is not null) o.Properties["function"] = c.Function;
+            o.Properties["context"] = c.Context switch { 'a' => "ASSIGNMENT", 'i' => "IMPLICIT", _ => "EXPLICIT" };
+            var function = byProc.GetValueOrDefault(c.FunctionOid);
+            Need(o, function);
+            Need(o, byType.GetValueOrDefault(c.SourceOid));
+            Need(o, byType.GetValueOrDefault(c.TargetOid));
+            objects.Add(o);
+            casts.Add((o, function));
+        }
+
+        // extended statistics belong to their table, as its policies and rules do
+        foreach (var st in raw.Statistics)
+            if (byRel.GetValueOrDefault(st.Rel) is { Type: DbObjectType.Table } table)
+                table.Properties[PgCanonicalWriter.StatisticsPrefix + $"{PgCanonicalWriter.Q(st.Schema)}.{PgCanonicalWriter.Q(st.Name)}"] = st.Definition.TrimEnd().TrimEnd(';') + ";" +
+                    (st.Target is { } target ? $"\nALTER STATISTICS {PgCanonicalWriter.Q(st.Schema)}.{PgCanonicalWriter.Q(st.Name)} SET STATISTICS {target};" : "");
+
+        AddDependencies(raw.Dependencies, byRel, byType, byProc, byTrigger, byCollation, byOperator, byTsConfig, byTsDict, byOpclass);
+
+        // pg_depend records an expression's need of a cast's function, never of the cast itself, while the deparse
+        // writes an implicit or assignment cast as the bare value ('5'::numeric): whatever needs such a function may
+        // need its cast, so it needs both
+        foreach (var (cast, function) in casts.Where(c => c.Function is not null))
+            foreach (var o in objects.Where(o => !ReferenceEquals(o, cast)))
+                foreach (var d in (o.DependsOn ?? []).Where(d => d.Key == function!.Key).ToList())
+                    if (!o.DependsOn!.Contains(d with { Key = cast.Key })) o.DependsOn.Add(d with { Key = cast.Key });
         return objects;
+    }
+
+    /// <summary><paramref name="o"/> needs <paramref name="needed"/> (when it was read: a built-in one never is).</summary>
+    private static void Need(DbObject o, DbObject? needed)
+    {
+        if (needed is null || ReferenceEquals(needed, o)) return;
+        var dep = new DbDependency(needed.Key, null, "relation", null);
+        o.DependsOn ??= [];
+        if (!o.DependsOn.Contains(dep)) o.DependsOn.Add(dep);
     }
 
     /// <summary>
@@ -530,6 +668,10 @@ public sealed class PgSchemaReader : ISchemaReader
             : $"{text}\nALTER TABLE {PgCanonicalWriter.Q(rel.Schema)}.{PgCanonicalWriter.Q(rel.Name)} {state} RULE {PgCanonicalWriter.Q(rule.Name)};";
     }
 
+    /// <summary>The start of a view column's default as the view's text carries it: ALTER VIEW "s"."v" ALTER COLUMN "c" SET DEFAULT .</summary>
+    public static string ViewDefault(string schema, string view, string column) =>
+        $"ALTER VIEW {PgCanonicalWriter.Q(schema)}.{PgCanonicalWriter.Q(view)} ALTER COLUMN {PgCanonicalWriter.Q(column)} SET DEFAULT ";
+
     /// <summary>The multirange name PostgreSQL 14 makes for a range: its first "range" becomes "multirange", else "_multirange" is added.</summary>
     internal static string DefaultMultirangeName(string range)
     {
@@ -544,9 +686,10 @@ public sealed class PgSchemaReader : ISchemaReader
     /// </summary>
     private static void AddDependencies(List<Dep> deps, Dictionary<uint, DbObject> byRel, Dictionary<uint, DbObject> byType,
         Dictionary<uint, DbObject> byProc, Dictionary<uint, DbObject> byTrigger, Dictionary<uint, DbObject> byCollation,
-        Dictionary<uint, DbObject> byOperator)
+        Dictionary<uint, DbObject> byOperator, Dictionary<uint, DbObject> byTsConfig, Dictionary<uint, DbObject> byTsDict,
+        Dictionary<uint, DbObject> byOpclass)
     {
-        // an operator class is never listed itself (nor an operator an extension made): only the extension it belongs to is a need
+        // an operator class or operator an extension made is never listed itself: only the extension it belongs to is a need
         DbObject? Find(char kind, uint oid) => kind switch
         {
             'c' => byRel.GetValueOrDefault(oid),
@@ -555,6 +698,9 @@ public sealed class PgSchemaReader : ISchemaReader
             'g' => byTrigger.GetValueOrDefault(oid),
             'l' => byCollation.GetValueOrDefault(oid),
             'r' => byOperator.GetValueOrDefault(oid),
+            'f' => byTsConfig.GetValueOrDefault(oid),
+            'y' => byTsDict.GetValueOrDefault(oid),
+            'o' => byOpclass.GetValueOrDefault(oid),
             _ => null
         };
 
@@ -679,7 +825,7 @@ public sealed class PgSchemaReader : ISchemaReader
                     IsPrimaryKey = c.Kind == 'p',
                     IsUniqueConstraint = c.Kind == 'u',
                     IsUnique = c.Kind != 'x',
-                    Definition = c.Definition,
+                    Definition = WithIndexOptions(c.Definition, c.IndexOptions),
                     KeyColumns = [.. c.Columns.Select((name, n) => new IndexColumnInfo { Name = name, Ordinal = n + 1 })],
                     IsSystemNamed = c.Name == DefaultName(o.Name, c.Columns, c.Kind == 'p' ? "pkey" : c.Kind == 'u' ? "key" : "excl")
                 });
@@ -712,6 +858,24 @@ public sealed class PgSchemaReader : ISchemaReader
                 break;
         }
     }
+
+    /// <summary>
+    /// A primary or unique key's pg_get_constraintdef with its index's options, where CREATE TABLE and ADD CONSTRAINT
+    /// take them: after the columns (and INCLUDE), before USING INDEX TABLESPACE and DEFERRABLE. Written the way
+    /// pg_get_constraintdef writes an exclusion constraint's: WITH (fillfactor='80').
+    /// </summary>
+    internal static string WithIndexOptions(string definition, string[]? options)
+    {
+        if (options is not { Length: > 0 }) return definition;
+        var with = " WITH (" + string.Join(", ", options.Select(x => x.Split('=', 2))
+            .Select(x => $"{x[0]}='{(x.Length > 1 ? x[1] : "").Replace("'", "''")}'")) + ")";
+        var at = KeyTailRx().Match(definition).Index;
+        return definition[..at] + with + definition[at..];
+    }
+
+    [GeneratedRegex(@"(?: USING INDEX TABLESPACE (?:""(?:[^""]|"""")*""|\S+))?(?: (?:NOT )?DEFERRABLE)?(?: INITIALLY (?:DEFERRED|IMMEDIATE))?$",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex KeyTailRx();
 
     /// <summary>The name PostgreSQL gives a constraint nobody named: table_pkey, table_col_key, table_col_check.</summary>
     private static string DefaultName(string table, string[] columns, string suffix) =>

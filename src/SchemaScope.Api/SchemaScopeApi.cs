@@ -379,7 +379,11 @@ public static class SchemaScopeApi
 
             var svc = provider.Connections;
             var cs = svc.BuildConnectionString(settings);
-            return Results.Ok(await svc.TestAsync(cs, ct));
+            var tested = await svc.TestAsync(cs, ct);
+            // another engine's driver message, scrubbed in case it echoes a secret of the string (a Passfile's path, ...)
+            if (settings.Engine != DatabaseEngine.SqlServer && tested.Message is { } said)
+                tested.Message = SecretScrubber.Scrub(said, SecretScrubber.Secrets([settings.Password, settings.RawConnectionString, cs]));
+            return Results.Ok(tested);
         });
 
         conns.MapPost("/databases", async (
@@ -1094,6 +1098,10 @@ public static class SchemaScopeApi
                 return Refuse(StatusCodes.Status400BadRequest, "That apply plan was made for another comparison or target - generate the scripts again.");
 
             var target = ApplyTargetOf(session, index, store);
+            // a name nothing can be typed against confirms nothing (fail closed)
+            if (engine != DatabaseEngine.SqlServer && string.IsNullOrWhiteSpace(target.Database))
+                return Refuse(StatusCodes.Status400BadRequest,
+                    $"Which database {target.Label} opens could not be told, so there is no name to confirm. Name the database in its connection, then compare again.");
             if (!string.Equals(request.ConfirmDatabase, target.Database, ConnectionRules.TypedNameComparison(engine)))
                 return Refuse(StatusCodes.Status400BadRequest, engine == DatabaseEngine.SqlServer
                     ? $"Type the target database name, {target.Database}, to confirm."
@@ -1208,7 +1216,7 @@ public static class SchemaScopeApi
         string? planId = null;
         // and never a plan for such an engine, whatever the session holds
         if (writeMode.Enabled && files.Count > 0 && !target.Protected && !IsSource(session, index) &&
-            Engines.Supports(target.Engine, EngineFeature.Apply))
+            Engines.Supports(target.Engine, EngineFeature.Apply) && (target.Engine == DatabaseEngine.SqlServer || !string.IsNullOrWhiteSpace(target.Database)))
             planId = plans.Add(new ApplyPlan { RunId = session.Id, TargetIndex = index, Files = files, Sections = sections }).Id;
         return new PlanOffer(planId, target, sections);
     }
@@ -1237,6 +1245,13 @@ public static class SchemaScopeApi
         var source = session.TargetConnections[index];
         var ep = Endpoint(source, session.Result!.Targets[index].Label);
         var protectedTarget = IsProtected(source, ep.Server, store);
+        // another engine's string that names no database (PostgreSQL then opens the one its driver defaults to): the
+        // database the compare's read reached, as the server named it (current_database()), so the typed name, the
+        // lock and each file's own check all mean that database - never an empty name anything would match
+        var database = ep.Database;
+        if (ep.Engine != DatabaseEngine.SqlServer && string.IsNullOrWhiteSpace(database) &&
+            index < session.Targets.Count && session.Targets[index] is { Failed: false } read)
+            database = read.Database;
         return new ApplyTarget
         {
             Label = ep.Label,
@@ -1245,7 +1260,7 @@ public static class SchemaScopeApi
             // shown next to the host for other engines; SQL Server keeps its port in the server name
             Port = ep.Engine == DatabaseEngine.SqlServer ? null
                 : ParseEndpoint(source)?.Port ?? DatabaseEngines.DefaultPort(ep.Engine),
-            Database = ep.Database,
+            Database = database,
             Login = LoginOf(source),
             Protected = protectedTarget,
             // the dialog says which: this connection's own flag, or another Protected connection on the same host
@@ -1529,8 +1544,12 @@ public static class SchemaScopeApi
         var target = session.TargetConnections[index];
         var s = Endpoint(source, null);
         var t = Endpoint(target, null);
+        // a string that names no database: the one the compare's read reached (as ApplyTargetOf names it)
+        static string Read(string named, SchemaSnapshot? read) =>
+            string.IsNullOrWhiteSpace(named) && read is { Failed: false } ? read.Database : named;
         if (source.Engine != DatabaseEngine.SqlServer || target.Engine != DatabaseEngine.SqlServer)
-            return SameDatabase(source, target, s.Database, t.Database);
+            return SameDatabase(source, target, Read(s.Database, session.Source),
+                Read(t.Database, index < session.Targets.Count ? session.Targets[index] : null));
         return string.Equals(s.Server.Trim(), t.Server.Trim(), StringComparison.OrdinalIgnoreCase) &&
                string.Equals(s.Database.Trim(), t.Database.Trim(), StringComparison.OrdinalIgnoreCase);
     }

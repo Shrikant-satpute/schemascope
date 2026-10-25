@@ -28,15 +28,20 @@ public sealed partial class PgApplyExecutor : IApplyExecutor
     public const string IdleTimeout = "1min";
 
     /// <summary>
-    /// What the reader deparsed definitions under (pg_catalog alone, so every user object is schema-qualified), with
-    /// pg_temp last so a temporary object can never stand in for one of them.
+    /// The login's own search_path, as psql (and RUN.ps1) runs the files with, between pg_catalog first (so nothing can
+    /// stand in for a built-in name the scripts use, as the reader deparsed them under pg_catalog alone) and pg_temp last
+    /// (so a temporary object never can either). Every user object the scripts name is schema-qualified; what the
+    /// login's path keeps is how a user function's body finds the objects it names without a schema when a statement here
+    /// runs it (a materialized view's query, a VALIDATE, a column's default, an expression index), as the application's
+    /// own sessions find them.
     /// </summary>
-    public const string SearchPath = "pg_catalog, pg_temp";
+    public const string SearchPath =
+        "SELECT set_config('search_path', 'pg_catalog, ' || CASE WHEN current_setting('search_path') = '' THEN '' " +
+        "ELSE current_setting('search_path') || ', ' END || 'pg_temp', true);";
 
     /// <summary>The SET LOCALs every file's transaction starts with.</summary>
     public const string TransactionSetup =
-        $"SET LOCAL lock_timeout = '{LockTimeout}'; SET LOCAL idle_in_transaction_session_timeout = '{IdleTimeout}'; " +
-        $"SET LOCAL search_path = {SearchPath};";
+        $"SET LOCAL lock_timeout = '{LockTimeout}'; SET LOCAL idle_in_transaction_session_timeout = '{IdleTimeout}'; " + SearchPath;
 
     public DatabaseEngine Engine => DatabaseEngine.PostgreSql;
     public TransactionSemantics Transactions => TransactionSemantics.PerFileTransactional;

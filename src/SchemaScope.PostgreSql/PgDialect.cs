@@ -40,7 +40,7 @@ public sealed class PgDialect : ISqlDialect
 /// from catalog facts and the server's own deparse (format_type, pg_get_expr, pg_get_indexdef, pg_get_constraintdef).
 /// Both sides come out of this same code, so a text difference is a real difference.
 /// </summary>
-public static class PgCanonicalWriter
+public static partial class PgCanonicalWriter
 {
     /// <summary>Marks an exclusion constraint among a table's <see cref="DbObject.Indexes"/>.</summary>
     public const string ExcludeConstraint = "EXCLUDE";
@@ -54,10 +54,26 @@ public static class PgCanonicalWriter
     /// <summary>A foreign table's column options (OPTIONS (...) of one column) sit in its <see cref="DbObject.Properties"/> under this prefix and the column's name.</summary>
     public const string ColumnOptionsPrefix = "columnOptions:";
 
+    /// <summary>A table's extended statistics (CREATE STATISTICS) sit in its <see cref="DbObject.Properties"/> under this prefix and schema.name.</summary>
+    public const string StatisticsPrefix = "statistics:";
+
+    /// <summary>A text search configuration's mappings sit in its <see cref="DbObject.Properties"/> under this prefix and the token type.</summary>
+    public const string MappingPrefix = "mapping:";
+
+    /// <summary>
+    /// What an object needs that SchemaScope does not read or create (a text search parser or template of the user's own,
+    /// which is C code), under this prefix: never part of its text, read by the scripts to hold it with why.
+    /// </summary>
+    public const string NeedsPrefix = "needs:";
+
     public static string Q(string name) => "\"" + name.Replace("\"", "\"\"") + "\"";
 
     public static string Write(DbObject o, CompareOptions opt) => o.Type switch
     {
+        DbObjectType.TextSearchDictionary => WriteTextSearchDictionary(o),
+        DbObjectType.TextSearchConfiguration => WriteTextSearchConfiguration(o),
+        DbObjectType.OperatorClass => WriteOperatorClass(o),
+        DbObjectType.Cast => WriteCast(o),
         DbObjectType.Table => WriteTable(o, opt),
         DbObjectType.Sequence => WriteSequence(o),
         DbObjectType.Schema => WriteSchema(o),
@@ -110,6 +126,53 @@ public static class PgCanonicalWriter
         if (p.ContainsKey("hashes")) options.Add("HASHES");
         if (p.ContainsKey("merges")) options.Add("MERGES");
         return $"CREATE OPERATOR {Q(o.Schema)}.{o.Name} ({string.Join(", ", options)});";
+    }
+
+    /// <summary>CREATE TEXT SEARCH DICTIONARY with its template and its options as PostgreSQL keeps them.</summary>
+    public static string WriteTextSearchDictionary(DbObject o)
+    {
+        var p = o.Properties;
+        var options = p.GetValueOrDefault("options") is { Length: > 0 } init ? $", {init}" : "";
+        return $"CREATE TEXT SEARCH DICTIONARY {Q(o.Schema)}.{Q(o.Name)} (TEMPLATE = {p.GetValueOrDefault("template")}{options});";
+    }
+
+    /// <summary>CREATE TEXT SEARCH CONFIGURATION with its parser, then one ADD MAPPING a token type, in token order.</summary>
+    public static string WriteTextSearchConfiguration(DbObject o)
+    {
+        var name = $"{Q(o.Schema)}.{Q(o.Name)}";
+        var sb = new StringBuilder($"CREATE TEXT SEARCH CONFIGURATION {name} (PARSER = {o.Properties.GetValueOrDefault("parser")});");
+        foreach (var (key, dicts) in o.Properties.Where(kv => kv.Key.StartsWith(MappingPrefix, StringComparison.Ordinal))
+                     .OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            sb.Append($"\nALTER TEXT SEARCH CONFIGURATION {name} ADD MAPPING FOR {key[MappingPrefix.Length..]} WITH {dicts};");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// CREATE OPERATOR CLASS as pg_dump writes it: DEFAULT, the type and access method, the family when it is not the
+    /// class's own, each operator and support function bound to it, STORAGE when it is not the type.
+    /// </summary>
+    public static string WriteOperatorClass(DbObject o)
+    {
+        var p = o.Properties;
+        var items = (p.GetValueOrDefault("items") ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (p.GetValueOrDefault("storage") is { Length: > 0 } storage) items.Add($"STORAGE {storage}");
+        return $"CREATE OPERATOR CLASS {Q(o.Schema)}.{Q(o.Name)} {(p.ContainsKey("default") ? "DEFAULT " : "")}FOR TYPE {p.GetValueOrDefault("type")} " +
+               $"USING {Q(p.GetValueOrDefault("method") ?? "")}{(p.GetValueOrDefault("family") is { Length: > 0 } family ? $" FAMILY {family}" : "")} AS\n    " +
+               string.Join(",\n    ", items) + ";";
+    }
+
+    /// <summary>CREATE CAST with its function (or WITH INOUT, WITHOUT FUNCTION) and when it applies.</summary>
+    public static string WriteCast(DbObject o)
+    {
+        var p = o.Properties;
+        var how = p.GetValueOrDefault("method") switch
+        {
+            "INOUT" => "WITH INOUT",
+            "BINARY" => "WITHOUT FUNCTION",
+            _ => $"WITH FUNCTION {p.GetValueOrDefault("function")}",
+        };
+        var when = p.GetValueOrDefault("context") switch { "ASSIGNMENT" => " AS ASSIGNMENT", "IMPLICIT" => " AS IMPLICIT", _ => "" };
+        return $"CREATE CAST ({p.GetValueOrDefault("source")} AS {p.GetValueOrDefault("target")}) {how}{when};";
     }
 
     private static string WriteSchema(DbObject o)
@@ -202,7 +265,7 @@ public static class PgCanonicalWriter
                      .Where(i => i.IsPrimaryKey || i.IsUniqueConstraint || i.TypeDesc == ExcludeConstraint)
                      .OrderBy(i => i.IsPrimaryKey ? 0 : i.IsUniqueConstraint ? 1 : 2)
                      .ThenBy(i => Named(i.IsSystemNamed, opt) ? i.Name : i.Definition, StringComparer.Ordinal))
-            lines.Add("    " + (Named(ix.IsSystemNamed, opt) ? $"CONSTRAINT {Q(ix.Name)} " : "") + ix.Definition);
+            lines.Add("    " + (Named(ix.IsSystemNamed, opt) ? $"CONSTRAINT {Q(ix.Name)} " : "") + KeyText(ix.Definition, opt.IgnoreFillFactor));
 
         foreach (var ck in o.Constraints
                      .Where(x => x.Kind == ConstraintKind.Check)
@@ -239,6 +302,10 @@ public static class PgCanonicalWriter
         foreach (var rule in p.Where(kv => kv.Key.StartsWith(RulePrefix, StringComparison.Ordinal))
                      .OrderBy(kv => kv.Key, StringComparer.Ordinal))
             sb.Append(rule.Value).Append('\n');
+        // extended statistics: what the planner knows of how its columns go together
+        foreach (var statistics in p.Where(kv => kv.Key.StartsWith(StatisticsPrefix, StringComparison.Ordinal))
+                     .OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            sb.Append(statistics.Value).Append('\n');
 
         return sb.ToString().TrimEnd('\n');
     }
@@ -252,6 +319,37 @@ public static class PgCanonicalWriter
     /// </summary>
     public static string IndexText(string? definition, bool ignoreCollation) =>
         ignoreCollation ? WithoutCollate(definition ?? "") : definition ?? "";
+
+    /// <summary>
+    /// A key's definition as the compare sees it: with fill factor ignored, without fillfactor in its WITH (...) (the
+    /// options of the index behind it), as a table's own fillfactor is left out.
+    /// </summary>
+    public static string KeyText(string? definition, bool ignoreFillFactor) =>
+        ignoreFillFactor ? WithoutFillFactor(definition ?? "") : definition ?? "";
+
+    /// <summary>A key's WITH (...) index options, "name=value" each with the quotes taken off the value; none when it has none.</summary>
+    public static Dictionary<string, string> KeyOptions(string? definition)
+    {
+        var options = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (KeyWithRx().Match(definition ?? "") is { Success: true } m)
+            foreach (var part in m.Groups["o"].Value.Split(", ", StringSplitOptions.RemoveEmptyEntries).Select(x => x.Split('=', 2)))
+                options[part[0]] = part.Length > 1 && part[1].Length >= 2 && part[1][0] == '\'' ? part[1][1..^1].Replace("''", "'") : part.Length > 1 ? part[1] : "";
+        return options;
+    }
+
+    /// <summary>A key's definition without its WITH (...) index options.</summary>
+    public static string WithoutKeyOptions(string? definition) => KeyWithRx().Replace(definition ?? "", "");
+
+    private static string WithoutFillFactor(string definition) => KeyWithRx().Replace(definition, m =>
+    {
+        var kept = m.Groups["o"].Value.Split(", ", StringSplitOptions.RemoveEmptyEntries)
+            .Where(x => !x.StartsWith("fillfactor=", StringComparison.Ordinal)).ToList();
+        return kept.Count == 0 ? "" : $" WITH ({string.Join(", ", kept)})";
+    });
+
+    /// <summary>A key's WITH (...): "(c WITH =)" of an exclusion constraint is no options list, a "(" never follows that WITH.</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@" WITH \((?<o>[^()]*)\)", System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex KeyWithRx();
 
     /// <summary>Every COLLATE name (bare, quoted, or schema-qualified) outside literals and quoted names taken out.</summary>
     internal static string WithoutCollate(string text)

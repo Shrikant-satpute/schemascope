@@ -31,14 +31,18 @@ public static class PgObjectScripts
 
     /// <summary>
     /// What a script for the row does (as <see cref="ObjectScripts.Plan"/>), with PostgreSQL's own answers where they
-    /// differ. Code that differs only in layout is re-created from the source's text (08), as Create scripts does.
+    /// differ. Code that differs only in layout is re-created from the source's text (08), as Create scripts does. An
+    /// existing aggregate, sequence, domain, enum, composite type, schema or materialized view is changed the way Create
+    /// scripts changes it (10, 05, 04 or 06), or held there with why.
     /// </summary>
     public static string Plan(CompareResult result, CompareRow row, int index, out string? why)
     {
         var plan = ObjectScripts.Plan(result, row, index, out why);
         switch (plan)
         {
-            case "unavailable" when row.Type == DbObjectType.AggregateFunction && StatusOf(row, index) == ObjectStatus.Different:
+            case "unavailable" when StatusOf(row, index) == ObjectStatus.Different && row.Type is DbObjectType.AggregateFunction
+                or DbObjectType.Sequence or DbObjectType.Domain or DbObjectType.EnumType or DbObjectType.CompositeType
+                or DbObjectType.Schema or DbObjectType.MaterializedView:
                 why = null;
                 return "alter";
             default:
@@ -141,6 +145,10 @@ public static class PgObjectScripts
             DbObjectType.Operator => $"DROP OPERATOR {PgDdl.Q(row.Schema)}.{row.Name} ({row.Signature});",
             DbObjectType.Extension => $"DROP EXTENSION {PgDdl.Q(row.Name)};",
             DbObjectType.ForeignTable => $"DROP FOREIGN TABLE {name};",
+            DbObjectType.TextSearchDictionary => $"DROP TEXT SEARCH DICTIONARY {name};",
+            DbObjectType.TextSearchConfiguration => $"DROP TEXT SEARCH CONFIGURATION {name};",
+            DbObjectType.OperatorClass => $"DROP OPERATOR CLASS {name} USING {PgDdl.Q(row.Signature ?? "")};",
+            DbObjectType.Cast => $"DROP CAST ({row.Name});",
             _ => $"DROP SCHEMA {name};",
         };
         return $"-- {DropWarning}\n-- {row.TypeLabel} {row.FullName.ReplaceLineEndings(" ")} exists only in {targetLabel.ReplaceLineEndings(" ")}.\n{statement}\n";

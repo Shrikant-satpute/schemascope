@@ -141,4 +141,8 @@ export const TYPE_ORDER = [
   'collation',
   'operator',
   'foreignTable',
+  'textSearchDictionary',
+  'textSearchConfiguration',
+  'operatorClass',
+  'cast',
 ] as const

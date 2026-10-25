@@ -11,7 +11,9 @@ namespace SchemaScope.Scripting.PostgreSql;
 /// <param name="Module">The source's code text the file must carry exactly (a RawModule), or null.</param>
 /// <param name="Rollback">11_destructive: the text of the file's rollback\ twin (the dropped code as the target has it), or null.</param>
 /// <param name="RollbackModule">The target's code text that rollback file must carry exactly.</param>
-internal sealed record PgFile(string Name, string Text, ObjectName? Object, string? Module = null, string? Rollback = null, string? RollbackModule = null);
+/// <param name="Modules">More than one source code text the file must carry exactly (11's view rebuilds), or null.</param>
+internal sealed record PgFile(string Name, string Text, ObjectName? Object, string? Module = null, string? Rollback = null, string? RollbackModule = null,
+    IReadOnlyList<string>? Modules = null);
 
 /// <summary>One numbered folder, filled while planning and written at the end.</summary>
 internal sealed class PgFolder(string name, string title, bool inRunAll)
@@ -163,6 +165,7 @@ internal sealed partial class PgScriptRun
 
     private static string Display(DbObject o) =>
         o.Type is DbObjectType.Schema or DbObjectType.Extension ? o.Name
+        : o.Type == DbObjectType.Cast ? $"({o.Name})"
         : o.Signature is { } sig && o.Type != DbObjectType.Trigger ? $"{o.Schema}.{o.Name}({sig})"
         : o.Type == DbObjectType.Trigger ? $"{o.Schema}.{o.Name} {o.Signature}"
         : $"{o.Schema}.{o.Name}";
@@ -179,6 +182,8 @@ internal sealed partial class PgScriptRun
     private static bool IsChild(DbObject table) =>
         table.Properties.ContainsKey("partitionOf") || table.Properties.ContainsKey("inherits");
 
+    // A table that is a child on the source but stands alone on the target (a detached partition) is changed as any
+    // table there: its parent's changes do not reach it.
     private const string ChildReason =
         "a partition or inheritance child: its columns and keys come from its parent and change with it, not on their own";
 
@@ -225,7 +230,7 @@ internal sealed partial class PgScriptRun
         if (string.IsNullOrEmpty(text)) return null;
         foreach (var o in Src.Objects)
         {
-            if (o.Type is DbObjectType.Schema or DbObjectType.Trigger or DbObjectType.Extension) continue;
+            if (o.Type is DbObjectType.Schema or DbObjectType.Trigger or DbObjectType.Extension or DbObjectType.Cast) continue;
             if (t.ContainsKey(o.Key)) continue;
             if (!before03 && created.Contains(o.Key)) continue;
             // the deparse names a user operator OPERATOR(schema.op): its name is never quoted
@@ -250,7 +255,7 @@ internal sealed partial class PgScriptRun
             var have = tgt.Columns.Select(c => c.Name).ToHashSet(StringComparer.Ordinal);
             var newCols = src.Columns.Where(c => !have.Contains(c.Name)).OrderBy(c => c.Ordinal).ToList();
             if (newCols.Count == 0) continue;
-            if (IsChild(src))
+            if (IsChild(src) && IsChild(tgt))
             {
                 // a column of a parent comes with the parent's ADD COLUMN, which PostgreSQL adds to every child (at its
                 // end); an inheritance child's own column is added to it as to any table
@@ -339,7 +344,7 @@ internal sealed partial class PgScriptRun
                         "PostgreSQL cannot move a column. Run the scripts, then create them again: this column is in the next run, after it.", Columns.Name);
                     continue;
                 }
-                if (NotReady(c.DataType + "\n" + def?.Definition + "\n" + c.ComputedDefinition + "\n" + c.Collation) is { } notReady)
+                if ((TooNew(c) ?? NotReady(c.DataType + "\n" + def?.Definition + "\n" + c.ComputedDefinition + "\n" + c.Collation)) is { } notReady)
                 {
                     review.Hold(ReviewLog.NotApplied, "column", c.Name, src.FullName, notReady, Columns.Name);
                     continue;
@@ -466,7 +471,7 @@ internal sealed partial class PgScriptRun
                 var identityKind = c.IsIdentity && tc.IsIdentity && c.IdentityKind != tc.IdentityKind ? c.IdentityKind : null;
                 var column = $"{c.Name}";
 
-                if (IsChild(src) && (typeChanges || relax || tighten || identityKind is not null) &&
+                if (IsChild(src) && IsChild(tgt) && (typeChanges || relax || tighten || identityKind is not null) &&
                     (IsPartition(src) || parents.Any(p => p.Columns.Any(x => x.Name == c.Name))))
                 {
                     review.Hold(ReviewLog.NotApplied, "column", column, src.FullName, ChildReason, ColumnTypes.Name);
@@ -481,8 +486,7 @@ internal sealed partial class PgScriptRun
                         ColumnTypes.Name);
                 if (c.IsComputed != tc.IsComputed || c.IsPersisted != tc.IsPersisted ||
                     !string.Equals(c.ComputedDefinition, tc.ComputedDefinition, StringComparison.Ordinal))
-                    review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
-                        "the generated expression differs; PostgreSQL can only drop and re-add such a column", ColumnTypes.Name);
+                    review.Hold(ReviewLog.NotApplied, "column", column, src.FullName, GeneratedDiffers(c, tc), ColumnTypes.Name);
                 if (!compare.IgnoreCollation && !string.Equals(c.Collation, tc.Collation, StringComparison.Ordinal))
                     review.Hold(ReviewLog.NotApplied, "column", column, src.FullName,
                         $"collation differs (source: {c.Collation ?? "default"}, target: {tc.Collation ?? "default"}); changing it rebuilds its indexes and is not scripted",
@@ -581,6 +585,18 @@ internal sealed partial class PgScriptRun
         return null;
     }
 
+    /// <summary>What differs about a generated column (or whether it is one), for the hold that says PostgreSQL cannot change it in place.</summary>
+    internal static string GeneratedDiffers(ColumnInfo c, ColumnInfo tc)
+    {
+        static string Kind(ColumnInfo x) => !x.IsComputed ? "not generated" : x.IsPersisted ? "STORED" : "VIRTUAL";
+        var what = c.IsComputed != tc.IsComputed
+            ? $"it is {Kind(c)} on the source and {Kind(tc)} on the target"
+            : !string.Equals(c.ComputedDefinition, tc.ComputedDefinition, StringComparison.Ordinal)
+                ? "the generated expression differs" + (c.IsPersisted != tc.IsPersisted ? $", and it is {Kind(c)} on the source and {Kind(tc)} on the target" : "")
+                : $"the expression is the same, but the column is {Kind(c)} on the source and {Kind(tc)} on the target";
+        return $"{what}; PostgreSQL can only drop and re-add such a column";
+    }
+
     private static string Identity(ColumnInfo c) => c.IsIdentity ? $"GENERATED {c.IdentityKind} AS IDENTITY" : "none";
 
     private static string IdentitySequence(ColumnInfo c) => $"START WITH {c.IdentitySeed} INCREMENT BY {c.IdentityIncrement} {c.IdentityOptions}".TrimEnd();
@@ -672,7 +688,7 @@ internal sealed partial class PgScriptRun
         {
             // a partition or inheritance child: what it has from its parent changes with the parent (PostgreSQL adds a
             // parent's check, and a partitioned table's key and foreign key, to each child); what is its own changes here
-            var src = Local(table, Src);
+            var src = IsChild(theirs) ? Local(table, Src) : table;
             var tgt = Local(theirs, Tgt);
             PlanDefaults(src, tgt);
             await PlanChecksAsync(src, tgt);
@@ -930,7 +946,23 @@ internal sealed partial class PgScriptRun
             var tkey = tgt.Indexes.FirstOrDefault(x => IsKey(x) && x.Name == key.Name);
             if (tkey is not null)
             {
-                if (tkey.Definition == key.Definition) continue;
+                if (PgCanonicalWriter.KeyText(tkey.Definition, compare.IgnoreFillFactor) == PgCanonicalWriter.KeyText(key.Definition, compare.IgnoreFillFactor)) continue;
+                // the same key whose index options alone differ (fillfactor, ...): set on its index, which keeps every row
+                if (PgCanonicalWriter.WithoutKeyOptions(tkey.Definition) == PgCanonicalWriter.WithoutKeyOptions(key.Definition) &&
+                    tkey.IsPrimaryKey == key.IsPrimaryKey && tkey.IsUniqueConstraint == key.IsUniqueConstraint)
+                {
+                    var mine = PgCanonicalWriter.KeyOptions(key.Definition);
+                    var theirs = PgCanonicalWriter.KeyOptions(tkey.Definition);
+                    if (compare.IgnoreFillFactor) { mine.Remove("fillfactor"); theirs.Remove("fillfactor"); }
+                    var set = mine.Where(kv => theirs.GetValueOrDefault(kv.Key) != kv.Value).Select(kv => $"{kv.Key} = {PgDdl.Lit(kv.Value)}").ToList();
+                    var reset = theirs.Keys.Where(k => !mine.ContainsKey(k)).ToList();
+                    var index = $"ALTER INDEX {PgDdl.Q(src.Schema, key.Name)}";
+                    Constraints.Files.Add(new PgFile($"key_{src.Schema}.{src.Name}.{key.Name}", Header(Constraints, "key", $"{src.FullName}.{key.Name}") +
+                        $"-- The target's {what} of this name: {PgDdl.OneLine(tkey.Definition ?? "")}. Only its index options differ; new pages use them, the rows stay.\n" +
+                        (set.Count > 0 ? $"{index} SET ({string.Join(", ", set)});\n" : "") +
+                        (reset.Count > 0 ? $"{index} RESET ({string.Join(", ", reset)});\n" : ""), new ObjectName(src.Schema, src.Name)));
+                    continue;
+                }
                 // the same key, only checked at another moment (DEFERRABLE, INITIALLY ...): every row already meets it, so it is
                 // swapped in one file; a foreign key that needs the old one would make the DROP fail, so it is held instead
                 if (tkey.IsPrimaryKey == key.IsPrimaryKey && tkey.IsUniqueConstraint == key.IsUniqueConstraint &&
@@ -963,7 +995,8 @@ internal sealed partial class PgScriptRun
                 continue;
             }
             var cols = key.KeyColumns.OrderBy(k => k.Ordinal).Select(k => k.Name).ToList();
-            if (Unavailable(src, cols) is { } col)
+            // an exclusion constraint's WHERE (and a key's INCLUDE) reads columns beyond its key columns
+            if (Unavailable(src, cols.Concat(src.Columns.Where(c => PgDdl.MentionsColumn(key.Definition, c.Name)).Select(c => c.Name))) is { } col)
             {
                 review.Hold(ReviewLog.NotAppliedConstraints, "key", key.Name, src.FullName, $"it uses {col}, which the target will not have", Constraints.Name);
                 continue;
@@ -1128,7 +1161,7 @@ internal sealed partial class PgScriptRun
         {
             // a partition's plain indexes may come from its parent's: looked at once every parent's are planned (one 03
             // creates gets copies of its parent's then too). An inheritance child inherits no index: its are its own
-            if (IsPartition(src)) { partitions.Add((src, tgt)); continue; }
+            if (IsPartition(src) && (tgt is null || IsPartition(tgt))) { partitions.Add((src, tgt)); continue; }
             foreach (var ix in src.Indexes.Where(i => !IsKey(i)).OrderBy(i => i.Name, StringComparer.Ordinal))
                 await PlanIndexAsync(src, tgt, ix);
             if (tgt is not null && !Destroys)
@@ -1147,9 +1180,49 @@ internal sealed partial class PgScriptRun
                     review.Hold(ReviewLog.NotAppliedDestructive, "index", tix.Name, src.FullName, TargetOnly, Indexes.Name);
         }
 
+        // extended statistics, on the tables both sides have and those 03 creates
+        foreach (var (src, tgt) in ChangedTables().Select(p => (p.Src, Tgt: (DbObject?)p.Tgt))
+                     .Concat(Src.Objects.Where(o => o.Type == DbObjectType.Table && created.Contains(o.Key))
+                         .OrderBy(o => o.Schema, StringComparer.Ordinal).ThenBy(o => o.Name, StringComparer.Ordinal)
+                         .Select(o => (Src: o, Tgt: (DbObject?)null))))
+            PlanStatistics(src, tgt);
+
         // the foreign keys whose referenced columns only a unique index of this folder covers, then their VALIDATE
         foreach (var (src, fk, isNew) in afterIndexes) await PlanForeignKeyAsync(src, fk, isNew, after06: true);
         Indexes.Files.AddRange(indexValidations);
+    }
+
+    /// <summary>
+    /// A table's extended statistics (CREATE STATISTICS): one the target lacks is created, one that differs is dropped
+    /// and created again in one file (it holds no rows: ANALYZE fills it again), each once the columns it reads are
+    /// there. One only the target has is 11's to drop.
+    /// </summary>
+    private void PlanStatistics(DbObject src, DbObject? tgt)
+    {
+        foreach (var (key, definition) in src.Properties.Where(kv => kv.Key.StartsWith(PgCanonicalWriter.StatisticsPrefix, StringComparison.Ordinal) && kv.Value is not null)
+                     .OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => (kv.Key, Definition: kv.Value!)))
+        {
+            var name = key[PgCanonicalWriter.StatisticsPrefix.Length..];
+            var theirs = tgt?.Properties.GetValueOrDefault(key);
+            if (theirs == definition) continue;
+            var on = definition.IndexOf(" ON ", StringComparison.Ordinal) is var at and >= 0 ? definition[at..] : definition;
+            var why = src.Columns.Where(c => PgDdl.MentionsColumn(on, c.Name)).Select(c => c.Name) is var cols && Unavailable(src, cols) is { } col
+                ? $"it reads {col}, which the target will not have"
+                : MissingNamed(definition, before03: false) is { } needs
+                    ? $"it uses {Kind(needs)} {Display(needs)}, which the target lacks and this run does not create{Why(needs)}"
+                    : NotReady(definition);
+            if (why is not null)
+            {
+                review.Hold(ReviewLog.NotAppliedConstraints, "statistics", name, src.FullName, why, Indexes.Name);
+                continue;
+            }
+            Indexes.Files.Add(new PgFile($"statistics_{src.Schema}.{src.Name}.{name}", Header(Indexes, "statistics", $"{src.FullName}.{name}") +
+                (theirs is null ? "" : $"-- The target's statistics of this name are different: {PgDdl.OneLine(theirs)}\nDROP STATISTICS {name};\n") +
+                definition.TrimEnd() + "\n", new ObjectName(src.Schema, src.Name)));
+        }
+        if (tgt is not null && !Destroys)
+            foreach (var key in tgt.Properties.Keys.Where(k => k.StartsWith(PgCanonicalWriter.StatisticsPrefix, StringComparison.Ordinal) && !src.Properties.ContainsKey(k)))
+                review.Hold(ReviewLog.NotAppliedDestructive, "statistics", key[PgCanonicalWriter.StatisticsPrefix.Length..], src.FullName, TargetOnly, Indexes.Name);
     }
 
     /// <summary>

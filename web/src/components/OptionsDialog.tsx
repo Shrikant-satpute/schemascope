@@ -27,13 +27,24 @@ const TYPE_LABELS: Record<DbObjectType, string> = {
   collation: 'Collations',
   operator: 'Operators',
   foreignTable: 'Foreign tables',
+  textSearchDictionary: 'Text search dictionaries',
+  textSearchConfiguration: 'Text search configurations',
+  operatorClass: 'Operator classes',
+  cast: 'Casts',
 }
 
 /** Kinds only SQL Server has, and only PostgreSQL has: listed only when an engine of the setup has them. */
 const SQL_SERVER_TYPES: DbObjectType[] = ['tableType', 'userDefinedType', 'synonym']
-const POSTGRES_TYPES: DbObjectType[] = ['materializedView', 'domain', 'enumType', 'compositeType', 'extension', 'rangeType', 'collation', 'operator', 'foreignTable']
+const POSTGRES_TYPES: DbObjectType[] = ['materializedView', 'domain', 'enumType', 'compositeType', 'extension', 'rangeType', 'collation', 'operator', 'foreignTable',
+  'textSearchDictionary', 'textSearchConfiguration', 'operatorClass', 'cast']
 
 const ALL_TYPES = Object.keys(TYPE_LABELS) as DbObjectType[]
+
+/** SQL Server's own schemas, the default excluded list (CompareOptions.SqlServerExcludedSchemas). */
+const SQL_SERVER_SCHEMAS = [
+  'sys', 'INFORMATION_SCHEMA', 'guest', 'db_owner', 'db_accessadmin', 'db_securityadmin', 'db_ddladmin',
+  'db_backupoperator', 'db_datareader', 'db_datawriter', 'db_denydatareader', 'db_denydatawriter',
+]
 
 /** Ignore rules whose default is "on". Used to badge how many are non-default. */
 const DEFAULTS: Partial<Record<keyof CompareOptions, boolean>> = {
@@ -88,6 +99,19 @@ export function OptionsDialog({
 
   const set = <K extends keyof CompareOptions>(k: K, v: CompareOptions[K]) =>
     setForm((f) => ({ ...f, [k]: v }))
+
+  // PostgreSQL alone: SQL Server's own default schemas mean nothing there, so they are neither shown nor typed over.
+  // The server drops them only while the whole default list is there; a list holding one of their names (guest, sys)
+  // is the user's own, every name of it.
+  const pgOnly = postgres && !sqlServer
+  const hasSqlDefaults = SQL_SERVER_SCHEMAS.every((s) => form.excludedSchemas.includes(s))
+  const shownSchemas =
+    pgOnly && hasSqlDefaults ? form.excludedSchemas.filter((s) => !SQL_SERVER_SCHEMAS.includes(s)) : form.excludedSchemas
+  const setSchemas = (typed: string[]) =>
+    set(
+      'excludedSchemas',
+      pgOnly && hasSqlDefaults && !typed.some((s) => SQL_SERVER_SCHEMAS.includes(s)) ? [...SQL_SERVER_SCHEMAS, ...typed] : typed,
+    )
 
   const toggleType = (t: DbObjectType) =>
     set(
@@ -257,6 +281,10 @@ export function OptionsDialog({
                   'collation',
                   'operator',
                   'foreignTable',
+                  'textSearchDictionary',
+                  'textSearchConfiguration',
+                  'operatorClass',
+                  'cast',
                 ])
               }
             >
@@ -287,12 +315,13 @@ export function OptionsDialog({
             Skip these objects
           </h3>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Excluded schemas" hint="Comma separated.">
+            <Field
+              label="Excluded schemas"
+              hint={pgOnly ? 'Comma separated. pg_catalog, information_schema and pg_toast are always left out.' : 'Comma separated.'}
+            >
               <Input
-                value={form.excludedSchemas.join(', ')}
-                onChange={(e) =>
-                  set('excludedSchemas', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))
-                }
+                value={shownSchemas.join(', ')}
+                onChange={(e) => setSchemas(e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
               />
             </Field>
             <Field label="Name patterns to skip" hint="Comma separated, * and ? allowed. e.g. tmp_*, *_bak">

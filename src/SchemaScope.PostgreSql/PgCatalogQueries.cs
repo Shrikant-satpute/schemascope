@@ -43,11 +43,121 @@ internal static class PgCatalogQueries
 
     /// <summary>
     /// Every catalog set in one round trip, in this order: schemas, relations, columns, constraints, indexes,
-    /// routines, triggers, sequences, types, extensions, row security policies, collations, rules, dependencies.
+    /// routines, triggers, sequences, types, extensions, row security policies, collations, rules, operators,
+    /// dependencies, text search dictionaries and configurations, operator classes, casts, extended statistics.
     /// </summary>
     public static string Catalog(int versionNum) => string.Join("\n", Schemas, Relations, Columns(versionNum), Constraints,
         Indexes, Routines, Triggers, Sequences, Types(versionNum), Extensions, Policies, Collations(versionNum), Rules,
-        Operators, Dependencies(versionNum));
+        Operators, Dependencies(versionNum), TextSearchDictionaries, TextSearchConfigurations, OperatorClasses, Casts,
+        Statistics(versionNum));
+
+    /// <summary>A name as the deparse writes it under search_path pg_catalog: bare for pg_catalog's own, schema.name otherwise.</summary>
+    private static string Qualified(string ns, string name) =>
+        $"CASE WHEN {ns}.nspname = 'pg_catalog' THEN quote_ident({name}) ELSE quote_ident({ns}.nspname) || '.' || quote_ident({name}) END";
+
+    /// <summary>
+    /// User text search dictionaries (CREATE TEXT SEARCH DICTIONARY): the template, its options as written
+    /// (dictinitoption), and whether the template is a user one (C code SchemaScope does not create).
+    /// </summary>
+    private static readonly string TextSearchDictionaries = $"""
+        SELECT d.oid, n.nspname, d.dictname, {Qualified("tn", "t.tmplname")}, d.dictinitoption, tn.nspname <> 'pg_catalog'
+        FROM pg_ts_dict d
+        JOIN pg_namespace n ON n.oid = d.dictnamespace
+        JOIN pg_ts_template t ON t.oid = d.dicttemplate
+        JOIN pg_namespace tn ON tn.oid = t.tmplnamespace
+        WHERE {UserSchema("n")} AND {NotExtensionMember("pg_ts_dict", "d.oid")};
+        """;
+
+    /// <summary>
+    /// User text search configurations (CREATE TEXT SEARCH CONFIGURATION): the parser, whether it is a user one, and
+    /// each token type's dictionaries in order ("asciiword WITH english_stem"), and the dictionaries' oids.
+    /// </summary>
+    private static readonly string TextSearchConfigurations = $"""
+        SELECT cfg.oid, n.nspname, cfg.cfgname, {Qualified("pn", "p.prsname")}, pn.nspname <> 'pg_catalog',
+               ARRAY(SELECT x.alias || ' WITH ' || x.dicts FROM (
+                         SELECT tt.alias, string_agg({Qualified("dn", "dd.dictname")}, ', ' ORDER BY m.mapseqno) AS dicts
+                         FROM pg_ts_config_map m
+                         JOIN ts_token_type(cfg.cfgparser) tt ON tt.tokid = m.maptokentype
+                         JOIN pg_ts_dict dd ON dd.oid = m.mapdict
+                         JOIN pg_namespace dn ON dn.oid = dd.dictnamespace
+                         WHERE m.mapcfg = cfg.oid
+                         GROUP BY tt.alias) x ORDER BY x.alias),
+               ARRAY(SELECT DISTINCT m.mapdict FROM pg_ts_config_map m WHERE m.mapcfg = cfg.oid)
+        FROM pg_ts_config cfg
+        JOIN pg_namespace n ON n.oid = cfg.cfgnamespace
+        JOIN pg_ts_parser p ON p.oid = cfg.cfgparser
+        JOIN pg_namespace pn ON pn.oid = p.prsnamespace
+        WHERE {UserSchema("n")} AND {NotExtensionMember("pg_ts_config", "cfg.oid")};
+        """;
+
+    /// <summary>
+    /// User operator classes (CREATE OPERATOR CLASS), as pg_dump writes them: DEFAULT, the type, the access method, the
+    /// family when it is not the one of the class's own name, the operators and support functions bound to the class
+    /// (pg_depend), STORAGE when it is not the type; and the oids of those operators, functions and the type.
+    /// </summary>
+    private static readonly string OperatorClasses = $"""
+        SELECT oc.oid, n.nspname, oc.opcname, oc.opcdefault, format_type(oc.opcintype, NULL), am.amname::text,
+               CASE WHEN f.opfname <> oc.opcname OR f.opfnamespace <> oc.opcnamespace THEN quote_ident(fn.nspname) || '.' || quote_ident(f.opfname) END,
+               CASE WHEN oc.opckeytype <> 0 AND oc.opckeytype <> oc.opcintype THEN format_type(oc.opckeytype, NULL) END,
+               ARRAY(SELECT 'OPERATOR ' || ao.amopstrategy || ' ' || ao.amopopr::regoperator::text
+                            || CASE WHEN ao.amoppurpose = 'o' THEN ' FOR ORDER BY ' || quote_ident(sfn.nspname) || '.' || quote_ident(sf.opfname) ELSE '' END
+                     FROM pg_amop ao
+                     JOIN pg_depend d ON d.classid = 'pg_amop'::regclass AND d.objid = ao.oid AND d.refclassid = 'pg_opclass'::regclass AND d.refobjid = oc.oid
+                     LEFT JOIN pg_opfamily sf ON sf.oid = ao.amopsortfamily
+                     LEFT JOIN pg_namespace sfn ON sfn.oid = sf.opfnamespace
+                     ORDER BY ao.amopstrategy),
+               ARRAY(SELECT 'FUNCTION ' || ap.amprocnum || ' (' || format_type(ap.amproclefttype, NULL) || ', '
+                            || format_type(ap.amprocrighttype, NULL) || ') ' || ap.amproc::regprocedure::text
+                     FROM pg_amproc ap
+                     JOIN pg_depend d ON d.classid = 'pg_amproc'::regclass AND d.objid = ap.oid AND d.refclassid = 'pg_opclass'::regclass AND d.refobjid = oc.oid
+                     ORDER BY ap.amprocnum, ap.amproclefttype, ap.amprocrighttype),
+               ARRAY(SELECT ao.amopopr FROM pg_amop ao
+                     JOIN pg_depend d ON d.classid = 'pg_amop'::regclass AND d.objid = ao.oid AND d.refclassid = 'pg_opclass'::regclass AND d.refobjid = oc.oid),
+               ARRAY(SELECT ap.amproc::oid FROM pg_amproc ap
+                     JOIN pg_depend d ON d.classid = 'pg_amproc'::regclass AND d.objid = ap.oid AND d.refclassid = 'pg_opclass'::regclass AND d.refobjid = oc.oid),
+               oc.opcintype
+        FROM pg_opclass oc
+        JOIN pg_namespace n ON n.oid = oc.opcnamespace
+        JOIN pg_am am ON am.oid = oc.opcmethod
+        JOIN pg_opfamily f ON f.oid = oc.opcfamily
+        JOIN pg_namespace fn ON fn.oid = f.opfnamespace
+        WHERE {UserSchema("n")} AND {NotExtensionMember("pg_opclass", "oc.oid")};
+        """;
+
+    /// <summary>
+    /// User casts (CREATE CAST; the built-in ones are below oid 16384): source and target type, how (f a function, i
+    /// in/out, b binary coercible), when (e explicit, a assignment, i implicit). A cast is in no schema; it is listed under
+    /// its target type's schema (else its source type's), so excluding a schema excludes the casts to its types.
+    /// </summary>
+    private static readonly string Casts = $"""
+        SELECT ca.oid,
+               CASE WHEN tn.nspname <> 'pg_catalog' OR sn.nspname = 'pg_catalog' THEN tn.nspname ELSE sn.nspname END,
+               format_type(ca.castsource, NULL), format_type(ca.casttarget, NULL), ca.castmethod::text,
+               CASE WHEN ca.castfunc <> 0 THEN ca.castfunc::regprocedure::text END, ca.castcontext::text,
+               ca.castfunc::oid, ca.castsource, ca.casttarget
+        FROM pg_cast ca
+        JOIN pg_type st ON st.oid = ca.castsource
+        JOIN pg_namespace sn ON sn.oid = st.typnamespace
+        JOIN pg_type tt ON tt.oid = ca.casttarget
+        JOIN pg_namespace tn ON tn.oid = tt.typnamespace
+        WHERE ca.oid >= 16384 AND {NotExtensionMember("pg_cast", "ca.oid")}
+          -- a range's casts to its multirange (PostgreSQL 14) are made with it (deptype 'i'), as its constructors are
+          AND NOT EXISTS (SELECT 1 FROM pg_depend id WHERE id.classid = 'pg_cast'::regclass AND id.objid = ca.oid AND id.deptype = 'i');
+        """;
+
+    /// <summary>
+    /// Extended statistics (CREATE STATISTICS) of a user table: pg_get_statisticsobjdef, and the statistics target
+    /// when one is set (ALTER STATISTICS ... SET STATISTICS; -1 up to 16 and NULL from 17 mean none).
+    /// </summary>
+    private static string Statistics(int versionNum) => $"""
+        SELECT s.stxrelid, sn.nspname, s.stxname, pg_get_statisticsobjdef(s.oid),
+               {(versionNum >= 170000 ? "s.stxstattarget::int" : "NULLIF(s.stxstattarget, -1)::int")}
+        FROM pg_statistic_ext s
+        JOIN pg_namespace sn ON sn.oid = s.stxnamespace
+        JOIN pg_class c ON c.oid = s.stxrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE {UserSchema("n")} AND {NotExtensionMember("pg_statistic_ext", "s.oid")};
+        """;
 
     // The public schema's owner is left out while it is the one each version gives it (the bootstrap superuser up to
     // 14, pg_database_owner from 15) or the database's owner: one schema created on two versions is the same schema.
@@ -83,7 +193,8 @@ internal static class PgCatalogQueries
                (SELECT quote_ident(ri.relname) FROM pg_index rx JOIN pg_class ri ON ri.oid = rx.indexrelid
                 WHERE rx.indrelid = c.oid AND rx.indisreplident LIMIT 1),
                (SELECT quote_ident(fs.srvname) FROM pg_foreign_table ft JOIN pg_foreign_server fs ON fs.oid = ft.ftserver WHERE ft.ftrelid = c.oid),
-               COALESCE((SELECT ft.ftoptions FROM pg_foreign_table ft WHERE ft.ftrelid = c.oid), ARRAY[]::text[])
+               COALESCE((SELECT ft.ftoptions FROM pg_foreign_table ft WHERE ft.ftrelid = c.oid), ARRAY[]::text[]),
+               c.relispopulated
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND {UserSchema("n")} AND {NotExtensionMember("pg_class", "c.oid")};
@@ -95,10 +206,17 @@ internal static class PgCatalogQueries
     /// 's' stored, and from PostgreSQL 18 'v' virtual. An identity column's sequence hangs off it with deptype 'i': its
     /// start, step and limits are the column's. From PostgreSQL 18 a NOT NULL can be NOT VALID (attnotnull is set, its
     /// pg_constraint row is not validated): existing rows may still hold NULLs, so the column is not read as NOT NULL.
+    /// From PostgreSQL 17 a partition's column carries its parent's identity (attidentity, without a sequence of its
+    /// own, and no partition can drop it); before 17 it does not. Either way it is the parent's, so a partition's copy is
+    /// not read as an identity of its own: one partition reads the same on every version.
     /// </summary>
     private static string Columns(int versionNum) => $"""
         SELECT a.attrelid, a.attnum, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull AND NOT {NotNullNotValid(versionNum)},
-               a.attidentity::text, {(versionNum >= 120000 ? "a.attgenerated::text" : "''::text")},
+               CASE WHEN a.attidentity <> '' AND c.relispartition AND EXISTS (
+                         SELECT 1 FROM pg_inherits pi JOIN pg_attribute pa ON pa.attrelid = pi.inhparent AND pa.attname = a.attname
+                         WHERE pi.inhrelid = a.attrelid AND pa.attidentity <> '')
+                    THEN '' ELSE a.attidentity::text END,
+               {(versionNum >= 120000 ? "a.attgenerated::text" : "''::text")},
                pg_get_expr(ad.adbin, ad.adrelid),
                CASE WHEN a.attcollation <> 0 AND a.attcollation <> t.typcollation THEN
                     CASE WHEN cn.nspname = 'pg_catalog' THEN quote_ident(co.collname)
@@ -135,7 +253,9 @@ internal static class PgCatalogQueries
                rn.nspname, rc.relname,
                ARRAY(SELECT a.attname::text FROM unnest(co.confkey) WITH ORDINALITY k(num, ord)
                      JOIN pg_attribute a ON a.attrelid = co.confrelid AND a.attnum = k.num ORDER BY k.ord),
-               co.confdeltype::text, co.confupdtype::text
+               co.confdeltype::text, co.confupdtype::text,
+               -- a primary or unique key's index options (WITH (fillfactor=...)), which pg_get_constraintdef leaves out
+               CASE WHEN co.contype IN ('p', 'u') THEN (SELECT ic.reloptions FROM pg_class ic WHERE ic.oid = co.conindid) END
         FROM pg_constraint co
         JOIN pg_namespace n ON n.oid = co.connamespace
         LEFT JOIN pg_class rc ON rc.oid = co.confrelid
@@ -351,7 +471,9 @@ internal static class PgCatalogQueries
     /// a function or a type. The needed object's extension is named when an extension made it. Built-in objects (oid
     /// below 16384) are never needed by name, so they are left out. A foreign key is marked as one: scripts add those
     /// once every table exists. A user operator needs its function and types like any object. A default's need of its
-    /// own column (it goes when the column goes) is no reading of the column, and is left out.
+    /// own column (it goes when the column goes) is no reading of the column, and is left out. A text search
+    /// configuration or dictionary is needed as any object (an expression names one as a regconfig constant), and needs
+    /// its dictionaries; an operator class is needed by the index that uses it and needs its type.
     /// </summary>
     private static string Dependencies(int versionNum) => $"""
         SELECT x.dep_kind, x.dep_oid, x.ref_kind, x.ref_oid, x.ref_col, x.via, e.extname, x.ix_name
@@ -360,6 +482,9 @@ internal static class PgCatalogQueries
                         WHEN dp.classid = 'pg_proc'::regclass THEN 'p'
                         WHEN dp.classid = 'pg_trigger'::regclass THEN 'g'
                         WHEN dp.classid = 'pg_operator'::regclass THEN 'r'
+                        WHEN dp.classid = 'pg_ts_config'::regclass THEN 'f'
+                        WHEN dp.classid = 'pg_ts_dict'::regclass THEN 'y'
+                        WHEN dp.classid = 'pg_opclass'::regclass THEN 'o'
                         ELSE 'c' END AS dep_kind,
                    CASE WHEN dp.classid = 'pg_rewrite'::regclass THEN rw.ev_class
                         WHEN dp.classid = 'pg_attrdef'::regclass THEN ad.adrelid
@@ -371,6 +496,8 @@ internal static class PgCatalogQueries
                         WHEN dp.refclassid = 'pg_opclass'::regclass THEN 'o'
                         WHEN dp.refclassid = 'pg_operator'::regclass THEN 'r'
                         WHEN dp.refclassid = 'pg_collation'::regclass THEN 'l'
+                        WHEN dp.refclassid = 'pg_ts_config'::regclass THEN 'f'
+                        WHEN dp.refclassid = 'pg_ts_dict'::regclass THEN 'y'
                         WHEN dp.refclassid = 'pg_class'::regclass OR rt.typrelid <> 0 THEN 'c'
                         ELSE 't' END AS ref_kind,
                    CASE WHEN dp.refclassid = 'pg_type'::regclass THEN CASE WHEN rt.typrelid <> 0 THEN rt.typrelid ELSE rt.oid END
@@ -388,6 +515,10 @@ internal static class PgCatalogQueries
                         WHEN ix.indexrelid IS NOT NULL THEN
                              CASE WHEN EXISTS (SELECT 1 FROM pg_constraint kc WHERE kc.conindid = ix.indexrelid AND kc.contype IN ('p', 'u', 'x'))
                                   THEN 'key' ELSE 'index' END
+                        -- PostgreSQL 12 to 14 record a generated column's need of another column of its table column to
+                        -- column (15 and later from its pg_attrdef row): the same reading of the column either way
+                        WHEN dp.classid = 'pg_class'::regclass AND dp.refclassid = 'pg_class'::regclass AND dp.objid = dp.refobjid
+                             AND dp.objsubid > 0 AND dp.refobjsubid > 0 THEN 'default'
                         ELSE 'relation' END AS via,
                    CASE WHEN ix.indexrelid IS NOT NULL THEN ixc.relname::text END AS ix_name
             FROM pg_depend dp
@@ -405,16 +536,17 @@ internal static class PgCatalogQueries
             WHERE dp.deptype IN ('n', 'a') AND dp.objid >= 16384 AND dp.refobjid >= 16384
               AND dp.classid IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_rewrite'::regclass,
                                  'pg_attrdef'::regclass, 'pg_constraint'::regclass, 'pg_trigger'::regclass, 'pg_policy'::regclass,
-                                 'pg_operator'::regclass)
+                                 'pg_operator'::regclass, 'pg_ts_config'::regclass, 'pg_ts_dict'::regclass, 'pg_opclass'::regclass)
               AND dp.refclassid IN ('pg_class'::regclass, 'pg_type'::regclass, 'pg_proc'::regclass, 'pg_opclass'::regclass,
-                                    'pg_operator'::regclass, 'pg_collation'::regclass)
+                                    'pg_operator'::regclass, 'pg_collation'::regclass, 'pg_ts_config'::regclass, 'pg_ts_dict'::regclass)
               AND NOT (ix.indexrelid IS NOT NULL AND dp.refclassid = 'pg_class'::regclass)
               -- a default needs its own column only to go when it goes; that is no reader of the column
               AND NOT (ad.oid IS NOT NULL AND dp.refclassid = 'pg_class'::regclass AND dp.refobjid = ad.adrelid AND dp.refobjsubid = ad.adnum)
         ) x
         LEFT JOIN pg_depend xd ON xd.classid = CASE x.ref_kind WHEN 'c' THEN 'pg_class'::regclass WHEN 't' THEN 'pg_type'::regclass
                                                                WHEN 'o' THEN 'pg_opclass'::regclass WHEN 'r' THEN 'pg_operator'::regclass
-                                                               WHEN 'l' THEN 'pg_collation'::regclass ELSE 'pg_proc'::regclass END
+                                                               WHEN 'l' THEN 'pg_collation'::regclass WHEN 'f' THEN 'pg_ts_config'::regclass
+                                                               WHEN 'y' THEN 'pg_ts_dict'::regclass ELSE 'pg_proc'::regclass END
              AND xd.objid = x.ref_oid AND xd.refclassid = 'pg_extension'::regclass AND xd.deptype = 'e'
         LEFT JOIN pg_extension e ON e.oid = xd.refobjid
         WHERE x.dep_oid IS NOT NULL AND x.ref_oid IS NOT NULL;

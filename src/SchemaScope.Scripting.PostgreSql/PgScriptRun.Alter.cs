@@ -55,6 +55,9 @@ internal sealed partial class PgScriptRun
     private string? NotReady(string? text)
     {
         if (string.IsNullOrEmpty(text)) return null;
+        // syntax an older target does not have: a unique key or index that treats NULLs as equal is PostgreSQL 15's
+        if (Tgt.MajorVersion is > 0 and < 15 && NullsNotDistinctRx().IsMatch(PgStatementSplitter.CodeOnly(text)))
+            return $"it uses UNIQUE NULLS NOT DISTINCT, which PostgreSQL {Tgt.MajorVersion} does not have (15 and later)";
         foreach (var e in Src.Objects.Where(o => o.Type == DbObjectType.EnumType && t.ContainsKey(o.Key)))
         {
             var have = EnumLabels(t[e.Key]).ToHashSet(StringComparer.Ordinal);
@@ -69,6 +72,18 @@ internal sealed partial class PgScriptRun
                 return $"it names schema {from}, where extension {ext.Name} is on the source; the target has {ext.Name} in schema {to}";
         return null;
     }
+
+    [GeneratedRegex(@"\bNULLS\s+NOT\s+DISTINCT\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex NullsNotDistinctRx();
+
+    /// <summary>
+    /// Why a column cannot be made on the target as the source has it: a VIRTUAL generated column is PostgreSQL 18's.
+    /// Null when it can.
+    /// </summary>
+    private string? TooNew(ColumnInfo c) =>
+        c.IsComputed && !c.IsPersisted && Tgt.MajorVersion is > 0 and < 18
+            ? $"column {c.Name} is a VIRTUAL generated column, which PostgreSQL {Tgt.MajorVersion} does not have (18 and later)"
+            : null;
 
     /// <summary>'label'::schema.enum as the deparse writes a label of that type.</summary>
     private static bool MentionsLabel(string text, string label, DbObject e) =>
@@ -224,8 +239,11 @@ internal sealed partial class PgScriptRun
             var want = src.Properties.ContainsKey(key);
             if (want == tgt.Properties.ContainsKey(key)) continue;
             if (!want)
-                review.Hold(ReviewLog.NotApplied, "table option", key, src.FullName,
-                    $"the target has {verb} ROW LEVEL SECURITY and the source does not; turning it off lets every role see every row, so it is not scripted", Constraints.Name);
+                review.Hold(ReviewLog.NotApplied, "table option", key, src.FullName, verb == "FORCE"
+                    ? "the target has FORCE ROW LEVEL SECURITY and the source does not; turning it off stops the policies applying to the table's owner " +
+                      "(other roles stay under them), so it is not scripted"
+                    : $"the target has {verb} ROW LEVEL SECURITY and the source does not; turning it off lets every role see every row, so it is not scripted",
+                    Constraints.Name);
             else if (!policiesReady)
                 review.Hold(ReviewLog.NotApplied, "table option", key, src.FullName, RlsHeld, Constraints.Name);
             else

@@ -155,6 +155,10 @@ export type DbObjectType =
   | 'collation'
   | 'operator'
   | 'foreignTable'
+  | 'textSearchDictionary'
+  | 'textSearchConfiguration'
+  | 'operatorClass'
+  | 'cast'
 
 export interface ConnectionSettings {
   id: string

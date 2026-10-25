@@ -14,7 +14,7 @@ internal sealed partial class PgScriptRun
     private static int Rank(DbObject o) => o.Type switch
     {
         DbObjectType.Schema => 0,
-        DbObjectType.Collation => 1,
+        DbObjectType.Collation or DbObjectType.TextSearchDictionary or DbObjectType.TextSearchConfiguration => 1,
         DbObjectType.EnumType => 2,
         DbObjectType.RangeType => 3,
         DbObjectType.Domain => 4,
@@ -22,7 +22,7 @@ internal sealed partial class PgScriptRun
         DbObjectType.Sequence => 6,
         DbObjectType.Table => 7,
         DbObjectType.ScalarFunction or DbObjectType.TableValuedFunction or DbObjectType.StoredProcedure => 8,
-        DbObjectType.Operator => 9,
+        DbObjectType.Operator or DbObjectType.OperatorClass or DbObjectType.Cast => 9,
         DbObjectType.AggregateFunction => 10,
         DbObjectType.View => 11,
         DbObjectType.MaterializedView => 12,
@@ -131,6 +131,12 @@ internal sealed partial class PgScriptRun
                 Hold(ReviewLog.NotApplied, $"it uses the builtin provider, which PostgreSQL {targetMajor} does not have (17 and later)");
                 continue;
             }
+            // a text search parser or template of the user's own is C code: made on the server by hand, never here
+            if (o.Properties.FirstOrDefault(kv => kv.Key.StartsWith(PgCanonicalWriter.NeedsPrefix, StringComparison.Ordinal)).Value is { } unread)
+            {
+                Hold(ReviewLog.NotApplied, $"it uses {unread}, which SchemaScope does not read or create (it is C code on the server); create that first, by hand");
+                continue;
+            }
             if (IsTriggerFunction(o) && usedByNewTriggers.Contains(o.Key))
             {
                 withTrigger.Add(o.Key);   // 07 creates it with its trigger
@@ -163,6 +169,7 @@ internal sealed partial class PgScriptRun
                         ? $"it needs extension {need.Name}, which the target does not have - install it first"
                         : $"it needs {Kind(need)} {Display(need)}, which the target does not have and this run does not create{Why(need)}";
             }
+            if (o.Type == DbObjectType.Table && o.Columns.Select(TooNew).FirstOrDefault(w => w is not null) is { } tooNew) return tooNew;
             return NotReady(CreatedText(o));
         }
         bool HoldIfBlocked(DbObject o)
@@ -270,6 +277,9 @@ internal sealed partial class PgScriptRun
                     break;
                 case DbObjectType.Operator:
                     text.Append(PgCanonicalWriter.WriteOperator(o)).Append('\n');
+                    break;
+                case DbObjectType.TextSearchDictionary or DbObjectType.TextSearchConfiguration or DbObjectType.OperatorClass or DbObjectType.Cast:
+                    text.Append(PgCanonicalWriter.Write(o, compare)).Append('\n');
                     break;
                 case DbObjectType.Domain:
                     text.Append(Domain(o));
@@ -742,12 +752,12 @@ internal sealed partial class PgScriptRun
             switch (o.Type)
             {
                 case DbObjectType.ScalarFunction or DbObjectType.TableValuedFunction or DbObjectType.StoredProcedure or DbObjectType.AggregateFunction:
-                    if (o.Properties.GetValueOrDefault("result") != tgt.Properties.GetValueOrDefault("result") ||
-                        o.Properties.GetValueOrDefault("arguments") != tgt.Properties.GetValueOrDefault("arguments"))
+                    var argumentsWhy = ReplaceArgumentsProblem(o.Properties.GetValueOrDefault("arguments"), tgt.Properties.GetValueOrDefault("arguments"));
+                    if (o.Properties.GetValueOrDefault("result") != tgt.Properties.GetValueOrDefault("result") || argumentsWhy is not null)
                     {
                         Hold($"its return type or parameters differ (source: ({o.Properties.GetValueOrDefault("arguments")}) {o.Properties.GetValueOrDefault("result")}; " +
                              $"target: ({tgt.Properties.GetValueOrDefault("arguments")}) {tgt.Properties.GetValueOrDefault("result")}): CREATE OR REPLACE cannot " +
-                             "change a return type, a parameter name or a default, so it needs DROP and CREATE");
+                             $"{argumentsWhy ?? "change a return type"}, so it needs DROP and CREATE");
                         continue;
                     }
                     if (o.Type == DbObjectType.AggregateFunction)
@@ -773,6 +783,9 @@ internal sealed partial class PgScriptRun
                         continue;
                     }
                     text = PgDdl.Statement(def);
+                    // CREATE OR REPLACE VIEW keeps a column's default: one only the target's view has goes by name
+                    foreach (var column in ViewDefaults(tgt).Except(ViewDefaults(o), StringComparer.Ordinal))
+                        text += $"ALTER VIEW {PgDdl.Q(o)} ALTER COLUMN {PgDdl.Q(column)} DROP DEFAULT;\n";
                     break;
                 case DbObjectType.Trigger:
                     if (targetMajor < 14) { Hold($"PostgreSQL {targetMajor} has no CREATE OR REPLACE TRIGGER (14 and later)"); continue; }
@@ -869,6 +882,56 @@ internal sealed partial class PgScriptRun
         }
     }
 
+    /// <summary>The columns a view's text gives a default (the reader's ALTER VIEW ... ALTER COLUMN ... SET DEFAULT lines).</summary>
+    private static List<string> ViewDefaults(DbObject view)
+    {
+        var prefix = $"ALTER VIEW {PgDdl.Q(view)} ALTER COLUMN ";
+        return [.. (view.Definition ?? "").Split('\n').Where(l => l.StartsWith(prefix, StringComparison.Ordinal) && l.Contains(" SET DEFAULT ", StringComparison.Ordinal))
+            .Select(l => PgDdl.UnquoteFirst(l[prefix.Length..])).OfType<string>()];
+    }
+
+    /// <summary>
+    /// Why CREATE OR REPLACE cannot turn the target's parameter list (pg_get_function_arguments) into the source's, or
+    /// null when it can: every parameter's mode, name and type must stay, and a default may be added or changed but not
+    /// removed (PostgreSQL refuses "cannot remove parameter defaults from existing function"). The types are the same
+    /// on both sides (they are the routine's key), so a changed default keeps its type.
+    /// </summary>
+    internal static string? ReplaceArgumentsProblem(string? source, string? target)
+    {
+        if (source == target) return null;
+        var mine = Parameters(source);
+        var theirs = Parameters(target);
+        if (mine.Count != theirs.Count || mine.Zip(theirs).Any(p => p.First.Head != p.Second.Head))
+            return "change a parameter's name, mode or type";
+        if (mine.Zip(theirs).Any(p => p.First.Default is null && p.Second.Default is not null))
+            return "remove a parameter's default";
+        return null;
+    }
+
+    /// <summary>A pg_get_function_arguments list as its parameters: each one's mode, name and type, and its default (or null).</summary>
+    private static List<(string Head, string? Default)> Parameters(string? arguments)
+    {
+        var list = new List<(string, string?)>();
+        var text = arguments ?? "";
+        var code = PgStatementSplitter.CodeOnly(text);
+        var depth = 0;
+        var start = 0;
+        for (var i = 0; i <= code.Length; i++)
+        {
+            var c = i < code.Length ? code[i] : ',';
+            if (c is '(' or '[') depth++;
+            else if (c is ')' or ']') depth--;
+            if (c != ',' || depth != 0) continue;
+            var part = text[start..i];
+            var partCode = code[start..i];
+            start = i + 1;
+            if (part.Trim().Length == 0) continue;
+            var at = partCode.IndexOf(" DEFAULT ", StringComparison.Ordinal);
+            list.Add(at < 0 ? (part.Trim(), null) : (part[..at].Trim(), part[(at + " DEFAULT ".Length)..].Trim()));
+        }
+        return list;
+    }
+
     /// <summary>
     /// Two materialized views whose definitions differ in their indexes alone (the reader writes each index on a line of
     /// its own after the query, and its own rules after those): the same query, options and rules.
@@ -910,7 +973,8 @@ internal sealed partial class PgScriptRun
         foreach (var o in Src.Objects.Where(o => InScope(o) && !IsExcluded(o) && StatusOf(o) == Diff.Different && !altered.Contains(o.Key) &&
                                                  o.Type is DbObjectType.Schema or DbObjectType.EnumType or DbObjectType.Domain or DbObjectType.CompositeType
                                                      or DbObjectType.Sequence or DbObjectType.Extension or DbObjectType.RangeType or DbObjectType.Collation
-                                                     or DbObjectType.Operator or DbObjectType.ForeignTable))
+                                                     or DbObjectType.Operator or DbObjectType.ForeignTable or DbObjectType.TextSearchDictionary
+                                                     or DbObjectType.TextSearchConfiguration or DbObjectType.OperatorClass or DbObjectType.Cast))
             review.Hold(ReviewLog.NotApplied, Kind(o), Display(o), null, o.Type switch
             {
                 DbObjectType.EnumType => EnumCannotAdd(o) ?? "04_columntypes adds a missing enum label, and it is not selected",
@@ -924,8 +988,12 @@ internal sealed partial class PgScriptRun
                     $"changed by hand, as a user allowed to: ALTER EXTENSION {PgDdl.Q(o.Name)} UPDATE, or SET SCHEMA",
                 DbObjectType.ForeignTable =>
                     "changes to a foreign table are not scripted: change it by hand as a user allowed to (ALTER FOREIGN TABLE ...), or drop and create it again",
-                DbObjectType.RangeType or DbObjectType.Collation =>
+                DbObjectType.RangeType or DbObjectType.Collation or DbObjectType.OperatorClass or DbObjectType.Cast =>
                     $"a {Kind(o)} cannot be changed in place: it would have to be dropped and created again, with everything that uses it. Do it by hand",
+                DbObjectType.TextSearchDictionary or DbObjectType.TextSearchConfiguration =>
+                    $"changes to an existing {Kind(o)} are not scripted in this version: change it by hand (ALTER TEXT SEARCH " +
+                    $"{(o.Type == DbObjectType.TextSearchDictionary ? "DICTIONARY ... (option = value)" : "CONFIGURATION ... ALTER MAPPING")}), " +
+                    "then rebuild what reads it (its indexes, and generated columns that use it)",
                 _ => $"changes to an existing {Kind(o)} are not scripted in this version (ALTER TYPE ... ADD, DROP or ALTER ATTRIBUTE by hand)",
             });
 
@@ -944,18 +1012,22 @@ internal sealed partial class PgScriptRun
                 if (a == b) continue;
                 var isPolicy = key.StartsWith(PgCanonicalWriter.PolicyPrefix, StringComparison.Ordinal);
                 var isRule = key.StartsWith(PgCanonicalWriter.RulePrefix, StringComparison.Ordinal);
-                // what 05 (policies, row level security, logging, storage options) and 07 (rules) plan or hold themselves
+                var isStatistics = key.StartsWith(PgCanonicalWriter.StatisticsPrefix, StringComparison.Ordinal);
+                // what 05 (policies, row level security, logging, storage options), 06 (extended statistics) and 07
+                // (rules) plan or hold themselves
                 var folder = isRule ? ScriptSection.Triggers
+                    : isStatistics ? ScriptSection.Indexes
                     : isPolicy || key is "rowSecurity" or "forceRowSecurity" or "persistence" or "options" or "ofType" or "replicaIdentity" ? ScriptSection.Constraints
                     : (ScriptSection?)null;
                 if (folder is { } f && Selected(f)) continue;
-                var name = isPolicy ? $"policy {key[PgCanonicalWriter.PolicyPrefix.Length..]}" : isRule ? $"rule {key[PgCanonicalWriter.RulePrefix.Length..]}" : key;
+                var name = isPolicy ? $"policy {key[PgCanonicalWriter.PolicyPrefix.Length..]}" : isRule ? $"rule {key[PgCanonicalWriter.RulePrefix.Length..]}"
+                    : isStatistics ? $"statistics {key[PgCanonicalWriter.StatisticsPrefix.Length..]}" : key;
                 static string Text(string v) => PgDdl.OneLine(v).TrimEnd().TrimEnd(';');
                 var what = a is null ? $"only the target has it ({Text(b!)})"
                     : b is null ? $"the target does not have it (source: {Text(a)})"
                     : $"it differs (source: {Text(a)}; target: {Text(b)})";
                 review.Hold(ReviewLog.NotApplied, "table option", name, src.FullName, folder is { } g
-                    ? $"{what}; {(g == ScriptSection.Triggers ? "07_triggers" : "05_constraints")} changes it, and it is not selected"
+                    ? $"{what}; {(g == ScriptSection.Triggers ? "07_triggers" : g == ScriptSection.Indexes ? "06_indexes" : "05_constraints")} changes it, and it is not selected"
                     : $"{what}; changing it is not scripted in this version");
             }
             foreach (var c in tgt.Columns.Where(c => src.Columns.All(x => x.Name != c.Name)))

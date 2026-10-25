@@ -99,7 +99,8 @@ export function ApplyDialog({
   const chosen = plan.planSections.filter((s) => sections.has(s.folder))
   const fileCount = chosen.reduce((n, s) => n + s.files, 0)
   const destructiveChosen = sections.has(DESTRUCTIVE)
-  const nameMatches = typed === t.database
+  // an empty name confirms nothing: the server refuses it too
+  const nameMatches = t.database.trim().length > 0 && typed === t.database
   const canApply =
     writeMode && !t.protected && !running && chosen.length > 0 && nameMatches && (!destructiveChosen || acceptDataLoss)
 

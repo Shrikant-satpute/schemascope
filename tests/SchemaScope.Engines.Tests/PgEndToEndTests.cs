@@ -48,7 +48,8 @@ public sealed class PgEndToEndTests(PgServer pg)
 
             // the saved password is masked going out, and released again only to that same destination
             var list = Body(await o.Http.GetStringAsync("/api/connections")).EnumerateArray().ToList();
-            Assert.All(list, c => Assert.NotEqual(pg.Password, c.GetProperty("password").GetString()));
+            // (without DPAPI nothing is stored, so the property may be absent altogether)
+            Assert.All(list, c => Assert.NotEqual(pg.Password, c.TryGetProperty("password", out var p) ? p.GetString() : null));
             // a saved password needs DPAPI (Windows); elsewhere the form sends it each time, as the UI does there
             var asSent = SecretProtector.IsSupported ? list[0].GetRawText() : JsonSerializer.Serialize(pg.Settings(src), OwnerApp.Json);
             var test = await o.PostJson("/api/connections/test", asSent);

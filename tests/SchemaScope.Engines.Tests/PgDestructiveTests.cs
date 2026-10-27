@@ -19,10 +19,10 @@ public abstract class PgDestructiveTestsBase(PgServer pg)
 
     /// <summary>The file names of 11 in run order, without the number: "drop_table_app.extra".</summary>
     private static List<string> Names(ScriptOutcome outcome) =>
-        [.. PgScriptPair.FilesOf(outcome, Folder).Select(f => Path.GetFileNameWithoutExtension(f.RelativePath)[4..])];
+        [.. PgScriptPair.FilesOf(outcome, Folder).Select(f => Path.GetFileNameWithoutExtension(PgScriptPair.FileName(f))[4..])];
 
     private static string Text(ScriptOutcome outcome, string name) =>
-        File.ReadAllText(PgScriptPair.FilesOf(outcome, Folder).Single(f => Path.GetFileNameWithoutExtension(f.RelativePath)[4..] == name).FullPath);
+        File.ReadAllText(PgScriptPair.FilesOf(outcome, Folder).Single(f => Path.GetFileNameWithoutExtension(PgScriptPair.FileName(f))[4..] == name).FullPath);
 
     private const string Source = """
         CREATE SCHEMA app;

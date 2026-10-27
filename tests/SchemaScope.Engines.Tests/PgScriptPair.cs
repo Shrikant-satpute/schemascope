@@ -56,7 +56,11 @@ public sealed class PgScriptPair(PgServer pg, string src, string tgt, string out
     /// <summary>The object files of one folder, in the order its run_all.ps1 runs them.</summary>
     public static List<WrittenFile> FilesOf(ScriptOutcome outcome, string folder) =>
         [.. outcome.Files.Where(f => f.Folder == folder && f.IsObjectFile && f.RelativePath.Count(c => c == '\\') == 1)
-            .OrderBy(f => int.Parse(Path.GetFileName(f.RelativePath)[..3]))];
+            .OrderBy(f => int.Parse(FileName(f)[..3]))];
+
+    /// <summary>The file's own name. RelativePath always uses '\' (the app is Windows-only), which Path.GetFileName does
+    /// not split on Linux, where CI runs these tests.</summary>
+    public static string FileName(WrittenFile f) => f.RelativePath[(f.RelativePath.LastIndexOf('\\') + 1)..];
 
     /// <summary>Text of a folder's object files, in order.</summary>
     public static string Folder(ScriptOutcome outcome, string folder) =>
@@ -65,7 +69,7 @@ public sealed class PgScriptPair(PgServer pg, string src, string tgt, string out
     /// <summary>One file, the way run_all.ps1 runs it: psql, ON_ERROR_STOP, one transaction. The error text, or null.</summary>
     public async Task<string?> RunFileAsync(ScriptOutcome outcome, WrittenFile f)
     {
-        var inContainer = $"/tmp/{Path.GetFileName(outcome.Path!)}/{f.Folder}/{Path.GetFileName(f.RelativePath)}";
+        var inContainer = $"/tmp/{Path.GetFileName(outcome.Path!)}/{f.Folder}/{FileName(f)}";
         await Pg.CopyToContainerAsync(await File.ReadAllBytesAsync(f.FullPath), inContainer);
         var (code, stdout, stderr) = await Pg.ExecInContainerAsync("psql", "-X", "-v", "ON_ERROR_STOP=1", "--single-transaction",
             "-U", PgServer.User, "-d", Tgt, "-f", inContainer);

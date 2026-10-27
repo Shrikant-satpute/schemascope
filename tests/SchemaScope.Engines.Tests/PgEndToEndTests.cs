@@ -109,7 +109,11 @@ public sealed class PgEndToEndTests(PgServer pg)
             Assert.Equal("PostgreSQL user: postgres", outcome.GetProperty("applyTarget").GetProperty("login").GetString());
             var path = outcome.GetProperty("path").GetString()!;
             Assert.True(File.Exists(Path.Combine(path, "RUN.ps1")));
-            var missing = string.Concat(Directory.EnumerateFiles(Path.Combine(path, "03_missing", "objects")).Select(File.ReadAllText));
+            // object files are "objects\NNN_x.sql": a folder on Windows, one file name on Linux (where CI runs this)
+            var missingFolder = Path.Combine(path, "03_missing");
+            var missing = string.Concat(Directory.EnumerateFiles(missingFolder, "*", SearchOption.AllDirectories)
+                .Where(f => Path.GetRelativePath(missingFolder, f).Replace('/', '\\').StartsWith("objects\\", StringComparison.Ordinal))
+                .Select(File.ReadAllText));
             Assert.Contains("CREATE VIEW \"app\".\"v_missing\"", missing);
             Assert.DoesNotContain("OR REPLACE", missing);   // 03 creates, never replaces
             Assert.All(Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories), f => Assert.DoesNotContain(pg.Password, File.ReadAllText(f)));

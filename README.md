@@ -5,7 +5,7 @@
 <h1 align="center">SchemaScope</h1>
 
 <p align="center">
-  <b>Compare one SQL Server database against all your environments at once — in about a second.</b>
+  <b>Compare one SQL Server or PostgreSQL database against all your environments at once — in about a second.</b>
 </p>
 
 <p align="center">
@@ -20,6 +20,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0"></a>
   <a href="../../actions/workflows/ci.yml"><img src="../../actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4" alt="Windows 10 and 11">
+  <img src="https://img.shields.io/badge/SQL%20Server-2012%2B-555" alt="SQL Server 2012 and later">
+  <img src="https://img.shields.io/badge/PostgreSQL-13--18%20(Preview)-336791" alt="PostgreSQL 13 to 18, Preview">
 </p>
 
 ---
@@ -483,6 +485,31 @@ different code are opt-in sections; changes that can lose data need their own
 tick; and anything held back in `99_review` is never applied — code that is
 broken in the source, a NOT NULL column with no default, a key existing data
 would break, a module that reads a column the target will not get.
+
+---
+
+## PostgreSQL (Preview, new in 1.3)
+
+SchemaScope also compares PostgreSQL 13 to 18, with the same workflow as SQL Server: one source against
+every target at once, a score for each, side-by-side diffs, fix scripts in numbered folders, and Write mode
+to apply them. Turn it on in **Connections → Show preview engines**.
+
+| | PostgreSQL |
+|---|---|
+| Compare | Tables, columns, keys, indexes, views, materialized views, functions with overloads, procedures, triggers, sequences, enums, domains, partitions. Read in a read-only transaction. |
+| Create scripts | Same numbered folders. Foreign keys and checks are added `NOT VALID` and validated in a later file. Anything unsafe is held in `99_review` with the reason. A `psql` runner is written next to them. |
+| Check scripts | Parsed with PostgreSQL's own parser (libpg_query). Function bodies are copied from the source and not compile-checked, and the app says so. |
+| Write mode | Each file in its own transaction (PostgreSQL rolls back schema changes). The typed database name must match exactly, letter case included. Protected servers are refused on every engine and port of that host. |
+| Changes that can lose data | Opt-in, with probes before every drop, and every drop is `RESTRICT`. |
+| Sign in | User name and password. SSL verifies the server by default; trusting a certificate is an explicit opt-in. |
+
+**Why Preview.** It is new: it passes 566 automated tests against real PostgreSQL 13, 16 and 18 containers, but it has
+not met as many real databases as the SQL Server side. Known limits: a new column whose type is also new is added on
+a second run, once the type exists; and PostgreSQL cannot move a column, so a column added in the middle of a table
+only matches with *Ignore column order*. Comparing SQL Server against PostgreSQL is not available yet; mixing engines in
+one compare is refused with a message.
+
+**Planned next:** SQL Server ↔ PostgreSQL compare, then MySQL and MariaDB. See [docs/MULTI-DATABASE-PLAN.md](docs/MULTI-DATABASE-PLAN.md).
 
 ---
 

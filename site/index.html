@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SchemaScope — Compare SQL Server databases, all at once</title>
-<meta name="description" content="Stop comparing in pairs. SchemaScope compares one SQL Server database against staging, production and every client database at once, in about a second, then writes checked fix scripts and applies them when you switch on Write mode. Free and open source for Windows.">
+<title>SchemaScope — Compare SQL Server and PostgreSQL databases, all at once</title>
+<meta name="description" content="Stop comparing in pairs. SchemaScope compares one SQL Server or PostgreSQL database against staging, production and every client database at once, in about a second, then writes checked fix scripts and applies them when you switch on Write mode. Free and open source for Windows.">
 <meta name="theme-color" content="#ffffff">
 <meta name="color-scheme" content="light">
 <link rel="canonical" href="https://schemascope.shadowmark.in/">
@@ -14,14 +14,14 @@
 <meta property="og:site_name" content="SchemaScope">
 <meta property="og:url" content="https://schemascope.shadowmark.in/">
 <meta property="og:title" content="SchemaScope — Stop comparing in pairs.">
-<meta property="og:description" content="Compare one SQL Server database against staging, production and every client database at once, in about a second. See what is missing, create the fix scripts, and apply them safely. Free and open source.">
+<meta property="og:description" content="Compare one SQL Server or PostgreSQL database against staging, production and every client database at once, in about a second. See what is missing, create the fix scripts, and apply them safely. Free and open source.">
 <meta property="og:image" content="https://schemascope.shadowmark.in/media/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Stop comparing in pairs. SchemaScope, for SQL Server, free and open source.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="SchemaScope — Stop comparing in pairs.">
-<meta name="twitter:description" content="Compare one SQL Server database against every environment and client at once, then fix the differences safely. Free and open source for Windows.">
+<meta name="twitter:description" content="Compare one SQL Server or PostgreSQL database against every environment and client at once, then fix the differences safely. Free and open source for Windows.">
 <meta name="twitter:image" content="https://schemascope.shadowmark.in/media/og.png">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -205,6 +205,26 @@
   .cards4 h3{margin-top:.9rem;font-size:1.1rem}
   .ico.blue{background:var(--blue-soft);color:var(--blue)}
 
+
+  /* ---------- databases ---------- */
+  .engines{display:grid;grid-template-columns:1fr 1fr;gap:1.1rem}
+  @media (max-width:860px){.engines{grid-template-columns:1fr}}
+  .engine{display:flex;gap:1.2rem;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:1.5rem;box-shadow:var(--shadow)}
+  .engine>div{min-width:0}
+  .engine .mark{flex:none;width:64px;height:64px;border-radius:16px;display:grid;place-items:center;background:var(--surface-2)}
+  .engine .mark img{width:44px;height:auto}
+  .engine .mark svg{width:34px;height:34px;color:var(--ink-2)}
+  .engine h3{font-size:1.35rem;letter-spacing:-.02em;display:flex;flex-wrap:wrap;align-items:center;gap:.5rem}
+  .engine p{color:var(--ink-2);margin-top:.5rem;font-size:.97rem}
+  .badge{display:inline-block;border-radius:999px;font:800 .68rem/1 var(--sans);letter-spacing:.08em;text-transform:uppercase;padding:.35rem .55rem}
+  .badge.full{background:#e3f5ef;color:var(--same)}
+  .badge.preview{background:var(--blue-soft);color:var(--blue)}
+  .matrix td .ok{color:var(--same);font-weight:700}
+  .matrix td small{display:block;color:var(--ink-3);font-size:.86rem;margin-top:.15rem;line-height:1.45}
+  .next{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin-top:1.3rem;color:var(--ink-2);font-size:.95rem}
+  .next b{color:var(--ink)}
+  .next span{background:#fff;border:1px dashed var(--line-2);border-radius:999px;padding:.35rem .8rem}
+
   /* ---------- compare tools ---------- */
   .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:#fff;box-shadow:var(--shadow)}
   table{width:100%;border-collapse:collapse;min-width:720px;font-size:.96rem}
@@ -307,6 +327,7 @@
   <div class="shell nav-in">
     <a class="brand" href="#top" aria-label="SchemaScope, home"><svg aria-hidden="true"><use href="#mark"/></svg>SchemaScope</a>
     <nav class="nav-links" aria-label="Sections">
+      <a href="#databases">Databases</a>
       <a href="#how">How it works</a>
       <a href="#write">Write mode</a>
       <a href="#tools">Compare tools</a>
@@ -327,9 +348,9 @@
   <div class="shell">
     <div class="hero-grid">
       <div>
-        <a class="pill-new" href="#write"><b>New in 1.2</b>Write mode: apply the fixes, safely</a>
+        <a class="pill-new" href="#databases"><b>New in 1.3</b>PostgreSQL support (Preview)</a>
         <h1 id="hero-h">Stop comparing <span class="hl nowrap">in pairs.</span></h1>
-        <p class="lede">SchemaScope compares one SQL Server database against <b>staging, production and every client database at once</b>, in about a second. It shows exactly what is missing or different, writes the fix scripts, and applies them when you switch on Write mode.</p>
+        <p class="lede">SchemaScope compares one SQL Server or PostgreSQL database against <b>staging, production and every client database at once</b>, in about a second. It shows exactly what is missing or different, writes the fix scripts, and applies them when you switch on Write mode.</p>
         <div class="cta">
           <a class="btn btn-primary btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe">
             <svg width="18" height="18" aria-hidden="true"><use href="#dl"/></svg>Download free for Windows
@@ -340,7 +361,7 @@
           <li><svg aria-hidden="true"><use href="#check"/></svg>Free &amp; open source</li>
           <li><svg aria-hidden="true"><use href="#check"/></svg>Read-only by default</li>
           <li><svg aria-hidden="true"><use href="#check"/></svg>Runs on your PC</li>
-          <li><svg aria-hidden="true"><use href="#check"/></svg>SQL Server 2012+ &amp; Azure SQL</li>
+          <li><svg aria-hidden="true"><use href="#check"/></svg>SQL Server &amp; PostgreSQL</li>
         </ul>
       </div>
       <div class="frame reveal">
@@ -390,6 +411,49 @@
       </article>
     </div>
     <p class="turn reveal">The easy fix: <span>compare them all with SchemaScope.</span></p>
+  </div>
+</section>
+
+<!-- ================= DATABASES ================= -->
+<section id="databases" aria-labelledby="db-h">
+  <div class="shell">
+    <div class="head reveal">
+      <p class="eyebrow">Databases</p>
+      <h2 id="db-h">SQL Server, and now PostgreSQL.</h2>
+      <p class="sub">The same workflow on both: one source against every copy, a score for each, the exact differences, fix scripts, and Write mode to apply them.</p>
+    </div>
+    <div class="engines">
+      <article class="engine reveal">
+        <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg></span>
+        <div>
+          <h3>SQL Server <span class="badge full">Full support</span></h3>
+          <p>SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed Instance and AWS RDS. Sign in with Windows, a SQL login or Microsoft Entra.</p>
+        </div>
+      </article>
+      <article class="engine reveal">
+        <span class="mark"><img src="/media/pg-elephant-96.png" srcset="/media/pg-elephant-96.png 1x, /media/pg-elephant-192.png 2x" width="96" height="99" alt="PostgreSQL elephant logo"></span>
+        <div>
+          <h3>PostgreSQL <span class="badge preview">Preview · new in 1.3</span></h3>
+          <p>PostgreSQL 13 to 18. Sign in with a user name and password, over SSL that verifies the server by default. Turn it on in <b>Connections → Show preview engines</b>.</p>
+        </div>
+      </article>
+    </div>
+
+    <div class="tablewrap reveal" style="margin-top:1.4rem">
+      <table class="matrix">
+        <thead><tr><th scope="col"></th><th scope="col">SQL Server</th><th scope="col">PostgreSQL (Preview)</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Compare many targets at once</th><td><span class="ok">✓</span></td><td><span class="ok">✓</span><small>Tables, columns, keys, indexes, views, materialized views, functions with overloads, procedures, triggers, sequences, enums, domains, partitions.</small></td></tr>
+          <tr><th scope="row">Create fix scripts</th><td><span class="ok">✓</span></td><td><span class="ok">✓</span><small>Same numbered folders. Foreign keys and checks are added first and validated in a later file, so existing rows are checked safely.</small></td></tr>
+          <tr><th scope="row">Script one object</th><td><span class="ok">✓</span></td><td><span class="ok">✓</span></td></tr>
+          <tr><th scope="row">Check scripts before running</th><td><span class="ok">✓</span><small>Parsed with Microsoft's T-SQL parser.</small></td><td><span class="ok">✓</span><small>Parsed with PostgreSQL's own parser. Function bodies are copied from the source and not compile-checked, and the app says so.</small></td></tr>
+          <tr><th scope="row">Apply in Write mode</th><td><span class="ok">✓</span><small>Each file in its own transaction.</small></td><td><span class="ok">✓</span><small>Each file in its own transaction: PostgreSQL rolls back schema changes too. The database name must match exactly, letter case included.</small></td></tr>
+          <tr><th scope="row">Changes that can lose data</th><td><span class="ok">✓</span><small>Opt-in.</small></td><td><span class="ok">✓</span><small>Opt-in. Data is checked before any drop, and every drop is RESTRICT, so dependent objects are never removed with it.</small></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="fine">Why Preview: PostgreSQL support is new. It passes 566 automated tests on PostgreSQL 13, 16 and 18, but it has not yet met as many real databases as SQL Server has. Two known limits: a new column whose type is also new is added on the second run, after the type exists; and PostgreSQL cannot move a column, so a column added in the middle of a table will not match unless you ignore column order. Tell us what you find on <a href="https://github.com/Shrikant-satpute/schemascope/issues">GitHub</a>.</p>
+    <p class="next reveal"><b>Planned next:</b><span>SQL Server ↔ PostgreSQL compare</span><span>MySQL and MariaDB</span></p>
   </div>
 </section>
 
@@ -575,9 +639,10 @@
           <tr><th scope="col"></th><th scope="col" class="us">SchemaScope</th><th scope="col">Visual Studio Schema Compare</th><th scope="col">SSMS Schema Compare</th><th scope="col">Redgate SQL Compare</th></tr>
         </thead>
         <tbody>
+          <tr><th scope="row">Databases</th><td class="us">SQL Server, PostgreSQL (Preview)</td><td>SQL Server</td><td>SQL Server</td><td>SQL Server</td></tr>
           <tr><th scope="row">Targets per comparison</th><td class="us">As many as you like, read at the same time</td><td>One</td><td>One</td><td>One</td></tr>
           <tr><th scope="row">Price</th><td class="us">Free, open source (Apache-2.0)</td><td>Part of Visual Studio</td><td>Free, in SSMS 22.7 and later</td><td>From about $340 per user per year</td></tr>
-          <tr><th scope="row">What you install</th><td class="us">One app, about 65 MB, no admin rights</td><td>Visual Studio with SQL Server Data Tools</td><td>SQL Server Management Studio</td><td>Redgate's installer</td></tr>
+          <tr><th scope="row">What you install</th><td class="us">One app, about 68 MB, no admin rights</td><td>Visual Studio with SQL Server Data Tools</td><td>SQL Server Management Studio</td><td>Redgate's installer</td></tr>
           <tr><th scope="row">One pair, 1,189 objects (our test)</th><td class="us">0.8 s</td><td>60–180 s</td><td>Not measured</td><td>Not measured</td></tr>
           <tr><th scope="row">Changes the database</th><td class="us">Only in Write mode, one named database at a time</td><td>Update button</td><td>Apply button</td><td>Deploy</td></tr>
         </tbody>
@@ -680,8 +745,12 @@
         <div class="a"><p>Yes. SchemaScope is free and open source under the Apache-2.0 licence, with no account, no trial and no paid tier. It is built by <a href="https://shadowmark.in">Shadowmark</a>. Issues and contributions are welcome on <a href="https://github.com/Shrikant-satpute/schemascope">GitHub</a>.</p></div>
       </details>
       <details class="reveal">
-        <summary>Which SQL Server versions does it support?</summary>
-        <div class="a"><p>SQL Server 2012 and later, Azure SQL Database, Azure SQL Managed Instance and AWS RDS. You can sign in with Windows, a SQL login, or Microsoft Entra (password, interactive MFA, or default).</p></div>
+        <summary>Which databases and versions does it support?</summary>
+        <div class="a"><p><b>SQL Server</b> 2012 and later, Azure SQL Database, Azure SQL Managed Instance and AWS RDS. Sign in with Windows, a SQL login, or Microsoft Entra (password, interactive MFA, or default).</p><p><b>PostgreSQL</b> 13 to 18, as a Preview in 1.3: compare, scripts and Write mode all work. Sign in with a user name and password. Turn it on in Connections → Show preview engines.</p></div>
+      </details>
+      <details class="reveal">
+        <summary>Can it compare SQL Server against PostgreSQL?</summary>
+        <div class="a"><p>Not yet. In 1.3 every database in one compare uses the same engine, and SchemaScope tells you if you mix them. Comparing across engines is planned: table structure can be matched honestly between the two, but procedure and trigger code is written in different languages, so it will be shown as not comparable rather than guessed.</p></div>
       </details>
       <details class="reveal">
         <summary>How fast will it be on my servers?</summary>
@@ -713,7 +782,7 @@
     <div class="final-in reveal">
       <div>
         <h2 id="fin-h">Stop comparing <span class="hl nowrap">in pairs.</span></h2>
-        <p class="sub">Compare every copy of your database at once, then fix them one at a time, on purpose. SchemaScope 1.2, free for Windows.</p>
+        <p class="sub">Compare every copy of your database at once, then fix them one at a time, on purpose. SchemaScope 1.3, free for Windows.</p>
         <div class="cta">
           <a class="btn btn-primary btn-lg" href="https://github.com/Shrikant-satpute/schemascope/releases/latest/download/SchemaScope-Setup.exe">
             <svg width="18" height="18" aria-hidden="true"><use href="#dl"/></svg>Download free for Windows
@@ -734,6 +803,7 @@
     <div>
       <a class="brand" href="#top" aria-label="SchemaScope, back to top"><svg aria-hidden="true"><use href="#mark"/></svg>SchemaScope</a>
       <p style="margin-top:.5rem">© 2026 SchemaScope · Apache-2.0 · built by <a href="https://shadowmark.in">Shadowmark</a></p>
+      <p style="margin-top:.4rem;font-size:.8rem;max-width:44rem">Postgres, PostgreSQL and the Slonik Logo are trademarks or registered trademarks of the PostgreSQL Community Association of Canada, and used with their permission. SQL Server is a trademark of Microsoft. SchemaScope is not affiliated with or endorsed by either.</p>
     </div>
     <div class="foot-links">
       <a href="https://github.com/Shrikant-satpute/schemascope">GitHub</a>

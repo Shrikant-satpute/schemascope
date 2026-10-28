@@ -2,10 +2,8 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
-using Microsoft.Data.SqlClient;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
-using SchemaScope.Core.Normalization;
 using SchemaScope.Core.Storage;
 using SchemaScope.Scripting;
 using SqlBatch = SchemaScope.Scripting.SqlBatch;
@@ -16,7 +14,11 @@ namespace SchemaScope.Api.Services;
 /// <param name="ConnectionString">The compare session's target connection string, used unmodified.</param>
 public sealed record ApplyJob(
     string CompareRunId, string ConnectionString, ApplyTarget Target,
-    IReadOnlyList<PlanFile> Files, IReadOnlyList<string> Sections, string? ProgressId);
+    IReadOnlyList<PlanFile> Files, IReadOnlyList<string> Sections, string? ProgressId)
+{
+    /// <summary>What the gates found the target to be (<see cref="TargetFacts.Key"/>); each file checks it again where the engine can.</summary>
+    public string? TargetKey { get; init; }
+}
 
 /// <summary>A plan file read back and proved unchanged since it was generated.</summary>
 public sealed record VerifiedFile(PlanFile File, IReadOnlyList<SqlBatch> Batches);
@@ -24,30 +26,36 @@ public sealed record VerifiedFile(PlanFile File, IReadOnlyList<SqlBatch> Batches
 /// <summary>What the target reports about itself before an apply.</summary>
 /// <param name="Key">The server's own name and the opened database ("SERVER\INSTANCE|Db"), whatever spelling the connection used.</param>
 /// <param name="InMemory">Its memory-optimized tables and table types and natively compiled modules, "schema.name".</param>
-public sealed record TargetFacts(string Key, IReadOnlySet<string> InMemory);
+public sealed record TargetFacts(string Key, IReadOnlySet<string> InMemory)
+{
+    /// <summary>
+    /// Another engine's own word for where it runs (PostgreSQL: <c>inet_server_addr()</c>), for the Protected re-check;
+    /// null for SQL Server, whose server name is the first part of <see cref="Key"/>.
+    /// </summary>
+    public IReadOnlyList<string>? Hosts { get; init; }
+}
 
 /// <summary>
 /// The only code in SchemaScope that changes a database. It runs the files of a checked plan (<see cref="ApplyJob"/>)
 /// one by one, each in its own transaction - BEGIN, its batches, COMMIT; on an error ROLLBACK and stop - with the
 /// session SET options sqlcmd gives run_all.ps1, so a file does here exactly what RUN.ps1 would do. Files committed
-/// before a failure stay applied. Every run is written to the local audit log as it goes.
+/// before a failure stay applied. Every run is written to the local audit log as it goes. Running a file is the
+/// target engine's <see cref="IApplyExecutor"/>; the statics below forward to the SQL Server one.
 /// </summary>
-public sealed partial class ApplyService(SchemaScopeStore store, WriteMode writeMode, ILogger<ApplyService> log)
+public sealed class ApplyService(SchemaScopeStore store, WriteMode writeMode, ILogger<ApplyService> log,
+    IEnumerable<IApplyExecutor>? executors = null)
 {
-    /// <summary>
-    /// The session options of <c>sqlcmd -S -E -d -b -x -f 65001</c> (measured: @@OPTIONS 5176 - ANSI_WARNINGS,
-    /// ANSI_PADDING, ANSI_NULLS, ANSI_NULL_DFLT_ON and CONCAT_NULL_YIELDS_NULL on; QUOTED_IDENTIFIER and ARITHABORT
-    /// off). SqlClient starts with QUOTED_IDENTIFIER on, so they are set before every file; each file's own header
-    /// (SET ANSI_NULLS / QUOTED_IDENTIFIER) then gives every module the options it had in the source.
-    /// </summary>
-    public const string SqlcmdSession =
-        "SET ANSI_WARNINGS ON; SET ANSI_PADDING ON; SET ANSI_NULLS ON; SET ANSI_NULL_DFLT_ON ON; " +
-        "SET CONCAT_NULL_YIELDS_NULL ON; SET QUOTED_IDENTIFIER OFF; SET ARITHABORT OFF; SET ARITHIGNORE OFF; " +
-        "SET NUMERIC_ROUNDABORT OFF; SET XACT_ABORT OFF; SET IMPLICIT_TRANSACTIONS OFF; " +
-        "SET CURSOR_CLOSE_ON_COMMIT OFF; SET NOCOUNT OFF;";
+    private readonly Dictionary<DatabaseEngine, IApplyExecutor> executors =
+        (executors ?? []).DefaultIfEmpty(SqlServerApplyExecutor.Instance).ToDictionary(e => e.Engine);
 
-    /// <summary>@@OPTIONS after <see cref="SqlcmdSession"/>, as sqlcmd reports it.</summary>
-    public const int SqlcmdOptions = 5176;
+    /// <summary>The executor for <paramref name="engine"/>; null when this version cannot apply to it.</summary>
+    public IApplyExecutor? ExecutorFor(DatabaseEngine engine) => executors.GetValueOrDefault(engine);
+
+    /// <inheritdoc cref="SqlServerApplyExecutor.SqlcmdSession"/>
+    public const string SqlcmdSession = SqlServerApplyExecutor.SqlcmdSession;
+
+    /// <inheritdoc cref="SqlServerApplyExecutor.SqlcmdOptions"/>
+    public const int SqlcmdOptions = SqlServerApplyExecutor.SqlcmdOptions;
 
     /// <summary>How often a running apply looks at write mode (and counts as activity while it is on).</summary>
     private static readonly TimeSpan WatchInterval = TimeSpan.FromSeconds(1);
@@ -58,13 +66,11 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
     /// <summary>Stop ends a run after its current file; Abort cancels that file too (it rolls back).</summary>
     private sealed record Run(CancellationTokenSource Stop, CancellationTokenSource Abort);
 
-    /// <summary>
-    /// One apply per target database at a time, keyed on what the server reports (<see cref="TargetFacts.Key"/>) so two
-    /// spellings of one server ('.', 'localhost', the machine name) share a lock; the connection's text when it could not be asked.
-    /// </summary>
-    public static string TargetKey(TargetFacts? facts, string server, string database) => facts?.Key ?? TargetKey(server, database);
+    /// <inheritdoc cref="SqlServerApplyExecutor.TargetKey(TargetFacts?, string, string)"/>
+    public static string TargetKey(TargetFacts? facts, string server, string database) =>
+        SqlServerApplyExecutor.Instance.TargetKey(facts, server, database);
 
-    public static string TargetKey(string server, string database) => $"{server.Trim()}|{database.Trim()}";
+    public static string TargetKey(string server, string database) => SqlServerApplyExecutor.TargetKey(server, database);
 
     public bool TryLock(string key) => busy.TryAdd(key, 0);
 
@@ -90,67 +96,47 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
     }
 
     /// <summary>
-    /// Asks the target who it is and which of its objects are memory-optimized, on the session's own connection string.
-    /// Null when it cannot be reached: the files then report that themselves.
+    /// Registers the apply that will report to <paramref name="progressId"/> before its gates run (on PostgreSQL they
+    /// ask servers who they are, which takes seconds), so a Stop sent meanwhile is kept: the run then stops before its
+    /// first file. Disposing it ends the registration; <see cref="RunAsync"/> uses it while it is held.
     /// </summary>
-    public static async Task<TargetFacts?> InspectAsync(string connectionString)
+    public IDisposable Reserve(string? progressId)
     {
-        try
+        if (progressId is null) return Reservation.None;
+        var run = new Run(new CancellationTokenSource(), new CancellationTokenSource());
+        running[progressId] = run;
+        return new Reservation(() =>
         {
-            await using var conn = new SqlConnection(connectionString);
-            await conn.OpenAsync();
-            string key;
-            await using (var who = new SqlCommand("SELECT CONVERT(nvarchar(256), SERVERPROPERTY('ServerName')) + N'|' + DB_NAME()", conn))
-                key = (string)(await who.ExecuteScalarAsync())!;
-
-            var inMemory = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            try
-            {
-                await using var cmd = new SqlCommand("""
-                    SELECT SCHEMA_NAME(schema_id) + N'.' + name FROM sys.tables WHERE is_memory_optimized = 1
-                    UNION ALL SELECT SCHEMA_NAME(schema_id) + N'.' + name FROM sys.table_types WHERE is_memory_optimized = 1
-                    UNION ALL SELECT OBJECT_SCHEMA_NAME(object_id) + N'.' + OBJECT_NAME(object_id) FROM sys.sql_modules WHERE uses_native_compilation = 1
-                    """, conn);
-                await using var r = await cmd.ExecuteReaderAsync();
-                while (await r.ReadAsync())
-                    if (!r.IsDBNull(0)) inMemory.Add(r.GetString(0));
-            }
-            catch (SqlException)
-            {
-                // before SQL Server 2014 these columns do not exist - and neither do memory-optimized objects
-            }
-            return new TargetFacts(key, inMemory);
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException or IOException or TimeoutException or InvalidCastException)
-        {
-            return null;
-        }
+            running.TryRemove(new KeyValuePair<string, Run>(progressId, run));
+            run.Stop.Dispose();
+            run.Abort.Dispose();
+        });
     }
 
-    /// <summary>
-    /// SQL Server refuses CREATE, ALTER and DROP on memory-optimized tables and natively compiled modules inside a user
-    /// transaction (Msg 12331), and every file here runs in one. Null, or why nothing may run: the files that touch one.
-    /// </summary>
-    public static string? MemoryOptimizedProblem(IReadOnlyList<VerifiedFile> files, IReadOnlySet<string> inMemory)
+    private sealed class Reservation(Action? release) : IDisposable
     {
-        // the DDL options themselves, comments ignored: is_memory_optimized / uses_native_compilation in a catalog query are not
-        static bool Names(string text) => InMemoryDdl().IsMatch(TSqlText.StripComments(text));
-        var hit = files.Where(v => inMemory.Contains(v.File.ObjectName) || v.Batches.Any(b => Names(b.Text)))
-            .Select(v => $"{v.File.Folder}\\{v.File.RelativePath}").ToList();
-        if (hit.Count == 0) return null;
-        return $"{hit.Count} file(s) change a memory-optimized table or a natively compiled module, which SQL Server does not allow " +
-               $"inside a transaction (Msg 12331) - and Apply runs every file in one: {string.Join(", ", hit.Take(5))}" +
-               $"{(hit.Count > 5 ? ", ..." : "")}. Nothing was applied. Untick that section, or run those files with the folder's run_all.ps1.";
+        public static readonly Reservation None = new(null);
+        private Action? release = release;
+        public void Dispose() => Interlocked.Exchange(ref release, null)?.Invoke();
     }
 
-    [GeneratedRegex(@"\bMEMORY_OPTIMIZED\s*=\s*ON\b|\bNATIVE_COMPILATION\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex InMemoryDdl();
+    /// <inheritdoc cref="SqlServerApplyExecutor.InspectAsync"/>
+    public static Task<TargetFacts?> InspectAsync(string connectionString) => SqlServerApplyExecutor.Instance.InspectAsync(connectionString);
+
+    /// <inheritdoc cref="SqlServerApplyExecutor.MemoryOptimizedProblem"/>
+    public static string? MemoryOptimizedProblem(IReadOnlyList<VerifiedFile> files, IReadOnlySet<string> inMemory) =>
+        SqlServerApplyExecutor.MemoryOptimizedProblem(files, inMemory);
 
     /// <summary>
     /// Reads every file of the plan and checks it against the hash taken when it was generated - all of them, before
     /// anything runs. Null and the batches to run, or the reason nothing may run.
     /// </summary>
-    public static string? Verify(IReadOnlyList<PlanFile> files, out List<VerifiedFile> verified)
+    public static string? Verify(IReadOnlyList<PlanFile> files, out List<VerifiedFile> verified) =>
+        Verify(files, SqlServerApplyExecutor.Instance.Splitter, out verified);
+
+    /// <inheritdoc cref="Verify(IReadOnlyList{PlanFile}, out List{VerifiedFile})"/>
+    /// <param name="splitter">The target engine's statement splitter (<see cref="IApplyExecutor.Splitter"/>).</param>
+    public static string? Verify(IReadOnlyList<PlanFile> files, IStatementSplitter splitter, out List<VerifiedFile> verified)
     {
         verified = [];
         foreach (var f in files)
@@ -170,7 +156,7 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
 
             // as sqlcmd -f 65001 reads it: UTF-8, the BOM dropped (the same bytes that were hashed)
             var skip = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
-            verified.Add(new VerifiedFile(f, ScriptText.SplitBatches(Encoding.UTF8.GetString(bytes, skip, bytes.Length - skip))));
+            verified.Add(new VerifiedFile(f, splitter.Split(Encoding.UTF8.GetString(bytes, skip, bytes.Length - skip))));
         }
         return null;
     }
@@ -180,12 +166,17 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
     {
         var secrets = SecretScrubber.Secrets([job.ConnectionString]);
         string Scrub(string text) => SecretScrubber.Scrub(text, secrets);
+        // the route only gets here for an engine with an executor
+        var executor = ExecutorFor(job.Target.Engine)
+                       ?? throw new InvalidOperationException($"{job.Target.Engine} targets cannot be applied to in this version.");
 
         var audit = new ApplyRunRecord
         {
             CompareRunId = job.CompareRunId,
             TargetLabel = job.Target.Label,
-            Server = job.Target.Server,
+            Engine = job.Target.Engine,
+            // another engine's port is kept apart from its host (ApplyTarget.Port); SQL Server's is in the name
+            Server = job.Target.Port is { } port ? $"{job.Target.Server}:{port}" : job.Target.Server,
             Database = job.Target.Database,
             Login = job.Target.Login,
             Sections = [.. job.Sections],
@@ -194,10 +185,14 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
         // no record, no apply: the log must show everything that reached a database
         store.StartApplyRun(audit);
 
-        using var stop = new CancellationTokenSource();
-        using var abort = new CancellationTokenSource();
-        var run = new Run(stop, abort);
-        if (job.ProgressId is { } pid) running[pid] = run;
+        // a run reserved before its gates (Reserve) keeps a Stop sent while they ran; otherwise it registers now
+        var reserved = job.ProgressId is { } rid && running.TryGetValue(rid, out var held) ? held : null;
+        using var ownStop = reserved is null ? new CancellationTokenSource() : null;
+        using var ownAbort = reserved is null ? new CancellationTokenSource() : null;
+        var stop = reserved?.Stop ?? ownStop!;
+        var abort = reserved?.Abort ?? ownAbort!;
+        var run = reserved ?? new Run(stop, abort);
+        if (reserved is null && job.ProgressId is { } pid) running[pid] = run;
         // Turning write mode off cancels the file that is running too (it rolls back): nothing commits once the UI says
         // read-only. While it is on, a running apply is activity, so a long file never idles it out half-way.
         using var watch = new Timer(_ =>
@@ -229,8 +224,8 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
                 progress?.Report(new ScriptProgress(i * 100 / files.Count, $"Applying {i + 1} of {files.Count}: {name}"));
 
                 var sw = Stopwatch.StartNew();
-                var error = await RunFileAsync(job.ConnectionString, job.Target.Database, files[i].Batches, abort.Token,
-                    () => { if (!writeMode.Enabled) abort.Cancel(); });
+                var error = await executor.RunFileAsync(job.ConnectionString, job.Target.Database, files[i], abort.Token,
+                    () => { if (!writeMode.Enabled) abort.Cancel(); }, expectedKey: job.TargetKey);
                 var record = new ApplyFileRecord
                 {
                     Folder = f.Folder,
@@ -261,7 +256,7 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
         }
         finally
         {
-            if (job.ProgressId is { } id) running.TryRemove(new KeyValuePair<string, Run>(id, run));
+            if (reserved is null && job.ProgressId is { } id) running.TryRemove(new KeyValuePair<string, Run>(id, run));
         }
 
         var ok = result.Applied.Count(a => a.Ok);
@@ -300,73 +295,5 @@ public sealed partial class ApplyService(SchemaScopeStore store, WriteMode write
             log.LogWarning("Could not log an applied file: {Message}", ex.Message);
             return false;
         }
-    }
-
-    /// <summary>
-    /// One file on its own connection (sqlcmd opens one per file too): check the database, set sqlcmd's options,
-    /// then BEGIN TRAN, every batch, COMMIT. Null when it committed, else the error; the transaction is rolled back.
-    /// No command timeout, as with sqlcmd; <paramref name="abort"/> (Cancel now, or write mode turned off) cancels the
-    /// running batch, and the file is rolled back instead of committing.
-    /// </summary>
-    private static async Task<string?> RunFileAsync(string connectionString, string database, IReadOnlyList<SqlBatch> batches, CancellationToken abort, Action beforeCommit)
-    {
-        SqlBatch? current = null;
-        try
-        {
-            await using var conn = new SqlConnection(connectionString);
-            await conn.OpenAsync(abort);
-
-            await using (var check = new SqlCommand("SELECT DB_NAME()", conn))
-            {
-                var opened = await check.ExecuteScalarAsync(abort) as string;
-                if (!string.Equals(opened, database, StringComparison.OrdinalIgnoreCase))
-                    return $"The connection opened database {opened}, not {database}, so this file was not run.";
-            }
-            await using (var set = new SqlCommand(SqlcmdSession, conn))
-                await set.ExecuteNonQueryAsync(abort);
-
-            await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(abort);
-            try
-            {
-                foreach (var batch in batches)
-                {
-                    current = batch;
-                    await using var cmd = new SqlCommand(batch.Text, conn, tx) { CommandTimeout = 0 };
-                    await cmd.ExecuteNonQueryAsync(abort);
-                }
-                beforeCommit();   // write mode turned off since the last watch tick cancels it here, not a second later
-                abort.ThrowIfCancellationRequested();
-                await tx.CommitAsync(CancellationToken.None);
-                return null;
-            }
-            catch
-            {
-                // a severe error may already have ended the transaction; disposing it rolls back what is left
-                try { await tx.RollbackAsync(); } catch (Exception ex) when (ex is InvalidOperationException or SqlException) { }
-                throw;
-            }
-        }
-        catch (Exception) when (abort.IsCancellationRequested)
-        {
-            return "Cancelled while it ran: this file was rolled back.";
-        }
-        catch (SqlException ex)
-        {
-            return Describe(ex, current);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException or TimeoutException)
-        {
-            return ex.Message;
-        }
-    }
-
-    /// <summary>"Msg 2714, line 12: ..." per error, the line counted in the file as sqlcmd would report it.</summary>
-    private static string Describe(SqlException ex, SqlBatch? batch)
-    {
-        var lines = ex.Errors.Cast<SqlError>()
-            .Where(e => e.Class > 10)
-            .Select(e => $"Msg {e.Number}, line {(batch is null ? e.LineNumber : batch.StartLine + Math.Max(e.LineNumber, 1) - 1)}: {e.Message}")
-            .ToList();
-        return lines.Count > 0 ? string.Join(Environment.NewLine, lines) : ex.Message;
     }
 }

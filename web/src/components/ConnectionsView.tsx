@@ -3,16 +3,9 @@ import { Pencil, Plus, Server, Trash2, Lock, ShieldCheck } from 'lucide-react'
 import type { ConnectionSettings } from '../types'
 import { connectionColour } from '../dbColour'
 import { api } from '../api'
-import { Button, EmptyState, Panel } from './ui'
+import { Button, EmptyState, EngineChip, Panel, Toggle } from './ui'
 import { ConnectionDialog } from './ConnectionDialog'
-
-const AUTH_SHORT: Record<string, string> = {
-  windows: 'Windows auth',
-  sqlLogin: 'SQL login',
-  azureAdPassword: 'Entra password',
-  azureAdInteractive: 'Entra interactive',
-  azureAdDefault: 'Entra default',
-}
+import { authText, engineChip, engineName, useEngines, usePreviewEngines } from '../engines'
 
 export function ConnectionsView({
   connections,
@@ -26,6 +19,11 @@ export function ConnectionsView({
   const [editing, setEditing] = useState<ConnectionSettings | null>(null)
   const [adding, setAdding] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const engines = useEngines()
+  const [preview, setPreview] = usePreviewEngines()
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  // engine chips once more than SQL Server is in play; a SQL Server-only list looks as it always has
+  const showChips = connections.some((c) => (c.engine ?? 'sqlServer') !== 'sqlServer')
 
   async function remove(id: string) {
     await api.connections.remove(id)
@@ -62,6 +60,28 @@ export function ConnectionsView({
             SchemaScope is read-only by default - it changes a database only when you turn on write mode and apply scripts to it.
           </div>
         </div>
+
+        {preview.engines.length > 0 && (
+          <div
+            className="mb-5 rounded-lg border px-1.5 py-1"
+            style={{ borderColor: 'var(--line)', background: 'var(--surface)' }}
+          >
+            <Toggle
+              checked={preview.enabled}
+              onChange={(v) => {
+                setPreviewError(null)
+                setPreview(v).catch((e) => setPreviewError(e instanceof Error ? e.message : String(e)))
+              }}
+              label={`Show preview engines (${preview.engines.join(', ')})`}
+              hint="A preview engine offers compare, scripts and apply in Read & write mode, and is still being proven on more schemas. Turned off, SchemaScope refuses those connections."
+            />
+            {previewError && (
+              <div className="px-2 pb-1 text-[12px]" style={{ color: 'var(--st-miss)' }}>
+                {previewError}
+              </div>
+            )}
+          </div>
+        )}
 
         {connections.length === 0 ? (
           <Panel className="h-72">
@@ -103,6 +123,7 @@ export function ConnectionsView({
                       <span className="truncate text-[13.5px] font-medium">
                         {c.label || c.server || 'Unnamed'}
                       </span>
+                      {showChips && <EngineChip label={engineChip(c.engine)} title={engineName(c.engine)} />}
                       {c.protectedServer && (
                         <span
                           className="inline-flex items-center gap-1 rounded px-1.5 py-px text-[10.5px] font-medium"
@@ -118,12 +139,12 @@ export function ConnectionsView({
                     <div className="mt-0.5 truncate font-mono text-[11.5px]" style={{ color: 'var(--text-2)' }}>
                       {c.useRawConnectionString
                         ? c.rawConnectionString || 'connection string'
-                        : `${c.server}${c.database ? ` / ${c.database}` : ''}`}
+                        : `${c.server}${c.port ? `:${c.port}` : ''}${c.database ? ` / ${c.database}` : ''}`}
                     </div>
                   </div>
   
                   <span className="shrink-0 text-[11.5px]" style={{ color: 'var(--text-3)' }}>
-                    {AUTH_SHORT[c.auth] ?? c.auth}
+                    {authText(engines, c, true)}
                   </span>
   
                   <div className="flex shrink-0 gap-1">

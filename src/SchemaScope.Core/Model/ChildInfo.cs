@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace SchemaScope.Core.Model;
 
 public sealed class ColumnInfo
@@ -18,6 +20,24 @@ public sealed class ColumnInfo
     public string? DefaultDefinition { get; set; }
     public bool IsRowGuidCol { get; set; }
     public bool IsSparse { get; set; }
+
+    /// <summary>PostgreSQL identity columns: "ALWAYS" or "BY DEFAULT". Null for SQL Server, whose IDENTITY has one kind.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? IdentityKind { get; set; }
+
+    /// <summary>
+    /// PostgreSQL identity columns: the identity sequence's limits beyond start and increment, as CREATE writes them
+    /// ("MINVALUE 1 MAXVALUE 2147483647 CACHE 1 NO CYCLE"). Null for SQL Server.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? IdentityOptions { get; set; }
+
+    /// <summary>
+    /// PostgreSQL 18: the column has a NOT NULL that is NOT VALID - new rows must have a value, rows already there may
+    /// hold NULLs, so <see cref="IsNullable"/> stays true. False for SQL Server.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool NotNullNotValid { get; set; }
 }
 
 public sealed class IndexColumnInfo
@@ -45,6 +65,10 @@ public sealed class IndexInfo
     public List<string> IncludedColumns { get; set; } = [];
     /// <summary>True when SQL Server generated the PK/UQ constraint name (PK__Table__3213E83F...).</summary>
     public bool IsSystemNamed { get; set; }
+
+    /// <summary>The engine's own text for it (PostgreSQL: pg_get_indexdef, or pg_get_constraintdef for a key). Null for SQL Server.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Definition { get; set; }
 }
 
 public sealed class ForeignKeyInfo
@@ -59,6 +83,10 @@ public sealed class ForeignKeyInfo
     public string UpdateAction { get; set; } = "NO_ACTION";
     public bool IsDisabled { get; set; }
     public bool IsNotTrusted { get; set; }
+
+    /// <summary>The engine's own text for it (PostgreSQL: pg_get_constraintdef, with MATCH and DEFERRABLE). Null for SQL Server.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Definition { get; set; }
 }
 
 public enum ConstraintKind { Check, Default }

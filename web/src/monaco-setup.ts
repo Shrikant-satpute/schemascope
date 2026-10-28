@@ -2,10 +2,11 @@ import * as monaco from 'monaco-editor/editor/editor.api'
 import { loader } from '@monaco-editor/react'
 import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker'
 
-// Only the SQL grammar is registered. Pulling in monaco's full entry point
-// drags in a hundred other languages and a 7 MB TypeScript worker for no
-// reason - SchemaScope only ever shows T-SQL.
+// Only the SQL grammars are registered: T-SQL, and PostgreSQL's for a
+// PostgreSQL compare. Pulling in monaco's full entry point drags in a hundred
+// other languages and a 7 MB TypeScript worker for no reason.
 import 'monaco-editor/languages/definitions/sql/register.js'
+import 'monaco-editor/languages/definitions/pgsql/register.js'
 
 declare global {
   interface Window {

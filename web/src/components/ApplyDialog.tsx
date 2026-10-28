@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { CircleCheck, CircleX, Play, ShieldAlert } from 'lucide-react'
 import { api } from '../api'
+import { engineOf, useEngines } from '../engines'
 import type { ApplyPlan, ApplyResult, CompareResult, ScriptProgress } from '../types'
 import { Button, Input, Modal, Spinner } from './ui'
 import { Banner } from './ScriptDialog'
@@ -41,6 +42,8 @@ export function ApplyDialog({
   onClose: () => void
 }) {
   const t = plan.applyTarget
+  // the engine's own promise and typed-name rule; SQL Server keeps the wording built in below
+  const applyText = engineOf(useEngines(), t.engine).apply
   const [sections, setSections] = useState<Set<string>>(
     () => new Set(plan.planSections.filter((s) => s.defaultSelected && s.files > 0).map((s) => s.folder)),
   )
@@ -75,7 +78,7 @@ export function ApplyDialog({
     const id = progressIdRef.current
     if (!id) return
     setStopping(true)
-    void api.apply.stop(id).catch(() => undefined)
+    void api.apply.stop(id).catch(() => stopFailed())
   }, [])
 
   // For a file that does not finish (waiting on locks, say): cancel it now - it is rolled back.
@@ -83,13 +86,21 @@ export function ApplyDialog({
     const id = progressIdRef.current
     if (!id) return
     setCancelling(true)
-    void api.apply.stop(id, true).catch(() => undefined)
+    void api.apply.stop(id, true).catch(() => stopFailed())
   }, [])
+
+  // the server did not take the stop (the apply had already finished, or it was not reached): never pretend it did
+  function stopFailed() {
+    setStopping(false)
+    setCancelling(false)
+    setError('The stop did not reach the apply - it may already have finished. Its result shows here when it does.')
+  }
 
   const chosen = plan.planSections.filter((s) => sections.has(s.folder))
   const fileCount = chosen.reduce((n, s) => n + s.files, 0)
   const destructiveChosen = sections.has(DESTRUCTIVE)
-  const nameMatches = typed === t.database
+  // an empty name confirms nothing: the server refuses it too
+  const nameMatches = t.database.trim().length > 0 && typed === t.database
   const canApply =
     writeMode && !t.protected && !running && chosen.length > 0 && nameMatches && (!destructiveChosen || acceptDataLoss)
 
@@ -144,12 +155,14 @@ export function ApplyDialog({
   if (outcome) {
     const ok = outcome.applied.filter((f) => f.ok).length
     const failed = outcome.applied.find((f) => !f.ok)
-    const after = recompared ? matchFor(compareResult, t.server, t.database) : null
+    // every file of the sections that were run, not only those that got as far as running
+    const total = Math.max(fileCount, outcome.applied.length)
+    const after = recompared ? matchFor(compareResult, plan) : null
 
     return (
       <Modal
         title={title}
-        subtitle={`${t.server} / ${t.database}`}
+        subtitle={`${serverText(t)} / ${t.database}`}
         onClose={close}
         width={760}
         footer={
@@ -162,8 +175,8 @@ export function ApplyDialog({
           <Banner tone={outcome.success ? 'success' : 'error'}>
             <div>{outcome.message}</div>
             <div className="mt-0.5">
-              {ok.toLocaleString()} of {outcome.applied.length.toLocaleString()} file
-              {outcome.applied.length === 1 ? '' : 's'} applied.
+              {ok.toLocaleString()} of {total.toLocaleString()} file
+              {total === 1 ? '' : 's'} applied.
               {!outcome.success &&
                 ok > 0 &&
                 (failed
@@ -267,9 +280,11 @@ export function ApplyDialog({
 
         {t.protected ? (
           <Banner tone="error">
-            <span className="font-semibold">Protected server — scripts only.</span> This connection is marked
-            "Protected — never apply scripts here", so SchemaScope will not run anything on it. Run the scripts from
-            disk through your own release process instead.
+            <span className="font-semibold">Protected server — scripts only.</span>{' '}
+            {t.protectedItself === false
+              ? 'Another saved connection on the same host is marked "Protected — never apply scripts here", and that protects every database and port on the host, so SchemaScope will not run anything on this one either.'
+              : 'This connection is marked "Protected — never apply scripts here", so SchemaScope will not run anything on it.'}{' '}
+            Run the scripts from disk through your own release process instead.
           </Banner>
         ) : (
           <>
@@ -353,13 +368,20 @@ export function ApplyDialog({
             </section>
 
             <Banner tone="warning">
-              Each file runs in its own transaction. If one fails, that file is rolled back and the run stops there -
-              the files before it stay applied. The compare runs again afterwards.
+              {applyText ? (
+                applyText.transactions
+              ) : (
+                <>
+                  Each file runs in its own transaction. If one fails, that file is rolled back and the run stops there -
+                  the files before it stay applied. The compare runs again afterwards.
+                </>
+              )}
             </Banner>
 
             <label className="flex flex-col gap-1">
               <span className="text-[12px]" style={{ color: 'var(--text-2)' }}>
                 Type the database name <span className="font-mono font-semibold">{t.database}</span> to confirm
+                {applyText?.typedNameExact && ' (letter case counts)'}
               </span>
               <Input
                 value={typed}
@@ -405,7 +427,7 @@ function TargetCard({ plan }: { plan: ApplyPlan }) {
         {t.label}
       </span>
       <span style={{ color: 'var(--text-3)' }}>Server</span>
-      <span className="font-mono">{t.server}</span>
+      <span className="font-mono">{serverText(t)}</span>
       <span style={{ color: 'var(--text-3)' }}>Database</span>
       <span className="font-mono text-[14px] font-semibold">{t.database}</span>
       <span style={{ color: 'var(--text-3)' }}>Runs as</span>
@@ -499,14 +521,27 @@ function FileLog({ files }: { files: ApplyResult['applied'] }) {
   )
 }
 
-/** The target in a fresh result that is the database just applied to. */
-function matchFor(result: CompareResult | null, server: string, database: string) {
+/** The server as the user wrote it, with the port for engines that keep it apart (PostgreSQL). */
+function serverText(t: ApplyPlan['applyTarget']): string {
+  return t.port ? `${t.server}:${t.port}` : t.server
+}
+
+/**
+ * The target in a fresh result that is the database just applied to. The compare runs again with the same targets
+ * in the same order, so it is the plan's own target index - checked to be the same engine, label and database (letter
+ * case counting outside SQL Server), so a result from another comparison is never read as this one's.
+ */
+function matchFor(result: CompareResult | null, plan: ApplyPlan) {
   if (!result) return null
-  const same = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0
-  const byDatabase = result.targets.filter((x) => !x.failed && same(x.database, database))
-  // the summary's server name can be spelled differently from the connection's, so only use it to pick between several
-  if (byDatabase.length <= 1) return byDatabase[0] ?? null
-  return byDatabase.find((x) => same(x.server, server)) ?? null
+  const t = plan.applyTarget
+  const engine = t.engine ?? 'sqlServer'
+  const x = result.targets[plan.targetIndex]
+  if (!x || x.failed || (x.engine ?? 'sqlServer') !== engine || x.label !== t.label) return null
+  const sameDatabase =
+    engine === 'sqlServer' ? x.database.localeCompare(t.database, undefined, { sensitivity: 'accent' }) === 0 : x.database === t.database
+  if (!sameDatabase) return null
+  if (t.port != null && x.port != null && x.port !== t.port) return null
+  return x
 }
 
 /** Ids the server accepts: 8-64 letters, digits or dashes. */

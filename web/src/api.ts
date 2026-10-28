@@ -7,12 +7,14 @@ import type {
   ConnectionSettings,
   ConnectionTestResult,
   DatabaseListItem,
+  EngineDescriptor,
   ExportResult,
   Health,
   ObjectDetail,
   ObjectScriptDependencies,
   ObjectScriptOutcome,
   ObjectScriptRequest,
+  PreviewEngines,
   ProgressEvent,
   ReferenceResult,
   RunSummary,
@@ -104,6 +106,16 @@ async function read<T>(res: Response): Promise<T> {
 
 export const api = {
   health: () => req<Health>('/api/health'),
+
+  /** What each engine of this build offers (cached by engines.ts). */
+  engines: () => req<EngineDescriptor[]>('/api/engines'),
+
+  /** Settings > "Show preview engines". The server's own switch: off, a preview engine is refused. */
+  previewEngines: {
+    get: () => req<PreviewEngines>('/api/engines/preview'),
+    set: (enabled: boolean) =>
+      req<PreviewEngines>('/api/engines/preview', { method: 'POST', body: JSON.stringify({ enabled }) }),
+  },
 
   connections: {
     list: () => req<ConnectionSettings[]>('/api/connections'),

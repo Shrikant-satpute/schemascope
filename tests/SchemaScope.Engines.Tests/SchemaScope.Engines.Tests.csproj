@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Engine tests. The Docker-backed ones ([PostgresFact]) run only with SCHEMASCOPE_ENGINE_TESTS=1, checked before
+    anything looks for Docker, so a plain "dotnet test" skips them in milliseconds. They start throwaway containers
+    on random host ports and never touch a database server already running on this machine.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.16.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!-- SchemaScope.Api is a web project, so its ASP.NET types need to resolve here too. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SchemaScope.Api\SchemaScope.Api.csproj" />
+    <ProjectReference Include="..\..\src\SchemaScope.PostgreSql\SchemaScope.PostgreSql.csproj" />
+    <ProjectReference Include="..\..\src\SchemaScope.Scripting.PostgreSql\SchemaScope.Scripting.PostgreSql.csproj" />
+  </ItemGroup>
+
+</Project>

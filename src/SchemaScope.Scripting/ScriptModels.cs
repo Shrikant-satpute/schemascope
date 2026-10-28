@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using SchemaScope.Core.Engines;
 
 namespace SchemaScope.Scripting;
 
@@ -36,10 +37,17 @@ public sealed class ScriptOptions
 
     /// <summary>The run folder's name instead of <c>label_yyyyMMdd-HHmm</c> (object scripts). Never read from a request body.</summary>
     [JsonIgnore] public string? RunFolderName { get; set; }
+
+    /// <summary>
+    /// An object script on an engine whose objects are told apart by more than schema and name (PostgreSQL overloads):
+    /// the <c>DbObject.Key</c>s it scripts, in place of <see cref="OnlyObjects"/>. Set by the server, never read from a request body.
+    /// </summary>
+    [JsonIgnore] public HashSet<string>? OnlyKeys { get; set; }
 }
 
 /// <summary>One side of the compare. <see cref="ConnectionString"/> never leaves the server process.</summary>
-public sealed record ScriptEndpoint(string Label, string Server, string Database, string ConnectionString);
+public sealed record ScriptEndpoint(string Label, string Server, string Database, string ConnectionString,
+    DatabaseEngine Engine = DatabaseEngine.SqlServer);
 
 /// <summary>What one generated folder holds, for the result panel and the README.</summary>
 public sealed class FolderResult
@@ -60,6 +68,14 @@ public sealed class HeldBackItem
     public string Reason { get; set; } = "";
 }
 
+/// <summary>
+/// How far an engine's offline check goes. <see cref="Parsed"/>: every statement went through that engine's own parser;
+/// <see cref="ModuleTextProven"/>: code bodies were proven to compile (not only to be the source's text). Null on a
+/// <see cref="ValidationSummary"/> means SQL Server's ScriptDom check, as it always was.
+/// </summary>
+/// <param name="Parser">The parser's name, for the report ("libpg_query 18"); null when there was none.</param>
+public sealed record ValidationLevel(bool Parsed, bool ModuleTextProven, string? NotValidatedReason, string? Parser = null);
+
 /// <summary>The offline validation result (DESIGN.md §5).</summary>
 public sealed class ValidationSummary
 {
@@ -68,7 +84,13 @@ public sealed class ValidationSummary
     public int ModulesChecked { get; set; }
     public int ModulesExact { get; set; }
     public List<string> Problems { get; set; } = [];
-    public bool Passed => SyntaxErrors == 0 && ModulesChecked == ModulesExact && Problems.Count == 0;
+
+    /// <summary>What the check could prove (engines other than SQL Server); never claims a parse that did not happen.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ValidationLevel? Level { get; set; }
+
+    /// <summary>No problem found, by a check that parsed: a lexical check alone never passes.</summary>
+    public bool Passed => SyntaxErrors == 0 && ModulesChecked == ModulesExact && Problems.Count == 0 && (Level is null || Level.Parsed);
 }
 
 /// <summary>The API response of a generate run.</summary>

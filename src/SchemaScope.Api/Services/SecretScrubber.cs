@@ -1,4 +1,4 @@
-using System.Data.Common;
+using SchemaScope.Core.Engines;
 
 namespace SchemaScope.Api.Services;
 
@@ -12,7 +12,7 @@ internal static class SecretScrubber
     public const string Mask = "********";
 
     /// <summary>
-    /// Each whole connection string, plus any password inside it. Longest first, so a
+    /// Each whole connection string, plus any password or other secret inside it. Longest first, so a
     /// password never splits the masking of the full string.
     /// </summary>
     public static List<string> Secrets(IEnumerable<string?> connectionStrings)
@@ -23,15 +23,16 @@ internal static class SecretScrubber
             if (string.IsNullOrEmpty(cs)) continue;
             secrets.Add(cs);
 
-            var parsed = new DbConnectionStringBuilder();
-            try { parsed.ConnectionString = cs; }
-            catch (ArgumentException) { continue; }
-
-            foreach (var key in new[] { "Password", "Pwd" })
+            // a URI-form string is refused at input, but its password is still never echoed back
+            if (ConnectionEndpoints.IsUri(cs) && ConnectionEndpoints.UriPassword(cs) is { } password)
             {
-                if (parsed.TryGetValue(key, out var value) && value?.ToString() is { Length: > 0 } password)
-                    secrets.Add(password);
+                secrets.Add(password);
+                secrets.Add(Uri.UnescapeDataString(password));
+                continue;
             }
+
+            // every driver's secret keys: Password, Pwd, SSL Password, CertificatePassword, Passphrase, ... (SecretKeys)
+            secrets.AddRange(SecretKeys.ValuesIn(cs));
         }
         return [.. secrets.Distinct(StringComparer.Ordinal).OrderByDescending(s => s.Length)];
     }

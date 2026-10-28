@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace SchemaScope.Core.Model;
@@ -7,8 +8,45 @@ namespace SchemaScope.Core.Model;
 /// Defaults are chosen to cut noise without ever hiding a real change:
 /// anything ignored here still shows up as "formatting only" rather than vanishing.
 /// </summary>
-public sealed class CompareOptions
+public sealed class CompareOptions : IJsonOnDeserializing, IJsonOnDeserialized
 {
+    /// <summary>The object types a set of options knows about: 1 for SQL Server's own (Schema..Synonym), 2 with
+    /// PostgreSQL's (MaterializedView..Extension), 3 with PostgreSQL's range types and collations, 4 with its operators, 5 with its foreign tables,
+    /// 6 with its text search dictionaries and configurations, operator classes and casts.</summary>
+    public const int CurrentTypeSet = 6;
+
+    private static readonly DbObjectType[] AddedInTypeSet2 =
+        [DbObjectType.MaterializedView, DbObjectType.Domain, DbObjectType.EnumType, DbObjectType.CompositeType, DbObjectType.Extension];
+
+    private static readonly DbObjectType[] AddedInTypeSet3 = [DbObjectType.RangeType, DbObjectType.Collation];
+
+    private static readonly DbObjectType[] AddedInTypeSet4 = [DbObjectType.Operator];
+
+    private static readonly DbObjectType[] AddedInTypeSet5 = [DbObjectType.ForeignTable];
+
+    private static readonly DbObjectType[] AddedInTypeSet6 =
+        [DbObjectType.TextSearchDictionary, DbObjectType.TextSearchConfiguration, DbObjectType.OperatorClass, DbObjectType.Cast];
+
+    /// <summary>
+    /// Which object types existed when these options were written (<see cref="CurrentTypeSet"/>). Options saved
+    /// before a type existed - a profile, a history entry, a request without this field - never chose to leave it
+    /// out, so it is included when they are read back, rather than quietly dropped from the compare.
+    /// </summary>
+    public int TypeSet { get; set; } = CurrentTypeSet;
+
+    // JSON without TypeSet was written before it existed (type set 1); with it, the setter overwrites this
+    void IJsonOnDeserializing.OnDeserializing() => TypeSet = 1;
+
+    void IJsonOnDeserialized.OnDeserialized()
+    {
+        if (TypeSet < 2) IncludedTypes.UnionWith(AddedInTypeSet2);
+        if (TypeSet < 3) IncludedTypes.UnionWith(AddedInTypeSet3);
+        if (TypeSet < 4) IncludedTypes.UnionWith(AddedInTypeSet4);
+        if (TypeSet < 5) IncludedTypes.UnionWith(AddedInTypeSet5);
+        if (TypeSet < 6) IncludedTypes.UnionWith(AddedInTypeSet6);
+        TypeSet = Math.Max(TypeSet, CurrentTypeSet);
+    }
+
     // ---- text comparison ----
     public bool IgnoreComments { get; set; }
     public bool IgnoreCase { get; set; }
@@ -30,22 +68,49 @@ public sealed class CompareOptions
     public HashSet<DbObjectType> IncludedTypes { get; set; } =
         [.. Enum.GetValues<DbObjectType>()];
 
-    public List<string> ExcludedSchemas { get; set; } =
+    /// <summary>SQL Server's own schemas: the default <see cref="ExcludedSchemas"/>.</summary>
+    public static IReadOnlyList<string> SqlServerExcludedSchemas { get; } =
         ["sys", "INFORMATION_SCHEMA", "guest", "db_owner", "db_accessadmin",
          "db_securityadmin", "db_ddladmin", "db_backupoperator", "db_datareader",
          "db_datawriter", "db_denydatareader", "db_denydatawriter"];
+
+    public List<string> ExcludedSchemas { get; set; } = [.. SqlServerExcludedSchemas];
 
     /// <summary>Wildcard patterns (* and ?) matched against schema.name.</summary>
     public List<string> ExcludedNamePatterns { get; set; } = [];
 
     public bool IncludeSystemObjects { get; set; }
 
+    /// <summary>
+    /// Excluded schemas and name patterns match exactly, for an engine whose names are exact (PostgreSQL: excluding
+    /// "App" leaves app alone). Set by <see cref="ForEngine"/>, never stored.
+    /// </summary>
+    [JsonIgnore]
+    public bool ExactNames { get; set; }
+
     private List<Regex>? _compiledExcludes;
+
+    /// <summary>
+    /// These options as an engine other than SQL Server reads with them: SQL Server's default schemas (as the app
+    /// wrote them) give way to the engine's own, so a real PostgreSQL schema called sys or guest is compared, and
+    /// names match exactly when the engine's do. Schemas the user added stay excluded. The defaults are told from the
+    /// user's own entries by being there whole, as the app writes them: a list the user typed (guest, tmp) is the user's,
+    /// every name of it, guest too.
+    /// </summary>
+    public CompareOptions ForEngine(IEnumerable<string> defaultExcludedSchemas, bool exactNames)
+    {
+        var copy = Clone();
+        var asWritten = SqlServerExcludedSchemas.All(d => ExcludedSchemas.Contains(d, StringComparer.Ordinal));
+        copy.ExcludedSchemas = [.. ExcludedSchemas.Where(s => !asWritten || !SqlServerExcludedSchemas.Contains(s, StringComparer.Ordinal))
+            .Concat(defaultExcludedSchemas).Distinct(StringComparer.Ordinal)];
+        copy.ExactNames = exactNames;
+        return copy;
+    }
 
     public bool IsExcluded(DbObjectType type, string schema, string name)
     {
         if (!IncludedTypes.Contains(type)) return true;
-        if (ExcludedSchemas.Contains(schema, StringComparer.OrdinalIgnoreCase)) return true;
+        if (ExcludedSchemas.Contains(schema, ExactNames ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase)) return true;
 
         if (ExcludedNamePatterns.Count == 0) return false;
 
@@ -53,7 +118,7 @@ public sealed class CompareOptions
             .Where(p => !string.IsNullOrWhiteSpace(p))
             .Select(p => new Regex(
                 "^" + Regex.Escape(p).Replace("\\*", ".*").Replace("\\?", ".") + "$",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))];
+                (ExactNames ? RegexOptions.None : RegexOptions.IgnoreCase) | RegexOptions.CultureInvariant))];
 
         var full = $"{schema}.{name}";
         return _compiledExcludes.Any(rx => rx.IsMatch(full) || rx.IsMatch(name));
@@ -78,6 +143,8 @@ public sealed class CompareOptions
         IncludedTypes = [.. IncludedTypes],
         ExcludedSchemas = [.. ExcludedSchemas],
         ExcludedNamePatterns = [.. ExcludedNamePatterns],
-        IncludeSystemObjects = IncludeSystemObjects
+        IncludeSystemObjects = IncludeSystemObjects,
+        TypeSet = TypeSet,
+        ExactNames = ExactNames
     };
 }

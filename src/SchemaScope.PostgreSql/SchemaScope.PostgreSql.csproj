@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <!-- Fully managed; none of its optional plugins (NetTopologySuite, Json.NET) are referenced. -->
+    <PackageReference Include="Npgsql" Version="9.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SchemaScope.Engines.Tests" />
+    <InternalsVisibleTo Include="SchemaScope.Scripting.PostgreSql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SchemaScope.Core\SchemaScope.Core.csproj" />
+  </ItemGroup>
+
+</Project>

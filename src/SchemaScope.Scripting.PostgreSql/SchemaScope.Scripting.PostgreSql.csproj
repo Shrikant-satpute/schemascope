@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- PostgreSQL "Create scripts": the numbered folders written from the compare's snapshots, the psql runners,
+       the statement splitter and the offline check. Reads catalogs and runs read-only probes only; it never runs
+       what it writes. -->
+
+  <ItemGroup>
+    <!-- libpg_query (BSD-3, the PostgreSQL 18 parser) behind an MIT .NET binding; adds about 1.7 MB to the
+         compressed single-file exe, measured in the R2 spike. Fully managed apart from that one native library. -->
+    <PackageReference Include="pgsqlparser" Version="2.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SchemaScope.Engines.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SchemaScope.Scripting\SchemaScope.Scripting.csproj" />
+    <ProjectReference Include="..\SchemaScope.PostgreSql\SchemaScope.PostgreSql.csproj" />
+  </ItemGroup>
+
+</Project>

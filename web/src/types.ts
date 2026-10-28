@@ -6,6 +6,124 @@ export type AuthMode =
   | 'azureAdPassword'
   | 'azureAdInteractive'
   | 'azureAdDefault'
+  | 'password'
+  | 'kerberos'
+  | 'clientCertificate'
+
+/** Append-only on the server; every connection saved before engines existed is sqlServer. */
+export type DatabaseEngine = 'sqlServer' | 'postgreSql' | 'mySql' | 'mariaDb' | 'oracle' | 'sqlite'
+
+/** TLS for PostgreSQL (and later MySQL). SQL Server keeps its Encrypt / Trust server certificate switches. */
+export type SslMode = 'disable' | 'prefer' | 'require' | 'verifyCa' | 'verifyFull'
+
+/** GET /api/engines/preview: Settings > "Show preview engines", which the server enforces. */
+export interface PreviewEngines {
+  enabled: boolean
+  /** Display names of this build's preview engines, on or off. */
+  engines: string[]
+}
+
+export type EngineFeature =
+  | 'compare'
+  | 'scripts'
+  | 'objectScripts'
+  | 'apply'
+  | 'destructive'
+  | 'crossCompare'
+  | 'crossScripts'
+
+export type TransactionSemantics = 'perFileTransactional' | 'noDdlRollback'
+
+export interface EngineCapabilities {
+  schemas: boolean
+  sequences: boolean
+  synonyms: boolean
+  tableTypes: boolean
+  aliasTypes: boolean
+  filteredIndexes: boolean
+  includeColumns: boolean
+  routineOverloads: boolean
+  byteExactModuleText: boolean
+  ddl: TransactionSemantics
+  maxIdentifierBytes: number
+  objectTypes: string[]
+  features: EngineFeature[]
+  preview: boolean
+}
+
+export interface EngineAuthOption {
+  mode: AuthMode
+  label: string
+  /** The few words a connection list shows. */
+  short: string
+  needsUser: boolean
+}
+
+export interface EngineFormText {
+  serverLabel: string
+  serverHint: string
+  serverPlaceholder: string
+  connectionStringHint: string
+  connectionStringPlaceholder: string
+  databasePlaceholder: string
+  port: boolean
+  sslMode: boolean
+  encrypt: boolean
+  trustServerCertificate: boolean
+  readOnlyIntent: boolean
+}
+
+/** GET /api/engines: one engine as the UI renders it. Capabilities and wording only. */
+export interface EngineDescriptor {
+  engine: DatabaseEngine
+  displayName: string
+  /** For engine chips ("SQL", "PG"). */
+  shortName: string
+  preview: boolean
+  defaultPort?: number | null
+  browseDatabase?: string | null
+  defaultSchema: string
+  defaultExcludedSchemas: string[]
+  monacoLanguage: string
+  wordSeparators: string
+  transactions: TransactionSemantics
+  capabilities: EngineCapabilities
+  auth: EngineAuthOption[]
+  form: EngineFormText
+  defaults: { auth: AuthMode; encrypt: boolean; trustServerCertificate: boolean; connectTimeoutSeconds: number }
+  /** "Create scripts" wording for this engine; absent for SQL Server, whose wording is built in (scriptSections.ts). */
+  scripts?: EngineScriptText | null
+  /** "Apply to target" wording for this engine; absent for SQL Server, whose wording is built in (ApplyDialog). */
+  apply?: EngineApplyText | null
+}
+
+export interface EngineApplyText {
+  /** What a file's transaction promises, worded from the engine's transaction semantics. */
+  transactions: string
+  /** The typed database name must match letter for letter; the server checks the same rule. */
+  typedNameExact: boolean
+}
+
+/** One "Create scripts" section as the dialog shows it for an engine. */
+export interface EngineScriptSection {
+  section: ScriptSection
+  folder: string
+  label: string
+  hint: string
+  warning?: string | null
+  /** False: the engine has no such thing; shown greyed out and never sent. */
+  applicable: boolean
+}
+
+export interface EngineScriptText {
+  /** The client each folder's run_all.ps1 calls ("psql"). */
+  runner: string
+  /** What the offline check does on this build, in words. */
+  validation: string
+  /** True when the check uses the engine's own parser; false: lexical only, never "passed". */
+  parsed: boolean
+  sections: EngineScriptSection[]
+}
 
 export type ObjectStatus =
   | 'same'
@@ -28,11 +146,30 @@ export type DbObjectType =
   | 'tableType'
   | 'sequence'
   | 'synonym'
+  | 'materializedView'
+  | 'domain'
+  | 'enumType'
+  | 'compositeType'
+  | 'extension'
+  | 'rangeType'
+  | 'collation'
+  | 'operator'
+  | 'foreignTable'
+  | 'textSearchDictionary'
+  | 'textSearchConfiguration'
+  | 'operatorClass'
+  | 'cast'
 
 export interface ConnectionSettings {
   id: string
   label: string
+  /** Missing on rows from older builds: SQL Server. */
+  engine?: DatabaseEngine
   server: string
+  /** Null = the engine's default port. SQL Server keeps its port in the server name. */
+  port?: number | null
+  /** PostgreSQL: null = Verify full. */
+  ssl?: SslMode | null
   database: string
   auth: AuthMode
   userName?: string | null
@@ -84,13 +221,19 @@ export interface CompareOptions {
   excludedSchemas: string[]
   excludedNamePatterns: string[]
   includeSystemObjects: boolean
+  /** Which object types these options know about (the server's CompareOptions.TypeSet); kept as received. */
+  typeSet?: number
 }
 
 /** One database as it took part in a past compare. */
 export interface CompareHistoryDatabase {
   connectionId?: string | null
+  /** Missing on runs saved before engines existed: SQL Server. */
+  engine?: DatabaseEngine
   label: string
   server: string
+  /** Engines other than SQL Server (whose port is part of the server name). */
+  port?: number | null
   database: string
 }
 
@@ -132,6 +275,8 @@ export interface CompareRow {
   name: string
   fullName: string
   parentName?: string
+  /** What tells this object from others of its name: a PostgreSQL overload's argument types. */
+  signature?: string
   cells: TargetCell[]
   worst: ObjectStatus
   hasDifference: boolean
@@ -141,7 +286,11 @@ export interface CompareRow {
 export interface TargetSummary {
   id: string
   label: string
+  /** Missing on runs saved before engines existed: SQL Server. */
+  engine?: DatabaseEngine
   server: string
+  /** Engines other than SQL Server (whose port is part of the server name). */
+  port?: number | null
   database: string
   productVersion: string
   collation: string
@@ -162,7 +311,10 @@ export interface TargetSummary {
 
 export interface SnapshotInfo {
   label: string
+  engine?: DatabaseEngine
   server: string
+  /** Engines other than SQL Server (whose port is part of the server name). */
+  port?: number | null
   database: string
   productVersion: string
   collation: string
@@ -467,6 +619,17 @@ export interface ScriptValidation {
   modulesExact: number
   problems: string[]
   passed: boolean
+  /** How far the check went, for engines other than SQL Server (absent: ScriptDom, as always). */
+  level?: ValidationLevel | null
+}
+
+export interface ValidationLevel {
+  /** Every statement went through the engine's own parser. */
+  parsed: boolean
+  /** Code bodies were proven to compile, not only to be the source's text. */
+  moduleTextProven: boolean
+  notValidatedReason?: string | null
+  parser?: string | null
 }
 
 export interface ScriptOutcome {
@@ -575,11 +738,17 @@ export interface WriteModeState {
 
 export interface ApplyTarget {
   label: string
+  /** Missing = SQL Server. */
+  engine?: DatabaseEngine
   server: string
+  /** Engines other than SQL Server (whose port is part of the server name). */
+  port?: number | null
   database: string
-  /** "Windows: DOMAIN\user" or "SQL login: name". */
+  /** "Windows: DOMAIN\user", "SQL login: name" or "PostgreSQL user: name". */
   login: string
   protected: boolean
+  /** When protected: true when this connection itself is marked Protected, false when another Protected connection on its host is. */
+  protectedItself?: boolean
 }
 
 export type PlanRisk = 'normal' | 'changesCode' | 'destructive'

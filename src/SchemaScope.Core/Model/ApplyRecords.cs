@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using SchemaScope.Core.Engines;
 
 namespace SchemaScope.Core.Model;
 
@@ -14,6 +15,7 @@ public sealed class ApplyRunRecord
     /// <summary>The compare run the plan came from.</summary>
     public string CompareRunId { get; set; } = "";
     public string TargetLabel { get; set; } = "";
+    public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
     public string Database { get; set; } = "";
     /// <summary>"Windows: DOMAIN\user" or "SQL login: name".</summary>
@@ -35,4 +37,6 @@ public sealed class ApplyFileRecord
     public bool Ok { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)] public string? Error { get; set; }
     public long ElapsedMs { get; set; }
+    /// <summary>For engines that run one statement per file: which statement it was. Null for SQL Server.</summary>
+    public int? StatementIndex { get; set; }
 }

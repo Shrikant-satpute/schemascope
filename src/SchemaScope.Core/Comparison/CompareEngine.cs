@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 using SchemaScope.Core.Normalization;
 
@@ -28,8 +29,9 @@ public sealed class CompareEngine(CompareOptions options)
             Timings = new Dictionary<string, long>()
         };
 
-        var sourceIndex = source.BuildIndex();
-        var targetIndexes = targets.Select(t => t.BuildIndex()).ToList();
+        var shared = SchemaSnapshot.SharedKeys(targets.Prepend(source));
+        var sourceIndex = source.BuildIndex(shared);
+        var targetIndexes = targets.Select(t => t.BuildIndex(shared)).ToList();
 
         // Every key seen anywhere, so objects that exist only in a target still
         // get a row.
@@ -44,16 +46,20 @@ public sealed class CompareEngine(CompareOptions options)
         {
             Id = i.ToString(),
             Label = string.IsNullOrWhiteSpace(t.Label) ? $"{t.Server}.{t.Database}" : t.Label,
+            Engine = t.Engine,
             Server = t.Server,
+            Port = t.Port,
             Database = t.Database,
             ProductVersion = t.ProductVersion,
             Collation = t.Collation,
             ReadMs = t.TimingsMs.GetValueOrDefault("total"),
-            LastObjectChangeUtc = t.Objects.Count == 0 ? null : t.Objects.Max(o => o.ModifyDate),
+            LastObjectChangeUtc = LastChange(t),
             Error = t.Error
         }).ToList();
 
         var targetFailed = targets.Select(t => t.Failed).ToArray();
+        // the ScriptDom re-print parses T-SQL only (ISqlDialect.CanDeepParse): no other engine's text is ever put through it
+        var deepParse = targets.Select(t => source.Engine == DatabaseEngine.SqlServer && t.Engine == DatabaseEngine.SqlServer).ToArray();
 
         // one counter set per target, kept per thread then merged
         var counters = new int[targets.Count, 6];
@@ -80,7 +86,8 @@ public sealed class CompareEngine(CompareOptions options)
                     Type = sample.Type,
                     Schema = sample.Schema,
                     Name = sample.Name,
-                    ParentName = sample.ParentName
+                    ParentName = sample.ParentName,
+                    Signature = sample.Signature
                 };
 
                 var worst = ObjectStatus.Same;
@@ -96,11 +103,13 @@ public sealed class CompareEngine(CompareOptions options)
                     else
                     {
                         targetIndexes[i].TryGetValue(key, out var tgt);
-                        cell = Classify(src, tgt);
+                        cell = Classify(src, tgt, deepParse[i]);
                     }
                     row.Cells.Add(cell);
 
-                    local[i, (int)cell.Status]++;
+                    // an object neither the source nor this target has (another target's own) is no object of this
+                    // target's: counted nowhere, so Same never exceeds what the two databases hold
+                    if (src is not null || targetIndexes[i].ContainsKey(key) || targetFailed[i]) local[i, (int)cell.Status]++;
                     if (cell.Status.IsDifference()) differing++;
                     if (cell.Status.Severity() > worst.Severity()) worst = cell.Status;
                 }
@@ -167,12 +176,16 @@ public sealed class CompareEngine(CompareOptions options)
             result.Warnings.Add(
                 $"{source.Label}: {source.UnreadableCount} object(s) could not be read (encrypted, or the login lacks VIEW DEFINITION).");
 
+        // two objects with one key, which BuildIndex kept both of; a case-insensitive SQL Server database has none
+        foreach (var snapshot in targets.Prepend(source))
+            lock (snapshot.Warnings) result.Warnings.AddRange(snapshot.Warnings);
+
         result.Timings["summarise"] = stage.ElapsedMilliseconds;
         result.TotalMs = sw.ElapsedMilliseconds;
         return result;
     }
 
-    private TargetCell Classify(DbObject? src, DbObject? tgt)
+    private TargetCell Classify(DbObject? src, DbObject? tgt, bool deepParse)
     {
         if (src is null && tgt is null)
             return new TargetCell { Status = ObjectStatus.Same };
@@ -207,7 +220,7 @@ public sealed class CompareEngine(CompareOptions options)
         //    Gated on size and similarity: two bodies whose stripped lengths are
         //    far apart cannot be the same code, and parsing them anyway is what
         //    would make a big compare slow.
-        if (_options.UseSmartParseCompare && src.Type.IsModule() &&
+        if (deepParse && _options.UseSmartParseCompare && src.Type.IsModule() &&
             WorthDeepCheck(src, tgt) &&
             SchemaNormalizer.ParsesIdentically(src.CompareText, tgt.CompareText))
             return Formatting(src, tgt, "Same code, written differently (optional keywords or layout)");
@@ -252,10 +265,20 @@ public sealed class CompareEngine(CompareOptions options)
         };
     }
 
+    /// <summary>The newest modify date; none when there are no objects, or the engine keeps no dates (PostgreSQL).</summary>
+    private static DateTime? LastChange(SchemaSnapshot t)
+    {
+        if (t.Objects.Count == 0) return null;
+        var last = t.Objects.Max(o => o.ModifyDate);
+        return last == default ? null : last;
+    }
+
     private static SnapshotInfo Describe(SchemaSnapshot s) => new()
     {
         Label = string.IsNullOrWhiteSpace(s.Label) ? $"{s.Server}.{s.Database}" : s.Label,
+        Engine = s.Engine,
         Server = s.Server,
+        Port = s.Port,
         Database = s.Database,
         ProductVersion = s.ProductVersion,
         Collation = s.Collation,

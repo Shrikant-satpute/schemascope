@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 
 namespace SchemaScope.Core.Normalization;
@@ -15,9 +16,21 @@ namespace SchemaScope.Core.Normalization;
 /// Hashing everything up front is what makes the compare fast: 90%+ of objects
 /// match on Hash and are never looked at again.
 /// </summary>
-public sealed class SchemaNormalizer(CompareOptions options)
+public sealed class SchemaNormalizer
 {
-    private readonly CompareOptions _options = options;
+    private readonly CompareOptions _options;
+
+    /// <summary>The engine's text rules. Null: SQL Server's, through the T-SQL helpers this has always called.</summary>
+    private readonly ISqlDialect? _dialect;
+
+    public SchemaNormalizer(CompareOptions options) => _options = options;
+
+    /// <summary>Normalizes with <paramref name="dialect"/>'s text rules (every reader but SQL Server's passes its own).</summary>
+    public SchemaNormalizer(CompareOptions options, ISqlDialect dialect)
+    {
+        _options = options;
+        _dialect = dialect;
+    }
 
     public void Normalize(SchemaSnapshot snapshot)
     {
@@ -36,6 +49,12 @@ public sealed class SchemaNormalizer(CompareOptions options)
                 // parameter changes are still visible.
                 compareText = SignatureText(o);
             }
+            else if (_dialect is { } d)
+            {
+                compareText = d.CanonicalHeader(d.LightNormalize(o.Definition ?? ""), o);
+                if (_options.IgnoreComments)
+                    compareText = d.LightNormalize(d.StripComments(compareText));
+            }
             else
             {
                 compareText = TSqlText.CanonicalHeaderName(TSqlText.Light(o.Definition), o.Schema, o.Name);
@@ -45,7 +64,7 @@ public sealed class SchemaNormalizer(CompareOptions options)
         }
         else
         {
-            compareText = CanonicalScriptWriter.Write(o, _options);
+            compareText = _dialect?.CanonicalScript(o, _options) ?? CanonicalScriptWriter.Write(o, _options);
         }
 
         o.CompareText = compareText;
@@ -54,7 +73,7 @@ public sealed class SchemaNormalizer(CompareOptions options)
         var forHash = _options.IgnoreCase ? compareText.ToUpperInvariant() : compareText;
         o.Hash = Sha256(forHash);
 
-        var loose = Loosen(compareText);
+        var loose = _dialect?.Loosen(compareText) ?? Loosen(compareText);
         o.LooseHash = Sha256(loose);
         o.LooseLength = loose.Length;
     }
@@ -65,7 +84,7 @@ public sealed class SchemaNormalizer(CompareOptions options)
     /// [dbo].[Foo] vs dbo.Foo is caught by a hash compare instead of needing a
     /// full parse, which is the difference between milliseconds and seconds.
     /// </summary>
-    private static string Loosen(string text)
+    public static string Loosen(string text)
     {
         var stripped = TSqlText.StripComments(text);
         var collapsed = TSqlText.CollapseWhitespace(stripped);

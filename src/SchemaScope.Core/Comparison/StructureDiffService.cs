@@ -1,3 +1,4 @@
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 
 namespace SchemaScope.Core.Comparison;
@@ -40,34 +41,43 @@ public sealed class StructureSection
 /// A text diff of a CREATE TABLE script is hard to read: one renamed column
 /// lights up the whole block. A grid shows exactly which column and which
 /// property moved, which is what people actually want to know.
+///
+/// Names and text compare as the engine that read them does: ignoring case for SQL Server, exactly for an engine
+/// whose catalog keeps names as spelled (PostgreSQL: "Users" and users are two columns, 'A' and 'a' two defaults).
 /// </summary>
 public static class StructureDiffService
 {
     public static List<StructureSection> Build(DbObject? source, DbObject? target, CompareOptions options)
     {
+        var exact = (source ?? target)?.Fold is IdentifierFold.Exact;
+        var names = exact ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
         var sections = new List<StructureSection>
         {
-            BuildColumns(source, target, options),
+            BuildColumns(source, target, options, exact),
             BuildNamed("Indexes & keys",
-                Render(source?.Indexes, options), Render(target?.Indexes, options)),
+                Render(source?.Indexes, options, names), Render(target?.Indexes, options, names), names),
             BuildNamed("Foreign keys",
-                Render(source?.ForeignKeys), Render(target?.ForeignKeys)),
+                Render(source?.ForeignKeys, names), Render(target?.ForeignKeys, names), names),
             BuildNamed("Check constraints",
-                RenderChecks(source?.Constraints), RenderChecks(target?.Constraints))
+                RenderChecks(source?.Constraints, names, exact), RenderChecks(target?.Constraints, names, exact), names)
         };
+        // PostgreSQL: what a table is beyond its columns and keys (UNLOGGED, partitioning, row security, policies, ...)
+        if (exact)
+            sections.Add(BuildNamed("Table options", TableFacts(source, options), TableFacts(target, options), names));
 
         return [.. sections.Where(s => s.Rows.Count > 0)];
     }
 
-    private static StructureSection BuildColumns(DbObject? source, DbObject? target, CompareOptions options)
+    private static StructureSection BuildColumns(DbObject? source, DbObject? target, CompareOptions options, bool exact)
     {
         var section = new StructureSection { Title = "Columns" };
 
         var left = source?.Columns ?? [];
         var right = target?.Columns ?? [];
 
-        var rightByName = right.ToDictionary(c => c.Name, StringComparer.OrdinalIgnoreCase);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var names = exact ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+        var rightByName = right.ToDictionary(c => c.Name, names);
+        var seen = new HashSet<string>(names);
 
         foreach (var l in left.OrderBy(c => c.Ordinal))
         {
@@ -88,7 +98,7 @@ public static class StructureDiffService
             }
 
             var rf = Facet(r, target!, options);
-            var changed = CompareFacets(lf, rf, options);
+            var changed = CompareFacets(lf, rf, options, exact);
 
             section.Rows.Add(new StructureRow
             {
@@ -111,37 +121,46 @@ public static class StructureDiffService
         return section;
     }
 
-    private static List<string> CompareFacets(ColumnFacet a, ColumnFacet b, CompareOptions options)
+    private static List<string> CompareFacets(ColumnFacet a, ColumnFacet b, CompareOptions options, bool exact)
     {
         var changed = new List<string>();
         if (!Eq(a.Type, b.Type)) changed.Add("type");
         if (!Eq(a.Nullable, b.Nullable)) changed.Add("nullable");
         if (!Eq(a.Identity, b.Identity)) changed.Add("identity");
-        if (!Eq(a.Default, b.Default)) changed.Add("default");
-        if (!Eq(a.Computed, b.Computed)) changed.Add("computed");
-        if (!options.IgnoreCollation && !Eq(a.Collation, b.Collation)) changed.Add("collation");
+        // an expression's literals keep their case where the engine's do
+        if (!Text(a.Default, b.Default)) changed.Add("default");
+        if (!Text(a.Computed, b.Computed)) changed.Add("computed");
+        if (!options.IgnoreCollation && !Text(a.Collation, b.Collation)) changed.Add("collation");
         if (!options.IgnoreColumnOrder && a.Ordinal != b.Ordinal) changed.Add("ordinal");
         return changed;
 
         static bool Eq(string x, string y) => string.Equals(x, y, StringComparison.OrdinalIgnoreCase);
+        bool Text(string x, string y) => string.Equals(x, y, exact ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
     }
 
     private static ColumnFacet Facet(ColumnInfo c, DbObject owner, CompareOptions options)
     {
+        var names = owner.Fold is IdentifierFold.Exact ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
         var def = owner.Constraints.FirstOrDefault(x =>
             x.Kind == ConstraintKind.Default &&
-            string.Equals(x.ColumnName, c.Name, StringComparison.OrdinalIgnoreCase));
+            string.Equals(x.ColumnName, c.Name, names));
 
+        // PostgreSQL in its own words: GENERATED ... AS IDENTITY (START WITH ...), GENERATED ALWAYS AS (...) STORED / VIRTUAL
+        var postgres = owner.Fold is IdentifierFold.Exact;
         return new ColumnFacet
         {
             Ordinal = c.Ordinal,
             Type = c.DataType,
             Nullable = c.IsNullable ? "NULL" : "NOT NULL",
-            Identity = c.IsIdentity
-                ? options.IgnoreIdentitySeed ? "IDENTITY" : $"IDENTITY({c.IdentitySeed},{c.IdentityIncrement})"
-                : "",
+            Identity = !c.IsIdentity ? ""
+                : c.IdentityKind is { } kind
+                    ? options.IgnoreIdentitySeed || c.IdentitySeed is null ? $"GENERATED {kind} AS IDENTITY"
+                        : $"GENERATED {kind} AS IDENTITY (START WITH {c.IdentitySeed} INCREMENT BY {c.IdentityIncrement}{(c.IdentityOptions is { } limits ? " " + limits : "")})"
+                    : options.IgnoreIdentitySeed ? "IDENTITY" : $"IDENTITY({c.IdentitySeed},{c.IdentityIncrement})",
             Default = def?.Definition ?? "",
-            Computed = c.IsComputed ? $"AS {c.ComputedDefinition}{(c.IsPersisted ? " PERSISTED" : "")}" : "",
+            Computed = !c.IsComputed ? ""
+                : postgres ? $"GENERATED ALWAYS AS ({c.ComputedDefinition}) {(c.IsPersisted ? "STORED" : "VIRTUAL")}"
+                : $"AS {c.ComputedDefinition}{(c.IsPersisted ? " PERSISTED" : "")}",
             Collation = c.Collation ?? ""
         };
     }
@@ -149,11 +168,13 @@ public static class StructureDiffService
     private static StructureSection BuildNamed(
         string title,
         Dictionary<string, string> left,
-        Dictionary<string, string> right)
+        Dictionary<string, string> right,
+        StringComparer comparer)
     {
         var section = new StructureSection { Title = title };
-        var names = new SortedSet<string>(left.Keys, StringComparer.OrdinalIgnoreCase);
+        var names = new SortedSet<string>(left.Keys, comparer);
         names.UnionWith(right.Keys);
+        var text = comparer == StringComparer.Ordinal ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
 
         foreach (var name in names)
         {
@@ -161,7 +182,7 @@ public static class StructureDiffService
             var hasR = right.TryGetValue(name, out var r);
 
             var status = hasL && hasR
-                ? string.Equals(l, r, StringComparison.OrdinalIgnoreCase) ? "same" : "changed"
+                ? string.Equals(l, r, text) ? "same" : "changed"
                 : hasL ? "missingInTarget" : "onlyInTarget";
 
             section.Rows.Add(new StructureRow
@@ -176,13 +197,41 @@ public static class StructureDiffService
         return section;
     }
 
-    private static Dictionary<string, string> Render(List<IndexInfo>? indexes, CompareOptions options)
+    // fillfactor is left out of a table's options when the compare ignores it, as the compare's own text leaves it out
+    private static Dictionary<string, string> TableFacts(DbObject? o, CompareOptions options) =>
+        o is { Type: DbObjectType.Table }
+            ? o.Properties.Where(kv => kv.Value is not null)
+                .Select(kv => kv.Key == "options" && options.IgnoreFillFactor
+                    ? new KeyValuePair<string, string?>(kv.Key, string.Join(", ", kv.Value!.Split(", ", StringSplitOptions.RemoveEmptyEntries)
+                        .Where(x => !x.StartsWith("fillfactor=", StringComparison.Ordinal))))
+                    : kv)
+                .Where(kv => kv.Value!.Length > 0)
+                .ToDictionary(kv => kv.Key, kv => kv.Value!, StringComparer.Ordinal)
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>A PostgreSQL key's WITH (...) index options (PgCanonicalWriter.KeyText leaves fillfactor out of the compare the same way).</summary>
+    private static readonly System.Text.RegularExpressions.Regex KeyWith = new(@" WITH \((?<o>[^()]*)\)", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static Dictionary<string, string> Render(List<IndexInfo>? indexes, CompareOptions options, StringComparer names)
     {
-        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var map = new Dictionary<string, string>(names);
         if (indexes is null) return map;
 
         foreach (var ix in indexes)
         {
+            if (ix.Definition is { } own)
+            {
+                // the engine's own text (PostgreSQL), keyed as below: a default-named key by kind and columns
+                var ownKind = ix.IsPrimaryKey ? "PRIMARY KEY" : ix.IsUniqueConstraint ? "UNIQUE" : ix.TypeDesc;
+                var ownCols = string.Join(", ", ix.KeyColumns.OrderBy(k => k.Ordinal).Select(k => k.Name));
+                // a key's index options as the compare sees them: no fillfactor when it is ignored
+                if (options.IgnoreFillFactor && (ix.IsPrimaryKey || ix.IsUniqueConstraint || ix.TypeDesc == "EXCLUDE"))
+                    own = KeyWith.Replace(own, m => string.Join(", ", m.Groups["o"].Value.Split(", ", StringSplitOptions.RemoveEmptyEntries)
+                        .Where(x => !x.StartsWith("fillfactor=", StringComparison.Ordinal))) is { Length: > 0 } kept ? $" WITH ({kept})" : "");
+                map[options.IgnoreSystemNamedConstraints && ix.IsSystemNamed ? $"{ownKind} ({ownCols})" : ix.Name] = own;
+                continue;
+            }
+
             var kind = ix.IsPrimaryKey ? "PRIMARY KEY" : ix.IsUniqueConstraint ? "UNIQUE" : ix.TypeDesc;
             var cols = string.Join(", ", ix.KeyColumns.OrderBy(k => k.Ordinal)
                 .Select(k => k.Name + (k.Descending ? " DESC" : "")));
@@ -200,13 +249,19 @@ public static class StructureDiffService
         return map;
     }
 
-    private static Dictionary<string, string> Render(List<ForeignKeyInfo>? fks)
+    private static Dictionary<string, string> Render(List<ForeignKeyInfo>? fks, StringComparer names)
     {
-        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var map = new Dictionary<string, string>(names);
         if (fks is null) return map;
 
         foreach (var fk in fks)
         {
+            if (fk.Definition is { } own)
+            {
+                map[fk.Name] = own;
+                continue;
+            }
+
             var onDelete = fk.DeleteAction == "NO_ACTION" ? "" : $" ON DELETE {fk.DeleteAction.Replace('_', ' ')}";
             var onUpdate = fk.UpdateAction == "NO_ACTION" ? "" : $" ON UPDATE {fk.UpdateAction.Replace('_', ' ')}";
             map[fk.Name] =
@@ -218,13 +273,13 @@ public static class StructureDiffService
         return map;
     }
 
-    private static Dictionary<string, string> RenderChecks(List<ConstraintInfo>? constraints)
+    private static Dictionary<string, string> RenderChecks(List<ConstraintInfo>? constraints, StringComparer names, bool exact)
     {
-        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var map = new Dictionary<string, string>(names);
         if (constraints is null) return map;
 
         foreach (var c in constraints.Where(c => c.Kind == ConstraintKind.Check))
-            map[c.Name] = c.Definition + (c.IsDisabled ? " [disabled]" : "");
+            map[c.Name] = c.Definition + (c.IsDisabled ? " [disabled]" : "") + (exact && c.IsNotTrusted ? " NOT VALID" : "");
 
         return map;
     }

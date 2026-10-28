@@ -1,24 +1,58 @@
 using SchemaScope.Core.Comparison;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 using SchemaScope.Core.Storage;
 using SchemaScope.SqlServer;
 
 namespace SchemaScope.Api.Services;
 
-/// <summary>Turns an API request into a running compare, and serves object detail afterwards.</summary>
-public sealed class CompareService(
-    CompareSessionStore sessions,
-    SchemaScopeStore store,
-    SqlServerConnectionService connections,
-    ILogger<CompareService> log)
+/// <summary>
+/// Turns an API request into a running compare, and serves object detail afterwards. Each database is reached
+/// through its engine's provider in the engines turned on at the time (<see cref="EngineCatalog.Enabled"/>).
+/// </summary>
+public sealed class CompareService
 {
+    private readonly CompareSessionStore sessions;
+    private readonly SchemaScopeStore store;
+    private readonly Func<EngineRegistry> registry;
+    private readonly ILogger<CompareService> log;
+
+    /// <summary>A fixed set of engines.</summary>
+    public CompareService(CompareSessionStore sessions, SchemaScopeStore store, EngineRegistry engines, ILogger<CompareService> log)
+        : this(sessions, store, () => engines, log)
+    {
+    }
+
+    /// <summary>The engines as they are when each compare starts: a preview engine can be turned on or off meanwhile.</summary>
+    public CompareService(CompareSessionStore sessions, SchemaScopeStore store, Func<EngineRegistry> engines, ILogger<CompareService> log)
+    {
+        this.sessions = sessions;
+        this.store = store;
+        registry = engines;
+        this.log = log;
+    }
+
+    /// <summary>SQL Server only, on the given connection service (tests and older callers).</summary>
+    public CompareService(CompareSessionStore sessions, SchemaScopeStore store, SqlServerConnectionService connections,
+        ILogger<CompareService> log)
+        : this(sessions, store, EngineRegistries.SqlServerOnly(connections), log)
+    {
+    }
+
     public CompareSession Start(CompareRequest request)
     {
+        var engines = registry();
         var options = ResolveOptions(request);
-        var source = Resolve(request.Source, "source");
+        var source = Resolve(request.Source, "source", engines);
         var targets = request.Targets
-            .Select((t, i) => Resolve(t, $"target{i}"))
+            .Select((t, i) => Resolve(t, $"target{i}", engines))
             .ToList();
+
+        // one engine per run in this version: across engines nothing would be compared honestly yet
+        if (targets.FirstOrDefault(t => t.Engine != source.Engine) is { } other)
+            throw new SchemaReadException(
+                $"{other.DisplayName} is {ConnectionRules.NameOf(other.Engine)} and the source is {ConnectionRules.NameOf(source.Engine)}. " +
+                "Comparing across engines is not available in this version: pick targets of the source's engine.");
 
         var session = sessions.Create();
         session.Options = options;
@@ -37,7 +71,7 @@ public sealed class CompareService(
 
         var history = BuildHistory(request, source, targets, options);
 
-        _ = Task.Run(() => RunAsync(session, source, targets, options, history));
+        _ = Task.Run(() => RunAsync(session, source, targets, options, history, engines));
         return session;
     }
 
@@ -48,13 +82,21 @@ public sealed class CompareService(
     private static CompareHistoryEntry BuildHistory(
         CompareRequest request, SchemaSource source, List<SchemaSource> targets, CompareOptions options)
     {
-        static CompareHistoryDatabase Describe(SourceRef? reference, SchemaSource resolved) => new()
+        static CompareHistoryDatabase Describe(SourceRef? reference, SchemaSource resolved)
         {
-            ConnectionId = reference?.ConnectionId,
-            Label = resolved.DisplayName,
-            Server = resolved.Server,
-            Database = resolved.Database
-        };
+            // another engine's raw connection string leaves the form's server and database empty: read them from the string
+            var ep = resolved.Engine == DatabaseEngine.SqlServer ? null : ConnectionEndpoints.Parse(resolved.Engine, resolved.ConnectionString);
+            return new()
+            {
+                ConnectionId = reference?.ConnectionId,
+                Engine = resolved.Engine,
+                Label = resolved.DisplayName,
+                Server = string.IsNullOrWhiteSpace(resolved.Server) && ep is { Hosts.Count: > 0 } ? string.Join(",", ep.Hosts) : resolved.Server,
+                // shown with the host for engines that keep the port apart; SQL Server keeps it in the server name
+                Port = resolved.Engine == DatabaseEngine.SqlServer ? null : ep?.Port ?? DatabaseEngines.DefaultPort(resolved.Engine),
+                Database = string.IsNullOrWhiteSpace(resolved.Database) && ep is { Database.Length: > 0 } ? ep.Database : resolved.Database
+            };
+        }
 
         var entry = new CompareHistoryEntry
         {
@@ -63,13 +105,14 @@ public sealed class CompareService(
             Options = options
         };
 
-        entry.Signature = CompareHistoryEntry.BuildSignature(entry.Source, entry.Targets);
+        // a PostgreSQL database name is exact: ShopDb and shopdb are two histories
+        entry.Signature = CompareHistoryEntry.BuildSignature(entry.Source, entry.Targets, exactDatabases: true);
         return entry;
     }
 
     private async Task RunAsync(
         CompareSession session, SchemaSource source, List<SchemaSource> targets, CompareOptions options,
-        CompareHistoryEntry history)
+        CompareHistoryEntry history, EngineRegistry engines)
     {
         var labels = targets.ToDictionary(t => t.Id, t => t.DisplayName);
         labels[source.Id] = source.DisplayName;
@@ -86,7 +129,7 @@ public sealed class CompareService(
 
         try
         {
-            var runner = new CompareRunner(new SqlServerSchemaReader());
+            var runner = new CompareRunner(src => engines.Get(src.Engine).CreateReader());
             var run = await runner.RunAsync(source, targets, options, progress, session.Cancellation.Token);
 
             session.Result = run.Result;
@@ -165,24 +208,35 @@ public sealed class CompareService(
         return request.Options ?? new CompareOptions();
     }
 
-    private SchemaSource Resolve(SourceRef reference, string id)
+    private SchemaSource Resolve(SourceRef reference, string id, EngineRegistry engines)
     {
         ConnectionSettings settings;
 
         if (reference.Inline is not null)
         {
             settings = reference.Inline;
+            // an inline connection may be a saved one edited in the form: its stored password only
+            // comes back under the same rule as testing and saving it
+            if (ConnectionRules.Problem(settings) is { } problem) throw new SchemaReadException(problem);
+            if (!SecretRelease.TryRehydrate(settings, store, out var error)) throw new SchemaReadException(error!);
         }
         else if (!string.IsNullOrWhiteSpace(reference.ConnectionId))
         {
             settings = store.GetConnection(reference.ConnectionId)
                        ?? throw new SchemaReadException($"Connection '{reference.ConnectionId}' was not found.");
+            if (ConnectionRules.Problem(settings) is { } problem) throw new SchemaReadException(problem);
             store.TouchConnection(settings.Id);
         }
         else
         {
             throw new SchemaReadException("Every source needs either a saved connection or an inline connection.");
         }
+
+        if (ConnectionRules.MissingPassword(settings) is { } missing) throw new SchemaReadException(missing);
+
+        // an engine this build lacks, or a preview one switched off: never handed to another engine's driver
+        if (!engines.TryGet(settings.Engine, out var provider))
+            throw new SchemaReadException(ConnectionRules.NotEnabled(settings.Engine));
 
         var database = string.IsNullOrWhiteSpace(reference.Database) ? settings.Database : reference.Database;
 
@@ -193,9 +247,10 @@ public sealed class CompareService(
                     ?? (string.IsNullOrWhiteSpace(settings.Label)
                         ? $"{settings.Server}.{database}"
                         : database == settings.Database ? settings.Label : $"{settings.Label} / {database}"),
+            Engine = settings.Engine,
             Server = settings.Server,
             Database = database,
-            ConnectionString = connections.BuildConnectionString(settings, database),
+            ConnectionString = provider.Connections.BuildConnectionString(settings, database),
             // An inline connection may be a saved one edited in the form: keep its id, so applying
             // re-reads the saved "Protected" flag too.
             ConnectionId = reference.ConnectionId ?? reference.Inline?.Id,
@@ -224,6 +279,7 @@ public sealed class CompareService(
             ParentName = row.ParentName,
             IsModule = row.Type.IsModule(),
             HasStructure = row.Type is DbObjectType.Table or DbObjectType.TableType,
+            Language = registry().TryGet(session.Source.Engine, out var engine) ? engine.Dialect.MonacoLanguage : "sql",
             SourceExists = sourceObj is not null,
             SourceText = sourceObj?.DisplayText ?? "",
             SourceLabel = session.Result.Source.Label,

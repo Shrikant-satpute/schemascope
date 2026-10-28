@@ -16,12 +16,13 @@ import { canOpenFolder, hasNativeHost, openFolder, pickFolder, type PickFolderOp
 import {
   DEFAULT_SCRIPT_OPTIONS,
   DEFAULT_SCRIPT_SECTIONS,
-  SCRIPT_SECTIONS,
   applyPlanOf,
   looksLikeAbsoluteWindowsPath,
   parsePatterns,
+  scriptSectionsFor,
   sectionDependencyWarnings,
 } from '../scriptSections'
+import { engineOf, supports, useEngines } from '../engines'
 import { Button, Field, Input, Modal, Spinner, Toggle } from './ui'
 
 /** How many held-back objects the summary lists before it points at 99_review. */
@@ -71,6 +72,13 @@ export function ScriptDialog({
   onToast: (message: string) => void
 }) {
   const target = result.targets[targetIndex]
+  // the sections, hints and runner come from the server for this engine (SQL Server: the built-in list)
+  const engines = useEngines()
+  const engineText = engineOf(engines, target?.engine).scripts ?? null
+  const sectionList = scriptSectionsFor(engineText)
+  // never across engines: the server refuses it as well
+  const canDestroy =
+    supports(engines, target?.engine, 'destructive') && (result.source.engine ?? 'sqlServer') === (target?.engine ?? 'sqlServer')
 
   const [sections, setSections] = useState<Set<ScriptSection>>(() => new Set(DEFAULT_SCRIPT_SECTIONS))
   const [outputFolder, setOutputFolder] = useState('')
@@ -140,10 +148,12 @@ export function ScriptDialog({
   const quarantineInvalid = quarantineTrimmed.length > 0 && !looksLikeAbsoluteWindowsPath(quarantineTrimmed)
   const rows = Number(largeTableRows)
   const rowsInvalid = !Number.isInteger(rows) || rows < 1 || rows > MAX_ROWS
-  const dependencyWarnings = sectionDependencyWarnings(sections)
+  // folder order, whatever order they were ticked in, and never a section this engine does not have
+  const chosen = sectionList.filter((s) => s.applicable !== false && sections.has(s.key)).map((s) => s.key)
+  const dependencyWarnings = sectionDependencyWarnings(new Set(chosen))
 
   const canGenerate =
-    !running && sections.size > 0 && folderTrimmed.length > 0 && !folderInvalid && !quarantineInvalid && !rowsInvalid
+    !running && chosen.length > 0 && folderTrimmed.length > 0 && !folderInvalid && !quarantineInvalid && !rowsInvalid
 
   async function generate() {
     if (!canGenerate) return
@@ -174,15 +184,14 @@ export function ScriptDialog({
           targetIndex,
           progressId,
           options: {
-            // Folder order, whatever order they were ticked in.
-            sections: SCRIPT_SECTIONS.map((s) => s.key).filter((k) => sections.has(k)),
+            sections: chosen,
             outputFolder: folderTrimmed,
             quarantineFolder: quarantineTrimmed || undefined,
             excludePatterns: parsePatterns(excludeText),
             checkExistingData,
             largeTableRows: rows,
             probeTimeoutSeconds: DEFAULT_SCRIPT_OPTIONS.probeTimeoutSeconds,
-            includeDestructive: writeMode && includeDestructive,
+            includeDestructive: writeMode && canDestroy && includeDestructive,
           },
         },
         controller.signal,
@@ -243,7 +252,7 @@ export function ScriptDialog({
           </>
         }
       >
-        <ScriptSummary outcome={outcome} onToast={onToast} />
+        <ScriptSummary outcome={outcome} runner={engineText?.runner ?? 'sqlcmd'} onToast={onToast} />
       </Modal>
     )
   }
@@ -279,7 +288,7 @@ export function ScriptDialog({
                 className="hover:underline disabled:opacity-50 disabled:no-underline"
                 style={{ color: 'var(--accent)' }}
                 disabled={running}
-                onClick={() => setSections(new Set(SCRIPT_SECTIONS.map((s) => s.key)))}
+                onClick={() => setSections(new Set(sectionList.filter((s) => s.applicable !== false).map((s) => s.key)))}
               >
                 all
               </button>
@@ -297,18 +306,21 @@ export function ScriptDialog({
           </div>
 
           <div className="flex flex-col">
-            {SCRIPT_SECTIONS.map((s) => {
-              const on = sections.has(s.key)
+            {sectionList.map((s) => {
+              const applicable = s.applicable !== false
+              const on = applicable && sections.has(s.key)
               return (
                 <label
                   key={s.key}
-                  className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--raised)]"
+                  className={`flex items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors ${
+                    applicable ? 'cursor-pointer hover:bg-[var(--raised)]' : 'opacity-55'
+                  }`}
                 >
                   <input
                     type="checkbox"
                     className="mt-[3px]"
                     checked={on}
-                    disabled={running}
+                    disabled={running || !applicable}
                     onChange={(e) => toggle(s.key, e.target.checked)}
                   />
                   <span
@@ -337,13 +349,20 @@ export function ScriptDialog({
             })}
           </div>
 
-          {sections.size === 0 && (
+          {chosen.length === 0 && (
             <div className="mt-1.5 px-2 text-[11.5px]" style={{ color: 'var(--text-3)' }}>
               Tick at least one to generate.
             </div>
           )}
 
-          {writeMode && <DestructiveOption checked={includeDestructive} onChange={setIncludeDestructive} disabled={running} />}
+          {writeMode && canDestroy && (
+            <DestructiveOption checked={includeDestructive} onChange={setIncludeDestructive} disabled={running} />
+          )}
+          {engineText && (
+            <div className="mt-1.5 px-2 text-[11px] leading-snug" style={{ color: 'var(--text-3)' }}>
+              Each folder's run_all.ps1 runs its files with {engineText.runner}, one transaction per file. {engineText.validation}
+            </div>
+          )}
         </section>
 
         {dependencyWarnings.length > 0 && (
@@ -572,7 +591,16 @@ export function RunProgress({ progress }: { progress: ScriptProgress | null }) {
  * validation problem) is in 99_review on disk; this is the overview that says
  * whether it is worth opening.
  */
-function ScriptSummary({ outcome, onToast }: { outcome: ScriptOutcome; onToast: (message: string) => void }) {
+function ScriptSummary({
+  outcome,
+  runner,
+  onToast,
+}: {
+  outcome: ScriptOutcome
+  /** The client the runners call ("sqlcmd", "psql"). */
+  runner: string
+  onToast: (message: string) => void
+}) {
   const path = outcome.path ?? ''
   const v = outcome.validation
   const canOpen = canOpenFolder(path)
@@ -624,6 +652,25 @@ function ScriptSummary({ outcome, onToast }: { outcome: ScriptOutcome; onToast: 
         </section>
       )}
 
+      {v.level && !v.level.parsed ? (
+        <Banner tone="warning">
+          Lexical check only - not validated: {v.batches.toLocaleString()} statements were split as {runner} reads them and
+          their quotes and brackets checked, but no parser read them. {v.level.notValidatedReason}
+          {v.problems.length > 0 && (
+            <ul className="mt-1 list-disc pl-4">
+              {v.problems.slice(0, 3).map((p, i) => (
+                <li key={i}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </Banner>
+      ) : v.level && v.passed ? (
+        <Banner tone="success">
+          Parsed offline with {v.level.parser ?? 'the engine\'s parser'}: {v.batches.toLocaleString()} statements parse, and{' '}
+          {v.modulesExact.toLocaleString()} of {v.modulesChecked.toLocaleString()} code bodies are the source&apos;s text exactly.
+          Code bodies are not compile-checked.
+        </Banner>
+      ) : (
       <Banner tone={v.passed ? 'success' : 'error'}>
         {v.passed ? (
           <>
@@ -647,6 +694,7 @@ function ScriptSummary({ outcome, onToast }: { outcome: ScriptOutcome; onToast: 
           </>
         )}
       </Banner>
+      )}
 
       {outcome.folders.length > 0 && (
         <section>

@@ -7,4 +7,9 @@
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- the store's upgrade steps, so the tests can prove the no-backup refusal -->
+    <InternalsVisibleTo Include="SchemaScope.Tests" />
+  </ItemGroup>
+
 </Project>

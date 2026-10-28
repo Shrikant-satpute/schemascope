@@ -18,7 +18,34 @@ public enum DbObjectType
     UserDefinedType = 8,
     TableType = 9,
     Sequence = 10,
-    Synonym = 11
+    Synonym = 11,
+
+    // Appended for other engines; never renumbered. SQL Server has none of these.
+    /// <summary>PostgreSQL: a view whose rows are stored (CREATE MATERIALIZED VIEW).</summary>
+    MaterializedView = 12,
+    /// <summary>PostgreSQL: a base type with a default, NOT NULL and checks (CREATE DOMAIN).</summary>
+    Domain = 13,
+    EnumType = 14,
+    /// <summary>PostgreSQL: a standalone row type (CREATE TYPE ... AS (...)).</summary>
+    CompositeType = 15,
+    /// <summary>PostgreSQL: an installed extension. The objects it creates are not compared one by one.</summary>
+    Extension = 16,
+    /// <summary>PostgreSQL: a range of a subtype (CREATE TYPE ... AS RANGE); its constructors and multirange come with it.</summary>
+    RangeType = 17,
+    /// <summary>PostgreSQL: a collation a user made (CREATE COLLATION).</summary>
+    Collation = 18,
+    /// <summary>PostgreSQL: an operator a user made (CREATE OPERATOR), told apart by its argument types.</summary>
+    Operator = 19,
+    /// <summary>PostgreSQL: a table whose rows live on another server (CREATE FOREIGN TABLE ... SERVER).</summary>
+    ForeignTable = 20,
+    /// <summary>PostgreSQL: a text search dictionary a user made (CREATE TEXT SEARCH DICTIONARY).</summary>
+    TextSearchDictionary = 21,
+    /// <summary>PostgreSQL: a text search configuration a user made (CREATE TEXT SEARCH CONFIGURATION), with its mappings.</summary>
+    TextSearchConfiguration = 22,
+    /// <summary>PostgreSQL: an operator class a user made (CREATE OPERATOR CLASS), told apart by its access method.</summary>
+    OperatorClass = 23,
+    /// <summary>PostgreSQL: a cast a user made (CREATE CAST), named by its source and target types.</summary>
+    Cast = 24
 }
 
 public static class DbObjectTypeExtensions
@@ -38,12 +65,26 @@ public static class DbObjectTypeExtensions
         DbObjectType.TableType => "Table type",
         DbObjectType.Sequence => "Sequence",
         DbObjectType.Synonym => "Synonym",
+        DbObjectType.MaterializedView => "Materialized view",
+        DbObjectType.Domain => "Domain",
+        DbObjectType.EnumType => "Enum type",
+        DbObjectType.CompositeType => "Composite type",
+        DbObjectType.Extension => "Extension",
+        DbObjectType.RangeType => "Range type",
+        DbObjectType.Collation => "Collation",
+        DbObjectType.Operator => "Operator",
+        DbObjectType.ForeignTable => "Foreign table",
+        DbObjectType.TextSearchDictionary => "Text search dictionary",
+        DbObjectType.TextSearchConfiguration => "Text search configuration",
+        DbObjectType.OperatorClass => "Operator class",
+        DbObjectType.Cast => "Cast",
         _ => t.ToString()
     };
 
-    /// <summary>True when the object's identity is a block of T-SQL text.</summary>
+    /// <summary>True when the object's identity is a block of SQL text (T-SQL, or the engine's own definition).</summary>
     public static bool IsModule(this DbObjectType t) => t is
         DbObjectType.View or
+        DbObjectType.MaterializedView or
         DbObjectType.StoredProcedure or
         DbObjectType.ScalarFunction or
         DbObjectType.TableValuedFunction or

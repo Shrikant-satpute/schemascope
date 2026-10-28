@@ -1,3 +1,4 @@
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 
 namespace SchemaScope.Core.Storage;
@@ -13,8 +14,12 @@ public sealed class CompareHistoryDatabase
 {
     /// <summary>The saved connection it came from. Null when an inline connection was used.</summary>
     public string? ConnectionId { get; set; }
+    public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Label { get; set; } = "";
     public string Server { get; set; } = "";
+    /// <summary>The port, for engines that keep it apart from the host (PostgreSQL); null for SQL Server.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? Port { get; set; }
     public string Database { get; set; } = "";
 }
 
@@ -56,12 +61,22 @@ public sealed class CompareHistoryEntry
     /// [C, B] are recognised as the same comparison.
     /// </summary>
     public static string BuildSignature(
-        CompareHistoryDatabase source, IEnumerable<CompareHistoryDatabase> targets)
+        CompareHistoryDatabase source, IEnumerable<CompareHistoryDatabase> targets) => BuildSignature(source, targets, exactDatabases: false);
+
+    /// <summary>
+    /// As above; with <paramref name="exactDatabases"/>, another engine's database names keep their letter case (a
+    /// PostgreSQL ShopDb and shopdb are two databases, and two histories). SQL Server's signature is the same either way.
+    /// </summary>
+    public static string BuildSignature(
+        CompareHistoryDatabase source, IEnumerable<CompareHistoryDatabase> targets, bool exactDatabases)
     {
-        static string Key(CompareHistoryDatabase d)
+        string Key(CompareHistoryDatabase d)
         {
             var who = string.IsNullOrWhiteSpace(d.ConnectionId) ? d.Server : d.ConnectionId!;
-            return $"{who.ToLowerInvariant()}/{d.Database.ToLowerInvariant()}";
+            // SQL Server keeps the signature it always had, so existing history rows still match
+            var engine = d.Engine == DatabaseEngine.SqlServer ? "" : $"{(int)d.Engine}:";
+            var database = exactDatabases && d.Engine != DatabaseEngine.SqlServer ? d.Database : d.Database.ToLowerInvariant();
+            return $"{engine}{who.ToLowerInvariant()}/{database}";
         }
 
         var ordered = targets.Select(Key).OrderBy(k => k, StringComparer.Ordinal);

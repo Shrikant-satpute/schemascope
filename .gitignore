@@ -18,7 +18,7 @@ assets/video/snd/
 
 # Video v2/v3 working files: renders, audio, raw captures (they show the machine name before
 # redaction) and the SchemaScope store backups taken while capturing. Only sources are committed.
-assets/video/v*/store-backup/
+assets/video/v*/store-backup*/
 assets/video/v*/store-live-aside/
 assets/video/v*/out/
 assets/video/v*/snd/

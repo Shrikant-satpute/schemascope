@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Data.SqlClient;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 
 namespace SchemaScope.SqlServer;
@@ -8,8 +9,13 @@ namespace SchemaScope.SqlServer;
 /// Builds connection strings from the friendly form, tests them, and lists the
 /// databases on a server. Everything here is read only.
 /// </summary>
-public sealed class SqlServerConnectionService
+public sealed class SqlServerConnectionService : IConnectionService
 {
+    public DatabaseEngine Engine => DatabaseEngine.SqlServer;
+
+    /// <summary>Browse connects here, so the list works before a database is chosen.</summary>
+    public string? BrowseDatabase => "master";
+
     public string BuildConnectionString(ConnectionSettings s, string? overrideDatabase = null)
     {
         if (s.UseRawConnectionString && !string.IsNullOrWhiteSpace(s.RawConnectionString))
@@ -155,6 +161,49 @@ public sealed class SqlServerConnectionService
 
         return list;
     }
+
+    async Task<IReadOnlyList<DatabaseListItem>> IConnectionService.ListDatabasesAsync(string connectionString, CancellationToken ct) =>
+        await ListDatabasesAsync(connectionString, ct);
+
+    /// <summary>
+    /// Where the string really goes, as SqlClient reads it: the Data Source and any failover partner as written
+    /// (<see cref="EndpointInfo.Servers"/>), their hosts, the main one's instance and port, the database and the login.
+    /// No server named gives empty lists; null when SqlClient cannot read the string at all.
+    /// </summary>
+    public EndpointInfo? ParseEndpoint(string connectionString)
+    {
+        SqlConnectionStringBuilder b;
+        try
+        {
+            b = new SqlConnectionStringBuilder(connectionString);
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
+        {
+            return null;
+        }
+
+        List<string> servers = [];
+        if (!string.IsNullOrWhiteSpace(b.DataSource)) servers.Add(b.DataSource);
+        if (servers.Count > 0 && !string.IsNullOrWhiteSpace(b.FailoverPartner)) servers.Add(b.FailoverPartner);
+        var main = servers.Count > 0 ? ConnectionEndpoints.SqlServerHost(servers[0]) : null;
+        return new EndpointInfo(DatabaseEngine.SqlServer,
+            [.. servers.Select(s => ConnectionEndpoints.SqlServerHost(s)?.Host ?? s.Trim())],
+            main?.Port, main?.Instance, b.InitialCatalog ?? "", LoginOf(b), servers,
+            string.IsNullOrWhiteSpace(b.FailoverPartner) ? null : b.FailoverPartner);
+    }
+
+    /// <summary>Who an apply signs in as: "Windows: DOMAIN\user" or "SQL login: name". Never the password.</summary>
+    private static string LoginOf(SqlConnectionStringBuilder b)
+    {
+        if (b.IntegratedSecurity) return $"Windows: {Environment.UserDomainName}\\{Environment.UserName}";
+        if (b.Authentication is SqlAuthenticationMethod.NotSpecified or SqlAuthenticationMethod.SqlPassword)
+            return $"SQL login: {b.UserID}";
+        return string.IsNullOrEmpty(b.UserID) ? "Microsoft Entra ID" : $"Microsoft Entra ID: {b.UserID}";
+    }
+
+    public IReadOnlyList<string> SecretValues(string connectionString) => SecretKeys.ValuesIn(connectionString);
+
+    public string Mask(string connectionString) => ConnectionSettings.MaskConnectionString(connectionString);
 
     private static string? HintFor(SqlException ex) => ex.Number switch
     {

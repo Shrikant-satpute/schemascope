@@ -50,6 +50,14 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 $exe = Join-Path $root 'dist\SchemaScope.exe'
 $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 
+# Size budget (plan D12): the drivers and the PostgreSQL parser ship inside the exe, so growth is watched here.
+# 70 MB as the plan counts it (decimal, like its 65.8 MB baseline), which is 66.8 MB the way $sizeMb counts.
+$budgetBytes = 70000000
+$bytes = (Get-Item $exe).Length
+if ($bytes -gt $budgetBytes) {
+    throw "SchemaScope.exe is $bytes bytes, over the size budget of $budgetBytes bytes (70 MB)"
+}
+
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 Write-Host "  $exe  ($sizeMb MB)"

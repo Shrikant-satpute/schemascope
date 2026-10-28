@@ -1,13 +1,19 @@
+using System.Data.Common;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.FileProviders;
 using SchemaScope.Api.Services;
 using SchemaScope.Core.Comparison;
+using SchemaScope.Core.Engines;
 using SchemaScope.Core.Model;
 using SchemaScope.Core.Storage;
+using SchemaScope.PostgreSql;
 using SchemaScope.Scripting;
+using SchemaScope.Scripting.PostgreSql;
 using SchemaScope.SqlServer;
 
 namespace SchemaScope.Api;
@@ -53,12 +59,36 @@ public static class SchemaScopeApi
         });
 
         builder.Services.AddSingleton(auth);
-        builder.Services.AddSingleton(_ => new SchemaScopeStore(storePath));
+        builder.Services.AddSingleton(sp =>
+        {
+            var store = new SchemaScopeStore(storePath);
+            var log = sp.GetRequiredService<ILoggerFactory>().CreateLogger<SchemaScopeStore>();
+            if (store.UpgradeBackupPath is not null) log.LogInformation("Store backed up before upgrade to {Path}", store.UpgradeBackupPath);
+            if (store.UpgradeProblem is not null) log.LogWarning("Store upgrade: {Problem}", store.UpgradeProblem);
+            return store;
+        });
+        // Still registered on its own: older code and the tests take it directly.
         builder.Services.AddSingleton<SqlServerConnectionService>();
+        // The engines this build can talk to. Owner app only: ViewerHost.Build registers none of these.
+        builder.Services.AddSingleton<IEngineProvider>(sp => new SqlServerEngineProvider(sp.GetRequiredService<SqlServerConnectionService>()));
+        builder.Services.AddSingleton<IEngineProvider>(_ => new PgEngineProvider());
+        builder.Services.AddSingleton<EngineCatalog>();
+        // the engines turned on right now (a preview engine only with "Show preview engines"), asked afresh each time
+        builder.Services.AddTransient(sp => sp.GetRequiredService<EngineCatalog>().Enabled);
+        // ApplyService takes every executor; SQL Server is registered last, so a lone IApplyExecutor is still its, as before
+        builder.Services.AddSingleton<IApplyExecutor>(PgApplyExecutor.Instance);
+        builder.Services.AddSingleton<IApplyExecutor>(SqlServerApplyExecutor.Instance);
+        builder.Services.AddSingleton<IScriptGeneratorFactory, EngineScriptGeneratorFactory>();
         builder.Services.AddSingleton<CompareSessionStore>();
         builder.Services.AddSingleton<ScriptProgressStore>();
         builder.Services.AddSingleton<ExportService>();
-        builder.Services.AddSingleton<CompareService>();
+        builder.Services.AddSingleton(sp =>
+        {
+            var catalog = sp.GetRequiredService<EngineCatalog>();
+            return new CompareService(sp.GetRequiredService<CompareSessionStore>(),
+                sp.GetRequiredService<SchemaScopeStore>(), () => catalog.Enabled,
+                sp.GetRequiredService<ILogger<CompareService>>());
+        });
         builder.Services.AddSingleton<ShareStore>();
         builder.Services.AddSingleton<ViewerHost>();
         builder.Services.AddSingleton<WriteMode>();
@@ -78,6 +108,8 @@ public static class SchemaScopeApi
 #endif
 
         var app = builder.Build();
+        // the static helpers below read connection strings with the engines DI has turned on
+        _catalog = app.Services.GetRequiredService<EngineCatalog>();
 
         var json = new JsonSerializerOptions
         {
@@ -105,6 +137,7 @@ public static class SchemaScopeApi
         app.UseStaticFiles();
 
         MapHealth(app);
+        MapEngines(app, json);
         MapConnections(app);
         MapHistory(app);
         MapShares(app, embedded);
@@ -238,6 +271,61 @@ public static class SchemaScopeApi
             Enum.GetValues<DbObjectType>().Select(t => new { value = t.ToString(), label = t.Label() })));
     }
 
+    /// <summary>
+    /// What each engine of this build offers, for the UI's forms and labels. Capabilities and wording only, never a
+    /// connection or a secret; behind the launch token like every /api route, and not on the share viewer.
+    /// </summary>
+    private static void MapEngines(WebApplication app, JsonSerializerOptions json)
+    {
+        app.MapGet("/api/engines", (EngineRegistry engines) => Results.Ok(engines.All.Select(EngineDescriptors.Describe)));
+
+        // Settings > "Show preview engines": the server's own switch, so a preview engine is refused while it is off
+        app.MapGet("/api/engines/preview", (EngineCatalog catalog) => Results.Ok(PreviewState(catalog)));
+
+        app.MapPost("/api/engines/preview", async (HttpRequest http, EngineCatalog catalog) =>
+        {
+            if (!http.HasJsonContentType())
+                return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+            PreviewRequest? request;
+            try
+            {
+                request = await http.ReadFromJsonAsync<PreviewRequest>(json);
+            }
+            catch (JsonException)
+            {
+                request = null;
+            }
+            if (request is null) return Results.BadRequest(new { message = "Send { \"enabled\": true } or { \"enabled\": false }." });
+            try
+            {
+                catalog.SetPreview(request.Enabled);
+            }
+            catch (Exception)
+            {
+                return Results.BadRequest(new { message = "The setting could not be saved." });
+            }
+            return Results.Ok(PreviewState(catalog));
+        });
+    }
+
+    private sealed record PreviewRequest(bool Enabled);
+
+    private static object PreviewState(EngineCatalog catalog) => new
+    {
+        enabled = catalog.PreviewEnabled,
+        engines = catalog.PreviewEngines.Select(p => p.DisplayName)
+    };
+
+    /// <summary>
+    /// The provider for a connection from the UI, once <see cref="ConnectionRules"/> passed it; null with the reason
+    /// when its engine is not turned on (a preview engine with the switch off).
+    /// </summary>
+    private static IEngineProvider? ProviderFor(ConnectionSettings settings, EngineRegistry engines, out string? problem)
+    {
+        problem = engines.TryGet(settings.Engine, out var provider) ? null : ConnectionRules.NotEnabled(settings.Engine);
+        return provider;
+    }
+
     private static void MapConnections(WebApplication app)
     {
         var conns = app.MapGroup("/api/connections");
@@ -248,10 +336,16 @@ public static class SchemaScopeApi
         // Saving is held to the same rule as testing: a masked password stays with
         // the destination it was saved for, so re-pointing a saved connection at
         // another server or login means typing the password again.
-        conns.MapPost("", (ConnectionSettings settings, SchemaScopeStore store) =>
+        conns.MapPost("", (ConnectionSettings settings, SchemaScopeStore store, EngineRegistry engines) =>
         {
+            if (ConnectionRules.Problem(settings) is { } problem)
+                return Results.BadRequest(new { message = problem });
+            if (ProviderFor(settings, engines, out var off) is null)
+                return Results.BadRequest(new { message = off });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
+            if (ConnectionRules.MissingPassword(settings) is { } missing)
+                return Results.BadRequest(new { message = missing });
 
             return Results.Ok(store.SaveConnection(settings).WithoutSecrets());
         });
@@ -271,33 +365,54 @@ public static class SchemaScopeApi
         conns.MapPost("/test", async (
             ConnectionSettings settings,
             SchemaScopeStore store,
-            SqlServerConnectionService svc,
+            EngineRegistry engines,
             CancellationToken ct) =>
         {
+            if (ConnectionRules.Problem(settings) is { } problem)
+                return Results.BadRequest(new { message = problem });
+            if (ProviderFor(settings, engines, out var off) is not { } provider)
+                return Results.BadRequest(new { message = off });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
+            if (ConnectionRules.MissingPassword(settings) is { } missing)
+                return Results.BadRequest(new { message = missing });
 
+            var svc = provider.Connections;
             var cs = svc.BuildConnectionString(settings);
-            return Results.Ok(await svc.TestAsync(cs, ct));
+            var tested = await svc.TestAsync(cs, ct);
+            // another engine's driver message, scrubbed in case it echoes a secret of the string (a Passfile's path, ...)
+            if (settings.Engine != DatabaseEngine.SqlServer && tested.Message is { } said)
+                tested.Message = SecretScrubber.Scrub(said, SecretScrubber.Secrets([settings.Password, settings.RawConnectionString, cs]));
+            return Results.Ok(tested);
         });
 
         conns.MapPost("/databases", async (
             ConnectionSettings settings,
             SchemaScopeStore store,
-            SqlServerConnectionService svc,
+            EngineRegistry engines,
             CancellationToken ct) =>
         {
+            if (ConnectionRules.Problem(settings) is { } problem)
+                return Results.BadRequest(new { message = problem });
+            if (ProviderFor(settings, engines, out var off) is not { } provider)
+                return Results.BadRequest(new { message = off });
             if (!TryRehydrate(settings, store, out var error))
                 return Results.BadRequest(new { message = error });
+            if (ConnectionRules.MissingPassword(settings) is { } missing)
+                return Results.BadRequest(new { message = missing });
 
+            var svc = provider.Connections;
             try
             {
-                var cs = svc.BuildConnectionString(settings, "master");
+                var cs = svc.BuildConnectionString(settings, svc.BrowseDatabase);
                 return Results.Ok(await svc.ListDatabasesAsync(cs, ct));
             }
             catch (Exception ex)
             {
-                return Results.BadRequest(new { message = ex.Message });
+                if (settings.Engine == DatabaseEngine.SqlServer) return Results.BadRequest(new { message = ex.Message });
+                // PostgreSQL: the message alone (no server DETAIL), scrubbed in case it echoes the string it was given
+                var secrets = SecretScrubber.Secrets([settings.Password, settings.RawConnectionString]);
+                return Results.BadRequest(new { message = SecretScrubber.Scrub(PgConnectionService.MessageOf(ex), secrets) });
             }
         });
     }
@@ -447,8 +562,16 @@ public static class SchemaScopeApi
             if (request.Targets.Count == 0)
                 return Results.BadRequest(new { message = "Add at least one target database to compare against." });
 
-            var session = svc.Start(request);
-            return Results.Ok(new CompareStarted { RunId = session.Id });
+            try
+            {
+                var session = svc.Start(request);
+                return Results.Ok(new CompareStarted { RunId = session.Id });
+            }
+            catch (SchemaReadException ex)
+            {
+                // a connection that may not be used, or a saved password that may not follow an edited one
+                return Results.BadRequest(new { message = ex.Message });
+            }
         });
 
         app.MapGet("/api/compare/{runId}", (string runId, CompareSessionStore sessions) =>
@@ -657,6 +780,7 @@ public static class SchemaScopeApi
             ScriptProgressStore progressStore,
             WriteMode writeMode,
             ApplyPlanStore plans,
+            IScriptGeneratorFactory generators,
             ILoggerFactory loggers,
             CancellationToken ct) => // bound to HttpContext.RequestAborted: closing the dialog stops the reads
         {
@@ -690,13 +814,30 @@ public static class SchemaScopeApi
             var source = Endpoint(session.SourceConnection!, result.Source.Label);
             var target = Endpoint(session.TargetConnections[index], result.Targets[index].Label);
             var options = Normalise(request.Options);
+            // the engines are the session's: changes that can lose data are never scripted from one engine to another
+            if (options.IncludeDestructive && source.Engine != target.Engine)
+                return Results.BadRequest(new { message = "Changes that can lose data are never scripted across engines." });
+            if (generators.For(source.Engine, target.Engine) is not { } generator)
+                return Results.BadRequest(new
+                {
+                    message = source.Engine == target.Engine
+                        ? $"Scripts are not available for {ConnectionRules.NameOf(source.Engine)} in this version."
+                        : $"Scripts are not available for {source.Engine} to {target.Engine} in this version."
+                });
+            // the engine is the session's: an engine without 11_destructive refuses it whatever the UI sent
+            if (options.IncludeDestructive && !Engines.Supports(target.Engine, EngineFeature.Destructive))
+                return Results.BadRequest(new
+                {
+                    message = $"Changes that can lose data are not available for {ConnectionRules.NameOf(target.Engine)} in this version."
+                });
 
             ScriptOutcome outcome;
             using var progress = request.ProgressId is { } progressId ? progressStore.Track(progressId) : null;
             try
             {
-                outcome = await new ScriptGenerator().GenerateAsync(
-                    source, target, options, FormattingCandidates(result, index), ct, progress, DifferentCandidates(result, index));
+                outcome = await generator.GenerateAsync(new ScriptRequestContext(source, target, session.Source,
+                    index < session.Targets.Count ? session.Targets[index] : null, result, index, options,
+                    FormattingCandidates(result, index), DifferentCandidates(result, index), session.Options), ct, progress);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -745,12 +886,14 @@ public static class SchemaScopeApi
 
         // Read-only and quick: works from the compare's snapshots in memory, no database is touched.
         app.MapGet("/api/compare/{runId}/object-script/dependencies", (
-            string runId, string? key, string? targetIndex, CompareSessionStore sessions) =>
+            string runId, string? key, string? targetIndex, CompareSessionStore sessions, EngineRegistry engines) =>
         {
             var session = sessions.Get(runId);
             if (session is null) return Gone();
             int? index = int.TryParse(targetIndex, out var i) ? i : null;
             if (ObjectScripts.Check(session, key, index, out var row) is { } problem) return Bad(problem);
+            if (ObjectScriptEngineProblem(session, index!.Value, engines) is { } notHere) return Bad(notHere);
+            if (IsPostgres(session, index!.Value)) return Results.Ok(PgObjectScripts.Dependencies(session, row!, index!.Value));
             return Results.Ok(ObjectScripts.Dependencies(session, row!, index!.Value));
         });
 
@@ -762,6 +905,7 @@ public static class SchemaScopeApi
             WriteMode writeMode,
             ApplyPlanStore plans,
             SchemaScopeStore store,
+            EngineRegistry engines,
             ILoggerFactory loggers,
             CancellationToken ct) =>
         {
@@ -783,12 +927,17 @@ public static class SchemaScopeApi
             if (request.ProgressId is { } progressId && !ScriptProgressStore.IsValidId(progressId))
                 return Bad("The progress id must be 8 to 64 letters, digits or dashes.");
             if (ObjectScripts.Check(session, request.Key, request.TargetIndex, out var row) is { } problem) return Bad(problem);
+            // the single-object generator is the SQL Server one (ObjectScripts), T-SQL drop preview and all; other engines have none yet
+            if (ObjectScriptEngineProblem(session, request.TargetIndex!.Value, engines) is { } notHere) return Bad(notHere);
 
             var result = session.Result!;
             var index = request.TargetIndex!.Value;
-            var plan = ObjectScripts.Plan(result, row!, index, out var why);
+            // PostgreSQL has its own single-object path (R2b); SQL Server's below is unchanged
+            var postgres = IsPostgres(session, index);
+            var plan = postgres ? PgObjectScripts.Plan(result, row!, index, out var why) : ObjectScripts.Plan(result, row!, index, out why);
             if (plan is "identical" or "unavailable") return Bad(why!);
-            if (plan == "extra") return Results.Ok(ObjectScripts.ExtraOutcome(row!, result.Targets[index].Label));
+            if (plan == "extra")
+                return Results.Ok(postgres ? PgObjectScripts.ExtraOutcome(row!, result.Targets[index].Label) : ObjectScripts.ExtraOutcome(row!, result.Targets[index].Label));
             if (ObjectScripts.CheckIncludes(session, row!, index, request.IncludeDependencies, out var included) is { } badDeps)
                 return Bad(badDeps);
             if (session.SourceConnection is null || index >= session.TargetConnections.Count)
@@ -801,9 +950,12 @@ public static class SchemaScopeApi
             using var progress = request.ProgressId is { } id ? progressStore.Track(id) : null;
             try
             {
-                outcome = await ObjectScripts.RunAsync(session, row!, index, included, source, target,
-                    FormattingCandidates(result, index), DifferentCandidates(result, index),
-                    new ScriptGenerator(), ObjectScripts.ScratchRoot, progress, ct);
+                outcome = postgres
+                    ? await PgObjectScripts.RunAsync(session, row!, index, included, source, target,
+                        new PgScriptGenerator(), ObjectScripts.ScratchRoot, progress, ct)
+                    : await ObjectScripts.RunAsync(session, row!, index, included, source, target,
+                        FormattingCandidates(result, index), DifferentCandidates(result, index),
+                        new ScriptGenerator(), ObjectScripts.ScratchRoot, progress, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -826,6 +978,24 @@ public static class SchemaScopeApi
             outcome.PlanSections = offer.PlanSections;
             return Results.Ok(outcome);
         });
+    }
+
+    /// <summary>True when this run's target is PostgreSQL (the session's engine, never the request's); call after <c>ObjectScriptEngineProblem</c>.</summary>
+    private static bool IsPostgres(CompareSession session, int index) =>
+        (index < session.TargetConnections.Count ? session.TargetConnections[index].Engine : session.Result!.Targets[index].Engine) == DatabaseEngine.PostgreSql;
+
+    /// <summary>
+    /// Null when this run's source and target are one engine that has single-object scripts (SQL Server), else the
+    /// 400 to answer. The engines are the session's, never the request's. Call after <c>ObjectScripts.Check</c>.
+    /// </summary>
+    private static string? ObjectScriptEngineProblem(CompareSession session, int index, EngineRegistry engines)
+    {
+        var source = session.SourceConnection?.Engine ?? session.Result!.Source.Engine;
+        var target = index < session.TargetConnections.Count ? session.TargetConnections[index].Engine : session.Result!.Targets[index].Engine;
+        if (source == target && engines.Supports(source, EngineFeature.ObjectScripts)) return null;
+        return source == target
+            ? $"Single-object scripts are not available for {ConnectionRules.NameOf(source)} in this version."
+            : $"Single-object scripts are not available for {source} to {target} in this version.";
     }
 
     /// <summary>
@@ -878,6 +1048,8 @@ public static class SchemaScopeApi
             ApplyService applier,
             SchemaScopeStore store,
             ScriptProgressStore progressStore,
+            EngineRegistry engines,
+            EngineCatalog catalog,
             ILoggerFactory loggers) =>
         {
             if (!http.HasJsonContentType())
@@ -901,9 +1073,23 @@ public static class SchemaScopeApi
             if (request is null) return Refuse(StatusCodes.Status400BadRequest, "Send the plan, target, sections and database name.");
             if (request.ProgressId is { } progressId && !ScriptProgressStore.IsValidId(progressId))
                 return Refuse(StatusCodes.Status400BadRequest, "The progress id must be 8 to 64 letters, digits or dashes.");
+            // from here on POST /api/apply/{id}/stop finds this apply, while the gates below still run: a stop sent
+            // then is kept, and the run stops before its first file
+            using var reservation = applier.Reserve(request.ProgressId);
             if ((CheckRun(session) ?? CheckTarget(session, request.TargetIndex)) is { } problem)
                 return Refuse(StatusCodes.Status400BadRequest, problem);
             var index = request.TargetIndex!.Value;
+            // the engine is the session's, never the request's
+            var engine = session.TargetConnections[index].Engine;
+            if (!engines.Supports(engine, EngineFeature.Apply) || applier.ExecutorFor(engine) is not { } executor)
+                // a preview engine this build carries, switched off: say so, as the compare does (the first sentence
+                // keeps the wording older clients and tests look for)
+                return Refuse(StatusCodes.Status400BadRequest, catalog.Carries(engine) && !engines.TryGet(engine, out _)
+                    ? $"Applying scripts to {engine} is not available with preview engines off. {ConnectionRules.NotEnabled(engine)}"
+                    : $"Applying scripts to {engine} is not available in this version.");
+            // scripts across engines are written to a folder only, never applied from here
+            if (session.SourceConnection!.Engine != engine)
+                return Refuse(StatusCodes.Status400BadRequest, "Scripts made across engines are never applied from SchemaScope.");
 
             var plan = plans.Get(request.PlanId);
             if (plan is null)
@@ -912,10 +1098,18 @@ public static class SchemaScopeApi
                 return Refuse(StatusCodes.Status400BadRequest, "That apply plan was made for another comparison or target - generate the scripts again.");
 
             var target = ApplyTargetOf(session, index, store);
-            if (!string.Equals(request.ConfirmDatabase, target.Database, StringComparison.OrdinalIgnoreCase))
-                return Refuse(StatusCodes.Status400BadRequest, $"Type the target database name, {target.Database}, to confirm.");
+            // a name nothing can be typed against confirms nothing (fail closed)
+            if (engine != DatabaseEngine.SqlServer && string.IsNullOrWhiteSpace(target.Database))
+                return Refuse(StatusCodes.Status400BadRequest,
+                    $"Which database {target.Label} opens could not be told, so there is no name to confirm. Name the database in its connection, then compare again.");
+            if (!string.Equals(request.ConfirmDatabase, target.Database, ConnectionRules.TypedNameComparison(engine)))
+                return Refuse(StatusCodes.Status400BadRequest, engine == DatabaseEngine.SqlServer
+                    ? $"Type the target database name, {target.Database}, to confirm."
+                    : $"Type the target database name, {target.Database}, exactly as written (letter case counts), to confirm.");
             if (target.Protected)
-                return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is marked \"Protected - never apply scripts here\". Nothing was applied.");
+                return Refuse(StatusCodes.Status403Forbidden, MarkedItself(session, index, store)
+                    ? $"{target.Label} is marked \"Protected - never apply scripts here\". Nothing was applied."
+                    : $"{target.Label} is on a server marked \"Protected - never apply scripts here\". Nothing was applied.");
             if (IsSource(session, index))
                 return Refuse(StatusCodes.Status403Forbidden, "That is the source database of this comparison. SchemaScope never applies scripts to the source.");
 
@@ -927,11 +1121,26 @@ public static class SchemaScopeApi
                 return Refuse(StatusCodes.Status400BadRequest, "Tick \"I understand this can lose data\" to apply changes that can lose data.");
 
             var connection = session.TargetConnections[index].ConnectionString;
-            var facts = await ApplyService.InspectAsync(connection);
-            // the name the server reports for itself, against the protected connections: an alias or address is no way round
-            if (facts is not null && OnProtectedServer(store, facts.Key[..facts.Key.IndexOf('|')]))
+            var facts = await executor.InspectAsync(connection);
+            // only SQL Server goes on without an answer (its files then report the unreachable server); any other engine is refused
+            if (facts is null && engine != DatabaseEngine.SqlServer)
+                return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} could not be asked who it is, so nothing was applied.");
+            // the name the server reports for itself, against the protected connections. For SQL Server (@@SERVERNAME) an
+            // alias or address is no way round; another engine reports an address only, so the check below goes further
+            if (facts is not null && OnProtectedServer(store, engine, [.. ReportedServers(engine, facts)]))
                 return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} is on a server marked \"Protected - never apply scripts here\". Nothing was applied.");
-            var key = ApplyService.TargetKey(facts, target.Server, target.Database);
+            // another engine under a second spelling (an IP for a name, a LAN address for localhost, a DNS alias, NAT):
+            // what the names resolve to, and each protected connection to the same engine asked who it is
+            if (facts is not null && engine != DatabaseEngine.SqlServer &&
+                await ProtectedElsewhereAsync(ProtectedConnections(store), engine, connection, facts,
+                    (c, ct) => AskProtectedAsync(engines, executor, c, ct), SameServer(executor)) is { } why)
+                return Refuse(StatusCodes.Status403Forbidden, $"{target.Label} {why} Nothing was applied.");
+            // another engine's source is known by what its server reports too: a second spelling of one host is no way round
+            if (facts is not null && engine != DatabaseEngine.SqlServer &&
+                await executor.InspectAsync(session.SourceConnection!.ConnectionString) is { } sourceFacts &&
+                string.Equals(sourceFacts.Key, facts.Key, StringComparison.Ordinal))
+                return Refuse(StatusCodes.Status403Forbidden, "That is the source database of this comparison. SchemaScope never applies scripts to the source.");
+            var key = executor.TargetKey(facts, target.Server, target.Database);
             if (!applier.TryLock(key))
                 return Refuse(StatusCodes.Status409Conflict, $"An apply to {target.Label} is already running - wait for it to finish.");
             try
@@ -941,9 +1150,9 @@ public static class SchemaScopeApi
                     return Refuse(StatusCodes.Status400BadRequest, "That apply plan is unknown or has expired - generate the scripts again.");
 
                 var files = plan.Files.Where(f => sections.Contains(f.Folder, StringComparer.OrdinalIgnoreCase)).ToList();
-                if (ApplyService.Verify(files, out var verified) is { } tampered)
+                if (ApplyService.Verify(files, executor.Splitter, out var verified) is { } tampered)
                     return Refuse(StatusCodes.Status400BadRequest, tampered);
-                if (facts is not null && ApplyService.MemoryOptimizedProblem(verified, facts.InMemory) is { } inMemory)
+                if (facts is not null && executor.Preflight(verified, facts) is { } inMemory)
                     return Refuse(StatusCodes.Status400BadRequest, inMemory);
 
                 var ordered = plan.Sections.Select(s => s.Folder).Where(f => sections.Contains(f, StringComparer.OrdinalIgnoreCase)).ToList();
@@ -951,7 +1160,10 @@ public static class SchemaScopeApi
                 try
                 {
                     // run-scoped: closing the dialog does not cut a file off half-way; POST /api/apply/{id}/stop does stop it
-                    return Results.Ok(await applier.RunAsync(new ApplyJob(runId, connection, target, files, ordered, request.ProgressId), verified, progress));
+                    // another engine's files each check they reach the server the gates checked (a host list can fail over)
+                    var job = new ApplyJob(runId, connection, target, files, ordered, request.ProgressId)
+                        { TargetKey = engine == DatabaseEngine.SqlServer ? null : facts?.Key };
+                    return Results.Ok(await applier.RunAsync(job, verified, progress));
                 }
                 catch (Exception ex)
                 {
@@ -984,6 +1196,11 @@ public static class SchemaScopeApi
         WriteMode writeMode, ApplyPlanStore plans, SchemaScopeStore store)
     {
         if (generated is null || !complete) return PlanOffer.None;
+        // nothing to offer on an engine this version cannot apply to, or across engines: no Apply button, not even a protected one
+        if (index < session.TargetConnections.Count && !Engines.Supports(session.TargetConnections[index].Engine, EngineFeature.Apply))
+            return PlanOffer.None;
+        if (index < session.TargetConnections.Count && session.SourceConnection is { } from && from.Engine != session.TargetConnections[index].Engine)
+            return PlanOffer.None;
         List<PlanFile> files;
         List<PlanSection> sections;
         try
@@ -997,37 +1214,250 @@ public static class SchemaScopeApi
 
         var target = ApplyTargetOf(session, index, store);
         string? planId = null;
-        if (writeMode.Enabled && files.Count > 0 && !target.Protected && !IsSource(session, index))
+        // and never a plan for such an engine, whatever the session holds
+        if (writeMode.Enabled && files.Count > 0 && !target.Protected && !IsSource(session, index) &&
+            Engines.Supports(target.Engine, EngineFeature.Apply) && (target.Engine == DatabaseEngine.SqlServer || !string.IsNullOrWhiteSpace(target.Database)))
             planId = plans.Add(new ApplyPlan { RunId = session.Id, TargetIndex = index, Files = files, Sections = sections }).Id;
         return new PlanOffer(planId, target, sections);
     }
 
     /// <summary>The target as the session really connects to it. The caller has checked the index.</summary>
+    /// <summary>
+    /// The target's own connection is the one marked Protected (rather than another one on the same server). A store
+    /// that cannot be read counts as marked: the refusal stands either way, only its wording depends on this.
+    /// </summary>
+    private static bool MarkedItself(CompareSession session, int index, SchemaScopeStore store)
+    {
+        var target = session.TargetConnections[index];
+        if (target.ProtectedServer) return true;
+        try
+        {
+            return target.ConnectionId is { } id && store.GetConnection(id) is { ProtectedServer: true };
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
     private static ApplyTarget ApplyTargetOf(CompareSession session, int index, SchemaScopeStore store)
     {
         var source = session.TargetConnections[index];
         var ep = Endpoint(source, session.Result!.Targets[index].Label);
+        var protectedTarget = IsProtected(source, ep.Server, store);
+        // another engine's string that names no database (PostgreSQL then opens the one its driver defaults to): the
+        // database the compare's read reached, as the server named it (current_database()), so the typed name, the
+        // lock and each file's own check all mean that database - never an empty name anything would match
+        var database = ep.Database;
+        if (ep.Engine != DatabaseEngine.SqlServer && string.IsNullOrWhiteSpace(database) &&
+            index < session.Targets.Count && session.Targets[index] is { Failed: false } read)
+            database = read.Database;
         return new ApplyTarget
         {
             Label = ep.Label,
+            Engine = ep.Engine,
             Server = ep.Server,
-            Database = ep.Database,
-            Login = LoginOf(source.ConnectionString),
-            Protected = IsProtected(source, ep.Server, store),
+            // shown next to the host for other engines; SQL Server keeps its port in the server name
+            Port = ep.Engine == DatabaseEngine.SqlServer ? null
+                : ParseEndpoint(source)?.Port ?? DatabaseEngines.DefaultPort(ep.Engine),
+            Database = database,
+            Login = LoginOf(source),
+            Protected = protectedTarget,
+            // the dialog says which: this connection's own flag, or another Protected connection on the same host
+            ProtectedItself = protectedTarget ? MarkedItself(session, index, store) : null,
         };
     }
 
     /// <summary>
-    /// Protected when the connection was protected at compare time, when its saved connection is protected now, or
-    /// when any saved connection to the same server is. A store that cannot be read counts as protected.
+    /// Where the target says it runs, for the Protected re-check: SQL Server's own server name (the first part of its
+    /// key), another engine's reported address.
     /// </summary>
-    private static bool IsProtected(SchemaSource target, string server, SchemaScopeStore store)
+    private static IReadOnlyList<string> ReportedServers(DatabaseEngine engine, TargetFacts facts) =>
+        engine == DatabaseEngine.SqlServer ? [facts.Key[..facts.Key.IndexOf('|')]] : facts.Hosts ?? [];
+
+    /// <summary>How long the second-spelling Protected check may spend resolving names and asking the protected connections.</summary>
+    internal static readonly TimeSpan ProtectedCheckTimeout = TimeSpan.FromSeconds(10);
+
+    private const string ProtectedText = "\"Protected - never apply scripts here\"";
+
+    /// <summary>The protected saved connections; null when the store cannot be read (the caller then refuses).</summary>
+    private static List<ConnectionSettings>? ProtectedConnections(SchemaScopeStore store)
+    {
+        try
+        {
+            return [.. store.GetConnections().Where(c => c.ProtectedServer)];
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A protected connection of the target's engine asked who it is, on its own saved string; null when it cannot be.</summary>
+    private static async Task<TargetFacts?> AskProtectedAsync(EngineRegistry engines, IApplyExecutor executor, ConnectionSettings c,
+        CancellationToken ct)
+    {
+        if (ConnectionRules.Problem(c) is not null || ConnectionRules.MissingPassword(c) is not null) return null;
+        if (!engines.TryGet(c.Engine, out var provider)) return null;
+        try
+        {
+            // its own password to its own destination only (the exact-destination rule), and read-only
+            return await executor.InspectAsync(provider.Connections.BuildConnectionString(c), ct);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The engine's "same server" for two inspections: PostgreSQL's cluster, else the key itself.</summary>
+    private static Func<TargetFacts, TargetFacts, bool> SameServer(IApplyExecutor executor) =>
+        executor.Engine == DatabaseEngine.PostgreSql ? PgApplyExecutor.SameCluster : (a, b) => a.Key == b.Key;
+
+    /// <summary>
+    /// For a target of another engine than SQL Server: null, or why it is on a protected server under a spelling the
+    /// text rule cannot see. The target's hosts and the address it reports are resolved, as is every protected
+    /// connection's host; one address in common refuses (this machine's addresses all count as one), as the text rule
+    /// does - a protected host protects every engine and port on it. Then each protected connection to the same engine
+    /// is asked who it is (<paramref name="ask"/>, read-only) and the same server (<paramref name="same"/>) refuses.
+    /// Fails closed: a store that cannot be read, a name that cannot be resolved or a protected connection that cannot
+    /// be asked refuses too.
+    /// </summary>
+    internal static async Task<string?> ProtectedElsewhereAsync(IReadOnlyList<ConnectionSettings>? guarded, DatabaseEngine engine,
+        string connection, TargetFacts facts, Func<ConnectionSettings, CancellationToken, Task<TargetFacts?>> ask,
+        Func<TargetFacts, TargetFacts, bool> same, Func<string, CancellationToken, Task<IPAddress[]>>? resolve = null)
+    {
+        var marked = $"is on a server marked {ProtectedText}.";
+        if (guarded is null) return marked;
+        if (guarded.Count == 0) return null;
+        resolve ??= Dns.GetHostAddressesAsync;
+        using var time = new CancellationTokenSource(ProtectedCheckTimeout);
+
+        if (ConnectionEndpoints.Parse(engine, connection)?.Hosts is not { } targetHosts) return marked;
+        if (await AddressesAsync([.. targetHosts, .. facts.Hosts ?? []], resolve, time.Token) is not { } mine)
+            return $"could not be resolved to its addresses, so it cannot be told apart from a server marked {ProtectedText}.";
+
+        foreach (var c in guarded)
+        {
+            if (ProtectedHosts(c) is not { } hosts) return marked;
+            if (await AddressesAsync(hosts, resolve, time.Token) is not { } theirs)
+                return $"cannot be told apart from {NameOf(c)}, marked {ProtectedText}: its server name could not be resolved.";
+            if (theirs.Overlaps(mine)) return marked;
+        }
+        foreach (var c in guarded.Where(c => c.Engine == engine))
+        {
+            TargetFacts? who;
+            try
+            {
+                who = await ask(c, time.Token);
+            }
+            catch (Exception)
+            {
+                who = null;
+            }
+            if (who is null)
+                return $"cannot be told apart from {NameOf(c)}, marked {ProtectedText}: that server could not be asked who it is.";
+            if (same(who, facts)) return marked;
+        }
+        return null;
+
+        static string NameOf(ConnectionSettings c) => string.IsNullOrWhiteSpace(c.Label) ? c.Server : c.Label;
+    }
+
+    /// <summary>
+    /// The hosts a protected connection reaches, as written (the resolver needs the full name): a SQL Server's servers
+    /// without prefix, port or instance, another engine's host list. Null when they cannot be read.
+    /// </summary>
+    private static List<string>? ProtectedHosts(ConnectionSettings c)
+    {
+        if (c.Engine == DatabaseEngine.SqlServer)
+        {
+            // \\host\pipe\... is host; a server no host can be read from cannot be resolved, and null refuses
+            var hosts = SavedServers(c)?.Select(s => ConnectionEndpoints.SqlServerHost(s)?.Host).ToList();
+            return hosts is null || hosts.Any(h => h is null) ? null : [.. hosts.OfType<string>()];
+        }
+        return ConnectionEndpoints.Parse(c.Engine, c.UseRawConnectionString
+            ? c.RawConnectionString
+            : string.IsNullOrWhiteSpace(c.Server) ? null : new DbConnectionStringBuilder { ["Host"] = c.Server.Trim() }.ConnectionString)?.Hosts.ToList();
+    }
+
+    /// <summary>Stands for every address of this machine: loopback, its name and each of its interfaces' addresses.</summary>
+    private static readonly IPAddress ThisMachine = IPAddress.Loopback;
+
+    /// <summary>Every address of <paramref name="hosts"/>, this machine's as <see cref="ThisMachine"/>; null when one cannot be resolved.</summary>
+    private static async Task<HashSet<IPAddress>?> AddressesAsync(IEnumerable<string> hosts,
+        Func<string, CancellationToken, Task<IPAddress[]>> resolve, CancellationToken ct)
+    {
+        var local = LocalAddresses();
+        IPAddress Plain(IPAddress ip)
+        {
+            if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+            if (ip.AddressFamily == AddressFamily.InterNetworkV6) ip = new IPAddress(ip.GetAddressBytes());   // no scope id
+            return IPAddress.IsLoopback(ip) || local.Contains(ip) ? ThisMachine : ip;
+        }
+
+        var all = new HashSet<IPAddress>();
+        foreach (var raw in hosts)
+        {
+            var h = (raw ?? "").Trim().Trim('[', ']');
+            if (h.Length == 0) continue;
+            if (h is "." or "(local)" || h.Equals("(localdb)", StringComparison.OrdinalIgnoreCase) ||
+                h.Equals("localhost", StringComparison.OrdinalIgnoreCase) || h.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase))
+            {
+                all.Add(ThisMachine);
+                continue;
+            }
+            if (IPAddress.TryParse(h, out var literal))
+            {
+                all.Add(Plain(literal));
+                continue;
+            }
+            try
+            {
+                var found = await resolve(h, ct);
+                if (found.Length == 0) return null;
+                foreach (var ip in found) all.Add(Plain(ip));
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+        return all;
+    }
+
+    /// <summary>This machine's own unicast addresses (every interface), IPv6 scope ids dropped.</summary>
+    private static HashSet<IPAddress> LocalAddresses()
+    {
+        var set = new HashSet<IPAddress>();
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            foreach (var u in nic.GetIPProperties().UnicastAddresses)
+                set.Add(u.Address.AddressFamily == AddressFamily.InterNetworkV6 ? new IPAddress(u.Address.GetAddressBytes()) : u.Address);
+        }
+        catch (NetworkInformationException)
+        {
+            // none listed: loopback and the machine name still count as this machine
+        }
+        return set;
+    }
+
+    /// <summary>
+    /// Protected when the connection was protected at compare time, when its saved connection is protected now, or
+    /// when any saved connection to the same server is. A store that cannot be read, or a connection string whose
+    /// destination cannot be read, counts as protected.
+    /// </summary>
+    internal static bool IsProtected(SchemaSource target, string server, SchemaScopeStore store)
     {
         if (target.ProtectedServer) return true;
+        if (ConnectionEndpoints.Parse(target.Engine, target.ConnectionString) is not { } ep) return true;
+        // every host the connection may reach: a failover partner (or another host of a list) is reached too
+        if (TargetServers(target, ep) is not { } others) return true;
         try
         {
             if (target.ConnectionId is { } id && store.GetConnection(id) is { ProtectedServer: true }) return true;
-            return OnProtectedServer(store, server, target.Server);
+            return OnProtectedServer(store, target.Engine, [server, target.Server, .. others]);
         }
         catch (Exception)
         {
@@ -1036,14 +1466,32 @@ public static class SchemaScopeApi
     }
 
     /// <summary>
-    /// Any protected saved connection names one of <paramref name="servers"/>, compared as <see cref="ServerNames"/>
-    /// spells them ('.', localhost and the machine name are one server). A store that cannot be read counts as protected.
+    /// A target's other destinations: a SQL Server failover partner as written (its instance matters, as the Data
+    /// Source's does), another engine's every host. Null when the string cannot be read.
     /// </summary>
-    internal static bool OnProtectedServer(SchemaScopeStore store, params string[] servers)
+    private static List<string>? TargetServers(SchemaSource target, EndpointInfo ep)
+    {
+        if (target.Engine != DatabaseEngine.SqlServer) return [.. ep.Hosts];
+        // the driver's own reading of the partner, whether or not a Data Source is named (fail closed: it is reached too)
+        if (ParseEndpoint(target) is not { } sql) return null;
+        return sql.FailoverPartner is { } partner ? [partner.Trim()] : [];
+    }
+
+    /// <summary>
+    /// Any protected saved connection names one of <paramref name="servers"/> (SQL Server names), compared as
+    /// <see cref="ServerNames"/> spells them ('.', localhost and the machine name are one server). A protected connection
+    /// to another engine protects the whole host - every engine and port on it. A protected connection whose server
+    /// cannot be read protects everything, and a store that cannot be read counts as protected.
+    /// </summary>
+    internal static bool OnProtectedServer(SchemaScopeStore store, params string[] servers) =>
+        OnProtectedServer(store, DatabaseEngine.SqlServer, servers);
+
+    /// <summary><see cref="OnProtectedServer(SchemaScopeStore, string[])"/> for a target of <paramref name="engine"/>: its servers are hosts unless it is SQL Server.</summary>
+    internal static bool OnProtectedServer(SchemaScopeStore store, DatabaseEngine engine, params string[] servers)
     {
         try
         {
-            return store.GetConnections().Any(c => c.ProtectedServer && servers.Any(s => ServerNames.Same(SavedServer(c), s)));
+            return store.GetConnections().Any(c => c.ProtectedServer && Covers(c, engine, servers));
         }
         catch (Exception)
         {
@@ -1052,51 +1500,94 @@ public static class SchemaScopeApi
     }
 
     /// <summary>
-    /// The server a saved connection really connects to: a raw connection string's Data Source, since the form's Server box
-    /// is hidden then and may be empty or stale.
+    /// Whether protected <paramref name="c"/> covers a target of <paramref name="engine"/> on one of <paramref name="servers"/>.
+    /// SQL Server against SQL Server keeps today's rule (the instance must match); any other pair matches the host alone,
+    /// so a protected PROD\A also protects PostgreSQL on PROD. A saved server that cannot be read covers everything.
     /// </summary>
-    private static string SavedServer(ConnectionSettings c)
+    internal static bool Covers(ConnectionSettings c, DatabaseEngine engine, IReadOnlyList<string> servers)
     {
-        if (c.UseRawConnectionString && !string.IsNullOrWhiteSpace(c.RawConnectionString))
+        var targets = servers.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        if (c.Engine == DatabaseEngine.SqlServer)
         {
-            try
-            {
-                return new SqlConnectionStringBuilder(c.RawConnectionString).DataSource.Trim();
-            }
-            catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
-            {
-                // fall back to the Server box
-            }
+            // no machine read from it covers everything; a named pipe of no known instance, its whole machine
+            if (SavedServers(c) is not { } saved || saved.Any(p => ServerNames.Host(p).Length == 0)) return true;
+            return engine == DatabaseEngine.SqlServer
+                ? saved.Any(p => targets.Any(s => ServerNames.Same(p, s) || (ServerNames.InstanceUnknown(p) && ServerNames.Host(p) == ServerNames.Host(s))))
+                : saved.Any(p => targets.Any(s => ServerNames.Host(p) == ServerNames.Host(s)));
         }
-        return c.Server.Trim();
+
+        // the Server box is read as the raw string's host list is: "a,b" is two hosts, "prod:5432" is host prod
+        var hosts = ConnectionEndpoints.Parse(c.Engine, c.UseRawConnectionString
+            ? c.RawConnectionString
+            : string.IsNullOrWhiteSpace(c.Server) ? null : new DbConnectionStringBuilder { ["Host"] = c.Server.Trim() }.ConnectionString)?.Hosts;
+        return hosts is null || hosts.Any(h => targets.Any(s => HostNames.Same(h, ServerNames.Host(s))));
+    }
+
+    /// <summary>
+    /// The servers a saved SQL Server connection really connects to: a raw connection string's Data Source (and its
+    /// failover partner), since the form's Server box is hidden then and may be empty or stale. Null when the string
+    /// cannot be read - the caller then treats it as protecting everything, never falls back to the Server box.
+    /// </summary>
+    private static List<string>? SavedServers(ConnectionSettings c)
+    {
+        if (!c.UseRawConnectionString) return [c.Server.Trim()];
+        if (string.IsNullOrWhiteSpace(c.RawConnectionString)) return null;
+        var ep = Engines.Get(DatabaseEngine.SqlServer).Connections.ParseEndpoint(c.RawConnectionString);
+        return ep?.Servers is { Count: > 0 } servers ? [.. servers.Select(s => s.Trim())] : null;
     }
 
     /// <summary>The target is the very database the run read as its source.</summary>
     private static bool IsSource(CompareSession session, int index)
     {
         if (session.SourceConnection is null) return true;
-        var s = Endpoint(session.SourceConnection, null);
-        var t = Endpoint(session.TargetConnections[index], null);
+        var source = session.SourceConnection;
+        var target = session.TargetConnections[index];
+        var s = Endpoint(source, null);
+        var t = Endpoint(target, null);
+        // a string that names no database: the one the compare's read reached (as ApplyTargetOf names it)
+        static string Read(string named, SchemaSnapshot? read) =>
+            string.IsNullOrWhiteSpace(named) && read is { Failed: false } ? read.Database : named;
+        if (source.Engine != DatabaseEngine.SqlServer || target.Engine != DatabaseEngine.SqlServer)
+            return SameDatabase(source, target, Read(s.Database, session.Source),
+                Read(t.Database, index < session.Targets.Count ? session.Targets[index] : null));
         return string.Equals(s.Server.Trim(), t.Server.Trim(), StringComparison.OrdinalIgnoreCase) &&
                string.Equals(s.Database.Trim(), t.Database.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>Who an apply signs in as: "Windows: DOMAIN\user" or "SQL login: name". Never the password.</summary>
-    private static string LoginOf(string connectionString)
+    /// <summary>
+    /// For an engine other than SQL Server: one engine, one port, a host in common (as <see cref="HostNames"/> spells
+    /// them) and the same database, its name compared as that engine compares it. A string that cannot be read counts as
+    /// the source (fail closed).
+    /// </summary>
+    internal static bool SameDatabase(SchemaSource source, SchemaSource target, string sourceDatabase, string targetDatabase)
     {
-        try
-        {
-            var b = new SqlConnectionStringBuilder(connectionString);
-            if (b.IntegratedSecurity) return $"Windows: {Environment.UserDomainName}\\{Environment.UserName}";
-            if (b.Authentication is SqlAuthenticationMethod.NotSpecified or SqlAuthenticationMethod.SqlPassword)
-                return $"SQL login: {b.UserID}";
-            return string.IsNullOrEmpty(b.UserID) ? "Microsoft Entra ID" : $"Microsoft Entra ID: {b.UserID}";
-        }
-        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
-        {
-            return "Unknown";
-        }
+        if (source.Engine != target.Engine) return false;
+        // the driverless reading the Protected rule uses, so the answer does not depend on which engines are turned on
+        if (ConnectionEndpoints.Parse(source.Engine, source.ConnectionString) is not { } s ||
+            ConnectionEndpoints.Parse(target.Engine, target.ConnectionString) is not { } t) return true;
+        var defaultPort = DatabaseEngines.DefaultPort(target.Engine);
+        return (s.Port ?? defaultPort) == (t.Port ?? defaultPort) &&
+               s.Hosts.Any(a => t.Hosts.Any(b => HostNames.Same(a, b))) &&
+               string.Equals(sourceDatabase.Trim(), targetDatabase.Trim(), ConnectionRules.TypedNameComparison(target.Engine));
     }
+
+    /// <summary>Who an apply signs in as, as the provider reads it: "Windows: DOMAIN\user" or "SQL login: name". Never the password.</summary>
+    private static string LoginOf(SchemaSource s) =>
+        ParseEndpoint(s) is { LoginDescription.Length: > 0 } ep ? ep.LoginDescription : "Unknown";
+
+    /// <summary>
+    /// The providers the static helpers here read connection strings with: the engines the app built last has turned
+    /// on (<see cref="EngineCatalog.Enabled"/>), the same list DI hands out, and SQL Server alone before any app is
+    /// built. Tests call these helpers without a running app.
+    /// </summary>
+    internal static EngineRegistry Engines => _catalog?.Enabled ?? SqlServerOnly;
+
+    private static readonly EngineRegistry SqlServerOnly = EngineRegistries.SqlServerOnly();
+    private static EngineCatalog? _catalog;
+
+    /// <summary>Where <paramref name="s"/> really goes, read by its engine's driver; null when unreadable or the engine has no provider.</summary>
+    private static EndpointInfo? ParseEndpoint(SchemaSource s) =>
+        Engines.TryGet(s.Engine, out var provider) ? provider.Connections.ParseEndpoint(s.ConnectionString) : null;
 
     /// <summary>
     /// The 400 rules of DESIGN §6, in the order a user would hit them. Null means the request
@@ -1240,17 +1731,13 @@ public static class SchemaScopeApi
     private static ScriptEndpoint Endpoint(SchemaSource s, string? label)
     {
         string server = s.Server, database = s.Database;
-        try
+        // an unreadable string keeps the form's values; the generator reports a connection failure on its own
+        if (ParseEndpoint(s) is { } ep)
         {
-            var b = new SqlConnectionStringBuilder(s.ConnectionString);
-            if (!string.IsNullOrWhiteSpace(b.DataSource)) server = b.DataSource;
-            if (!string.IsNullOrWhiteSpace(b.InitialCatalog)) database = b.InitialCatalog;
+            if ((ep.Servers ?? ep.Hosts).FirstOrDefault() is { } named && !string.IsNullOrWhiteSpace(named)) server = named;
+            if (!string.IsNullOrWhiteSpace(ep.Database)) database = ep.Database;
         }
-        catch (Exception ex) when (ex is ArgumentException or FormatException or KeyNotFoundException)
-        {
-            // keep the form's values; the generator reports a connection failure on its own
-        }
-        return new(string.IsNullOrWhiteSpace(label) ? s.DisplayName : label, server, database, s.ConnectionString);
+        return new(string.IsNullOrWhiteSpace(label) ? s.DisplayName : label, server, database, s.ConnectionString, s.Engine);
     }
 
     /// <summary>Modules the compare marked Different for this target, with its line counts: 10_different_modules' candidates.</summary>
@@ -1348,48 +1835,9 @@ public static class SchemaScopeApi
 
     // -----------------------------------------------------------------
 
-    private const string Masked = "********";
-
-    /// <summary>
-    /// A saved connection comes back from the UI with "********" instead of the
-    /// real password. Swap the stored secret in before using it.
-    ///
-    /// The secret is only ever released for the exact destination it was saved
-    /// against. If the caller changed the server, the login or the auth mode,
-    /// the password has to be typed again - otherwise anything able to reach
-    /// this API could name a saved connection, point it at a host of its own
-    /// choosing, and harvest the password from the other end.
-    /// </summary>
-    internal static bool TryRehydrate(ConnectionSettings incoming, SchemaScopeStore store, out string? error)
-    {
-        error = null;
-
-        // Only a password login has a password to put back. Windows and the
-        // interactive Azure modes never stored one, so an edited server there
-        // releases nothing and needs nothing typed.
-        var needsPassword = incoming.UsesPassword &&
-                            (string.IsNullOrEmpty(incoming.Password) || incoming.Password == Masked);
-        var needsRaw = incoming.UseRawConnectionString &&
-                       (string.IsNullOrEmpty(incoming.RawConnectionString) ||
-                        incoming.RawConnectionString.Contains(Masked));
-
-        if (!needsPassword && !needsRaw) return true;
-        if (string.IsNullOrWhiteSpace(incoming.Id)) return true;
-
-        var saved = store.GetConnection(incoming.Id);
-        if (saved is null) return true;
-
-        if (!ConnectionSettings.SameDestination(incoming, saved))
-        {
-            error = "The server or login was changed, so the saved password no longer applies. " +
-                    "Type the password again.";
-            return false;
-        }
-
-        if (needsPassword) incoming.Password = saved.Password;
-        if (needsRaw) incoming.RawConnectionString = saved.RawConnectionString;
-        return true;
-    }
+    /// <summary>The one secret-release rule, <see cref="SecretRelease.TryRehydrate"/>; kept here for the routes and their tests.</summary>
+    internal static bool TryRehydrate(ConnectionSettings incoming, SchemaScopeStore store, out string? error) =>
+        SecretRelease.TryRehydrate(incoming, store, out error);
 
     private static string Sanitise(string name)
     {

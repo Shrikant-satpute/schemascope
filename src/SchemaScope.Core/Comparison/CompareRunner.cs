@@ -15,9 +15,15 @@ public sealed record CompareRun(
 /// as one. A target that cannot be reached is recorded and skipped - it never
 /// takes the whole run down with it.
 /// </summary>
-public sealed class CompareRunner(ISchemaReader reader)
+public sealed class CompareRunner
 {
-    private readonly ISchemaReader _reader = reader;
+    private readonly Func<SchemaSource, ISchemaReader> _readerFor;
+
+    /// <summary>One reader for every database (SQL Server only, and the Spike).</summary>
+    public CompareRunner(ISchemaReader reader) => _readerFor = _ => reader;
+
+    /// <summary>A reader per database, picked by its engine (the API: <c>src => registry.Get(src.Engine).CreateReader()</c>).</summary>
+    public CompareRunner(Func<SchemaSource, ISchemaReader> readerFor) => _readerFor = readerFor;
 
     public async Task<CompareRun> RunAsync(
         SchemaSource source,
@@ -62,7 +68,7 @@ public sealed class CompareRunner(ISchemaReader reader)
     {
         try
         {
-            return await _reader.ReadAsync(src, options, progress, ct);
+            return await _readerFor(src).ReadAsync(src, options, progress, ct);
         }
         catch (SchemaReadException ex)
         {
@@ -82,6 +88,7 @@ public sealed class CompareRunner(ISchemaReader reader)
 
     private static SchemaSnapshot Failed(SchemaSource src, string error, string? hint) => new()
     {
+        Engine = src.Engine,
         Label = src.DisplayName,
         Server = src.Server,
         Database = src.Database,

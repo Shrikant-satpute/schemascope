@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json.Serialization;
+using SchemaScope.Core.Engines;
 using SchemaScope.Scripting;
 
 namespace SchemaScope.Api.Services;
@@ -22,11 +23,21 @@ public sealed class PlanSection
 public sealed class ApplyTarget
 {
     public string Label { get; set; } = "";
+    public DatabaseEngine Engine { get; set; } = DatabaseEngine.SqlServer;
     public string Server { get; set; } = "";
+    /// <summary>The port, for engines other than SQL Server (whose port is part of <see cref="Server"/>); null for SQL Server.</summary>
+    public int? Port { get; set; }
     public string Database { get; set; } = "";
-    /// <summary>"Windows: DOMAIN\user" or "SQL login: name".</summary>
+    /// <summary>"Windows: DOMAIN\user", "SQL login: name" or "PostgreSQL user: name".</summary>
     public string Login { get; set; } = "";
     public bool Protected { get; set; }
+
+    /// <summary>
+    /// When <see cref="Protected"/>: true when this connection itself is marked Protected, false when another
+    /// Protected connection on the same host protects it. Null when not protected.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ProtectedItself { get; set; }
 }
 
 /// <summary>A script file of a plan: what to run, and the SHA-256 it had when it was generated.</summary>
@@ -108,7 +119,8 @@ public static class ApplyPlans
 
         var files = runnable.Select(f => new PlanFile(
             RunOrder[Order(f.Folder)], f.RelativePath, f.FullPath,
-            f.Object?.ToString() ?? Path.GetFileNameWithoutExtension(f.RelativePath),
+            // a schema's file names the schema alone (its object is schema.""), not "name."
+            f.Object is { } o ? (o.Name.Length == 0 ? o.Schema : o.ToString()) : Path.GetFileNameWithoutExtension(f.RelativePath),
             TrustedHash(f))).ToList();
 
         var sections = files.GroupBy(f => f.Folder).Select(g =>

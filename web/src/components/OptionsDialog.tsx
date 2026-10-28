@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Save, Trash2 } from 'lucide-react'
 import { api } from '../api'
-import type { CompareOptions, CompareProfile, DbObjectType } from '../types'
+import type { CompareOptions, CompareProfile, DatabaseEngine, DbObjectType } from '../types'
 import { Button, Field, Input, Modal, Select, Toggle } from './ui'
 
 const TYPE_LABELS: Record<DbObjectType, string> = {
@@ -17,9 +17,34 @@ const TYPE_LABELS: Record<DbObjectType, string> = {
   userDefinedType: 'User types',
   sequence: 'Sequences',
   synonym: 'Synonyms',
+  // PostgreSQL
+  materializedView: 'Materialized views',
+  domain: 'Domains',
+  enumType: 'Enum types',
+  compositeType: 'Composite types',
+  extension: 'Extensions',
+  rangeType: 'Range types',
+  collation: 'Collations',
+  operator: 'Operators',
+  foreignTable: 'Foreign tables',
+  textSearchDictionary: 'Text search dictionaries',
+  textSearchConfiguration: 'Text search configurations',
+  operatorClass: 'Operator classes',
+  cast: 'Casts',
 }
 
+/** Kinds only SQL Server has, and only PostgreSQL has: listed only when an engine of the setup has them. */
+const SQL_SERVER_TYPES: DbObjectType[] = ['tableType', 'userDefinedType', 'synonym']
+const POSTGRES_TYPES: DbObjectType[] = ['materializedView', 'domain', 'enumType', 'compositeType', 'extension', 'rangeType', 'collation', 'operator', 'foreignTable',
+  'textSearchDictionary', 'textSearchConfiguration', 'operatorClass', 'cast']
+
 const ALL_TYPES = Object.keys(TYPE_LABELS) as DbObjectType[]
+
+/** SQL Server's own schemas, the default excluded list (CompareOptions.SqlServerExcludedSchemas). */
+const SQL_SERVER_SCHEMAS = [
+  'sys', 'INFORMATION_SCHEMA', 'guest', 'db_owner', 'db_accessadmin', 'db_securityadmin', 'db_ddladmin',
+  'db_backupoperator', 'db_datareader', 'db_datawriter', 'db_denydatareader', 'db_denydatawriter',
+]
 
 /** Ignore rules whose default is "on". Used to badge how many are non-default. */
 const DEFAULTS: Partial<Record<keyof CompareOptions, boolean>> = {
@@ -49,13 +74,21 @@ export function countNonDefault(o: CompareOptions): number {
 
 export function OptionsDialog({
   options,
+  engines = [],
   onClose,
   onApply,
 }: {
   options: CompareOptions
+  /** The engines of the setup's source and targets; none known (nothing picked yet) shows everything. */
+  engines?: DatabaseEngine[]
   onClose: () => void
   onApply: (o: CompareOptions) => void
 }) {
+  // SQL Server's own switches and kinds (ScriptDom, DF__ names, fill factor, padding, filegroups, table types,
+  // synonyms) mean nothing to another engine: hidden when no side is SQL Server, and the same for PostgreSQL's kinds
+  const sqlServer = engines.length === 0 || engines.includes('sqlServer')
+  const postgres = engines.length === 0 || engines.includes('postgreSql')
+  const shownTypes = ALL_TYPES.filter((t) => (sqlServer || !SQL_SERVER_TYPES.includes(t)) && (postgres || !POSTGRES_TYPES.includes(t)))
   const [form, setForm] = useState<CompareOptions>(structuredClone(options))
   const [profiles, setProfiles] = useState<CompareProfile[]>([])
   const [profileName, setProfileName] = useState('')
@@ -66,6 +99,19 @@ export function OptionsDialog({
 
   const set = <K extends keyof CompareOptions>(k: K, v: CompareOptions[K]) =>
     setForm((f) => ({ ...f, [k]: v }))
+
+  // PostgreSQL alone: SQL Server's own default schemas mean nothing there, so they are neither shown nor typed over.
+  // The server drops them only while the whole default list is there; a list holding one of their names (guest, sys)
+  // is the user's own, every name of it.
+  const pgOnly = postgres && !sqlServer
+  const hasSqlDefaults = SQL_SERVER_SCHEMAS.every((s) => form.excludedSchemas.includes(s))
+  const shownSchemas =
+    pgOnly && hasSqlDefaults ? form.excludedSchemas.filter((s) => !SQL_SERVER_SCHEMAS.includes(s)) : form.excludedSchemas
+  const setSchemas = (typed: string[]) =>
+    set(
+      'excludedSchemas',
+      pgOnly && hasSqlDefaults && !typed.some((s) => SQL_SERVER_SCHEMAS.includes(s)) ? [...SQL_SERVER_SCHEMAS, ...typed] : typed,
+    )
 
   const toggleType = (t: DbObjectType) =>
     set(
@@ -112,12 +158,14 @@ export function OptionsDialog({
           <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>
             Code comparison
           </h3>
-          <Toggle
-            checked={form.useSmartParseCompare}
-            onChange={(v) => set('useSmartParseCompare', v)}
-            label="Smart compare"
-            hint="Parse near-identical bodies and re-print them one way, so [dbo].[x] vs dbo.x is not a difference."
-          />
+          {sqlServer && (
+            <Toggle
+              checked={form.useSmartParseCompare}
+              onChange={(v) => set('useSmartParseCompare', v)}
+              label="Smart compare"
+              hint="Parse near-identical bodies and re-print them one way, so [dbo].[x] vs dbo.x is not a difference."
+            />
+          )}
           <Toggle
             checked={form.ignoreComments}
             onChange={(v) => set('ignoreComments', v)}
@@ -139,7 +187,11 @@ export function OptionsDialog({
             checked={form.ignoreSystemNamedConstraints}
             onChange={(v) => set('ignoreSystemNamedConstraints', v)}
             label="Ignore auto-generated constraint names"
-            hint="DF__Table__Col__1A2B3C differs on every server for no real reason."
+            hint={
+              sqlServer
+                ? 'DF__Table__Col__1A2B3C differs on every server for no real reason.'
+                : 'A name PostgreSQL made up itself (table_pkey, table_col_check) is not compared.'
+            }
           />
           <Toggle
             checked={form.ignoreCollation}
@@ -167,16 +219,20 @@ export function OptionsDialog({
             onChange={(v) => set('ignoreFillFactor', v)}
             label="Ignore fill factor"
           />
-          <Toggle
-            checked={form.ignoreIndexPadding}
-            onChange={(v) => set('ignoreIndexPadding', v)}
-            label="Ignore index padding"
-          />
-          <Toggle
-            checked={form.ignoreFileGroups}
-            onChange={(v) => set('ignoreFileGroups', v)}
-            label="Ignore filegroups"
-          />
+          {sqlServer && (
+            <>
+              <Toggle
+                checked={form.ignoreIndexPadding}
+                onChange={(v) => set('ignoreIndexPadding', v)}
+                label="Ignore index padding"
+              />
+              <Toggle
+                checked={form.ignoreFileGroups}
+                onChange={(v) => set('ignoreFileGroups', v)}
+                label="Ignore filegroups"
+              />
+            </>
+          )}
           <Toggle
             checked={form.includeSystemObjects}
             onChange={(v) => set('includeSystemObjects', v)}
@@ -190,7 +246,7 @@ export function OptionsDialog({
             Object types
           </h3>
           <div className="grid grid-cols-2 gap-x-2">
-            {ALL_TYPES.map((t) => (
+            {shownTypes.map((t) => (
               <label key={t} className="flex cursor-pointer items-center gap-1.5 py-0.5 text-[12px]">
                 <input
                   type="checkbox"
@@ -208,7 +264,29 @@ export function OptionsDialog({
             <button
               className="hover:underline"
               style={{ color: 'var(--accent)' }}
-              onClick={() => set('includedTypes', ['table', 'view', 'tableType', 'userDefinedType', 'sequence'])}
+              onClick={() =>
+                set('includedTypes', [
+                  'table',
+                  'view',
+                  'tableType',
+                  'userDefinedType',
+                  'sequence',
+                  // PostgreSQL
+                  'materializedView',
+                  'domain',
+                  'enumType',
+                  'compositeType',
+                  'extension',
+                  'rangeType',
+                  'collation',
+                  'operator',
+                  'foreignTable',
+                  'textSearchDictionary',
+                  'textSearchConfiguration',
+                  'operatorClass',
+                  'cast',
+                ])
+              }
             >
               structure only
             </button>
@@ -223,6 +301,7 @@ export function OptionsDialog({
                   'aggregateFunction',
                   'trigger',
                   'view',
+                  'materializedView',
                 ])
               }
             >
@@ -236,12 +315,13 @@ export function OptionsDialog({
             Skip these objects
           </h3>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Excluded schemas" hint="Comma separated.">
+            <Field
+              label="Excluded schemas"
+              hint={pgOnly ? 'Comma separated. pg_catalog, information_schema and pg_toast are always left out.' : 'Comma separated.'}
+            >
               <Input
-                value={form.excludedSchemas.join(', ')}
-                onChange={(e) =>
-                  set('excludedSchemas', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))
-                }
+                value={shownSchemas.join(', ')}
+                onChange={(e) => setSchemas(e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
               />
             </Field>
             <Field label="Name patterns to skip" hint="Comma separated, * and ? allowed. e.g. tmp_*, *_bak">

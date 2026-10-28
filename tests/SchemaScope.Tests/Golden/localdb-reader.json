@@ -1,0 +1,67 @@
+[
+  {
+    "Key": "0|DBO.DBO",
+    "CompareText": "CREATE SCHEMA [dbo] AUTHORIZATION [dbo];",
+    "Hash": "e36ea60c3b8cc7a9667a0f7967d4f115a77b9eaa546f3af275c35bddcfb5e126"
+  },
+  {
+    "Key": "0|SALES.SALES",
+    "CompareText": "CREATE SCHEMA [sales] AUTHORIZATION [dbo];",
+    "Hash": "5d17ebfcec708740d5e27fd393f1e856e39e3457e3956744998b394934eae13d"
+  },
+  {
+    "Key": "10|DBO.ORDERNO",
+    "CompareText": "CREATE SEQUENCE [dbo].[OrderNo] AS bigint START WITH 1000 INCREMENT BY 5 MINVALUE -9223372036854775808 MAXVALUE 9223372036854775807 NO CYCLE CACHE 0;",
+    "Hash": "7568c6a9692713c362f05be3f2ab8bc714db8eb14181a0a40b24e1c1368a3685"
+  },
+  {
+    "Key": "11|DBO.ORDERS",
+    "CompareText": "CREATE SYNONYM [dbo].[Orders] FOR [sales].[Orders];",
+    "Hash": "0971bba89f1da2aa8b56c79d95b0b4806c24e6a4afb66a482fa10b4d837f1ca8"
+  },
+  {
+    "Key": "1|DBO.CUSTOMER",
+    "CompareText": "CREATE TABLE [dbo].[Customer] (\n    [Id] int IDENTITY NOT NULL,\n    [Code] [dbo].[Code] NOT NULL,\n    [Name] nvarchar(100) NULL,\n    [Created] datetime2(3) NOT NULL CONSTRAINT [DF_Customer_Created] DEFAULT (sysutcdatetime()),\n    [Credit] decimal(12,2) NOT NULL CONSTRAINT [DF_Customer_Credit] DEFAULT ((0)),\n    [Upper] AS (upper([Name])),\n    CONSTRAINT [PK_Customer] PRIMARY KEY CLUSTERED ([Id] ASC),\n    CONSTRAINT [UQ_Customer_Code] UNIQUE NONCLUSTERED ([Code] ASC),\n    CONSTRAINT [CK_Customer_Credit] CHECK ([Credit]\u003E=(0))\n);",
+    "Hash": "a8d375822e91ea388d6277fe4f5e6a32431ffe3c79582b81fb4a9f0211b3cc7c"
+  },
+  {
+    "Key": "1|SALES.ORDERS",
+    "CompareText": "CREATE TABLE [sales].[Orders] (\n    [Id] bigint NOT NULL CONSTRAINT [DF_Orders_Id] DEFAULT (NEXT VALUE FOR [dbo].[OrderNo]),\n    [CustomerId] int NOT NULL,\n    [Total] money NULL,\n    [Status] tinyint NOT NULL CONSTRAINT [DF_Orders_Status] DEFAULT ((1)),\n    [Payload] varbinary(max) NULL,\n    [Ref] uniqueidentifier ROWGUIDCOL NOT NULL CONSTRAINT [DF_Orders_Ref] DEFAULT (newid()),\n    CONSTRAINT [PK_Orders] PRIMARY KEY NONCLUSTERED ([Id] ASC)\n);\nCREATE CLUSTERED INDEX [CIX_Orders_Customer] ON [sales].[Orders] ([CustomerId] ASC);\nCREATE NONCLUSTERED INDEX [IX_Orders_Status] ON [sales].[Orders] ([Status] DESC) INCLUDE ([Total]) WHERE ([Status]\u003E(0));\nALTER TABLE [sales].[Orders] ADD CONSTRAINT [FK_Orders_Customer] FOREIGN KEY ([CustomerId]) REFERENCES [dbo].[Customer] ([Id]) ON DELETE CASCADE /* disabled */ /* not trusted */;",
+    "Hash": "f6c860cec24b95ee524ff9f0a92c40491cd5b0307deeb5b071100aac52319f71"
+  },
+  {
+    "Key": "2|SALES.V_OPEN",
+    "CompareText": "CREATE VIEW [sales].[v_open]\nAS\n    -- open orders only\n    SELECT o.Id, c.Name FROM sales.Orders AS o JOIN dbo.Customer AS c ON c.Id = o.CustomerId WHERE o.Status = 1;",
+    "Hash": "97a57ca5ed512f2730bf8baae68815600bf106356f2d34e8f1c70baf45aff081"
+  },
+  {
+    "Key": "3|DBO.P_CUSTOMERS",
+    "CompareText": "CREATE PROCEDURE [dbo].[p_customers] @min decimal(12,2) = 0, @count int OUTPUT\nAS\nBEGIN\n    SET NOCOUNT ON;\n    SELECT @count = COUNT(*) FROM dbo.Customer WHERE Credit \u003E= @min;\nEND",
+    "Hash": "9e54915d9a5d726e96c43950241cbc4e9f97f058c7c8c197b9d542e3e97dfe9b"
+  },
+  {
+    "Key": "4|DBO.F_DOUBLE",
+    "CompareText": "CREATE FUNCTION [dbo].[f_double] (@x int) RETURNS int AS BEGIN RETURN @x * 2; END",
+    "Hash": "ba73a4ab2fe52d17309726779cad67d42e261f2034d755027dc9b595399a1ac6"
+  },
+  {
+    "Key": "5|SALES.F_BY_CUSTOMER",
+    "CompareText": "CREATE FUNCTION [sales].[f_by_customer] (@id int) RETURNS TABLE AS RETURN SELECT Id FROM sales.Orders WHERE CustomerId = @id;",
+    "Hash": "16d3ec2d14d2374beae4cf9cfc5cae2c86f128a0c5c6f053ee517e5067679777"
+  },
+  {
+    "Key": "7|SALES.TR_ORDERS",
+    "CompareText": "CREATE TRIGGER [sales].[tr_orders] ON sales.Orders AFTER INSERT AS SET NOCOUNT ON;",
+    "Hash": "2ba3ef9dd346fbefea3889cb98e53b917d3f7a6d25906c3dbd12e5cfae8d4045"
+  },
+  {
+    "Key": "8|DBO.CODE",
+    "CompareText": "CREATE TYPE [dbo].[Code] FROM varchar(12) NOT NULL;",
+    "Hash": "9afd52872c82102328317d95b068ba8b7681888c572ce0691e6022ca8fbee201"
+  },
+  {
+    "Key": "9|DBO.IDLIST",
+    "CompareText": "CREATE TYPE [dbo].[IdList] AS TABLE (\n    [Id] int NOT NULL,\n    [Note] nvarchar(20) NULL\n);",
+    "Hash": "8c165cf8b699006d8bb85cf05e7d23f6ab8440d3b083b75e377f9f16d2883073"
+  }
+]

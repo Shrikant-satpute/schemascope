@@ -97,11 +97,11 @@ export function ResultsWorkspace({
   // tile, the matrix column and the diff tab all agree on what colour a
   // database is.
   const sourceColour = useMemo(
-    () => dbColour(dbKey(result.source.server, result.source.database)),
+    () => dbColour(dbKey(result.source.server, result.source.database, result.source.engine, result.source.port)),
     [result],
   )
   const targetColours = useMemo(
-    () => result.targets.map((t) => dbColour(dbKey(t.server, t.database))),
+    () => result.targets.map((t) => dbColour(dbKey(t.server, t.database, t.engine, t.port))),
     [result],
   )
   const targetErrors = useMemo(
